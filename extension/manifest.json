@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "LeetCode Capture",
+  "version": "0.1.0",
+  "description": "Captures live LeetCode editor attempts on Run/Submit and relays them to a local logging server.",
+  "content_scripts": [
+    {
+      "matches": ["https://leetcode.com/problems/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "http://localhost:8135/*"
+  ]
+}

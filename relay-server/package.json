@@ -1,0 +1,10 @@
+{
+  "name": "leetcode-capture-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Localhost-only relay server that logs LeetCode editor captures to a JSON-lines file.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
