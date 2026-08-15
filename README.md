@@ -15,6 +15,9 @@ and struggle/proficiency notes can be logged back into the Obsidian vault.
   receives captures and durably appends them to a JSON-lines log file.
 - `vault-tool/` - CLI that reads a captured session's log entries and
   appends a struggle/proficiency note into the Obsidian vault.
+- `companion/` - a standing tmux + Claude Code session that gives running
+  commentary on captured Run/Submit attempts as they happen, and doubles as
+  a normal chat session. See [Companion](#companion) below.
 
 Delivery posture: local-only (no remote, no PR pipeline).
 
@@ -123,3 +126,58 @@ node vault-tool/log-session.js --slug two-sum --log fixtures/captures.jsonl --dr
   machines on the network.
 - The vault tool makes no network calls; it only reads the local capture
   log and writes to the local vault directory.
+
+## Companion
+
+`companion/` is a live, standing Claude Code session that gives running
+commentary on your LeetCode attempts as you make them, and doubles as a
+normal chat session you can type into directly whenever you want.
+
+It works by tailing the same append-only log the relay server writes
+(`relay-server/data/captures.jsonl`) and injecting each new capture into a
+dedicated tmux pane as a chat message, as if you had typed and submitted it
+yourself.
+
+**Start it:**
+
+```
+companion/start.sh
+```
+
+This creates a tmux session named `leetcode-companion` running an
+interactive `claude` session from a plain scratch directory (not this repo).
+It is idempotent - running it again while the session is already up is a
+no-op.
+
+**Attach and use it:**
+
+```
+tmux attach -t leetcode-companion
+```
+
+You can type into this session directly at any time, before, after, or
+between injected captures - it's a real interactive `claude` session, not a
+one-way feed. Detach with the usual tmux prefix + `d` without stopping it.
+
+**Run the watcher:**
+
+```
+node companion/watch.js
+```
+
+This tails `relay-server/data/captures.jsonl` for new Run/Submit captures
+and injects each one into the `leetcode-companion` pane, formatted with the
+problem title/slug, language, trigger (Run vs Submit), and the captured
+code. It tracks its own offset into the log so restarting it does not replay
+captures it already injected.
+
+**Notes:**
+
+- Captures are only auto-injected while both the relay server and
+  `companion/watch.js` are running. If either is down, captures still get
+  durably logged to `captures.jsonl` (by the relay server) but won't show up
+  in the companion pane until `watch.js` is running again to catch up on
+  the newly appended lines.
+- This is a real Claude Code session, not a free or local model - every
+  injected capture and every message you type into it consumes normal
+  Claude usage for a response, the same as any other Claude Code session.
