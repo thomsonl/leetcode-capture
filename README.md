@@ -15,7 +15,7 @@ and struggle/proficiency notes can be logged back into the Obsidian vault.
   receives captures and durably appends them to a JSON-lines log file.
 - `vault-tool/` - CLI that reads a captured session's log entries and
   appends a struggle/proficiency note into the Obsidian vault.
-- `companion/` - a standing tmux + Claude Code session that gives running
+- `companion/` - a standalone terminal chat program that gives running
   commentary on captured Run/Submit attempts as they happen, and doubles as
   a normal chat session. See [Companion](#companion) below.
 
@@ -135,56 +135,161 @@ node vault-tool/log-session.js --slug two-sum --log fixtures/captures.jsonl --dr
 
 ## Companion
 
-`companion/` is a live, standing Claude Code session that gives running
+`companion/` is a standalone terminal chat program that gives running
 commentary on your LeetCode attempts as you make them, and doubles as a
 normal chat session you can type into directly whenever you want.
 
-It works by tailing the same append-only log the relay server writes
-(`relay-server/data/captures.jsonl`) and injecting each new capture into a
-dedicated tmux pane as a chat message, as if you had typed and submitted it
-yourself.
+It owns the whole conversation itself - it tails the same append-only log
+the relay server writes (`relay-server/data/captures.jsonl`), and injects
+each new capture into the same ongoing conversation as if you had typed and
+submitted it yourself.
+There is no tmux pane and no pane-scraping: it prints the real response
+directly, whether it came from an injected capture or something you typed.
 
-**Start it:**
+It supports two swappable backends, chosen with `COMPANION_BACKEND`.
 
-```
-companion/start.sh
-```
+### Setup
 
-This creates a tmux session named `leetcode-companion` running an
-interactive `claude` session from a plain scratch directory (not this repo).
-It is idempotent - running it again while the session is already up is a
-no-op.
-
-**Attach and use it:**
-
-```
-tmux attach -t leetcode-companion
+```sh
+cd companion
+npm install
 ```
 
-You can type into this session directly at any time, before, after, or
-between injected captures - it's a real interactive `claude` session, not a
-one-way feed. Detach with the usual tmux prefix + `d` without stopping it.
+This installs the one dependency the Claude backend needs
+(`@anthropic-ai/claude-agent-sdk`).
+The local backend needs no dependency - it talks to an OpenAI-compatible
+endpoint over plain HTTP - but `npm install` still needs to run once so
+`companion.js` has somewhere to resolve `node_modules` from.
 
-**Run the watcher:**
+### Run it
 
+```sh
+node companion/companion.js
 ```
-node companion/watch.js
+
+One process, one command.
+It prints a startup banner (backend, model, and the capture log it's
+watching), then drops you into a normal chat prompt.
+Type into it directly at any time - before, after, or in the middle of an
+injected capture - and it sends what you typed the moment you press Enter.
+A capture that arrives while you're mid-line never touches what you've
+already typed; it prints above your prompt and redraws your in-progress
+input afterward.
+`/exit` or `/quit` (or Ctrl+C) ends the session.
+
+Captures are only auto-injected while both the relay server and
+`companion/companion.js` are running.
+If either is down, captures still get durably logged to `captures.jsonl`
+(by the relay server) but won't show up in the companion chat until
+`companion.js` is running again to catch up on the newly appended lines -
+it tracks its own byte offset into the log (in
+`companion/.companion-state.json`, gitignored) so restarting it does not
+replay captures it already injected.
+
+### Backend: Claude (default)
+
+`COMPANION_BACKEND=claude` (or unset - it's the default) drives a real
+programmatic session through the **Claude Agent SDK**
+(`@anthropic-ai/claude-agent-sdk` on npm - this is Claude Code packaged as a
+library, not the `claude` CLI driven by fake keystrokes, and not the plain
+Messages/Client API).
+Each capture and each typed message is sent into one resumed SDK session,
+the same way a real conversation would continue turn by turn.
+
+**Credentials - read this before assuming it's free.**
+This is the one genuine setup/cost difference from the old tmux design, and
+it's worth stating plainly rather than glossing over:
+
+- If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is **not** set, the SDK
+  falls back to the same OAuth login the interactive `claude` CLI uses -
+  verified directly in this environment: with no key set, the SDK
+  authenticated via the existing `claude` CLI login and returned a real
+  response, and the result stream carried a `rate_limit_event` message
+  explicitly scoped to "claude.ai subscription users."
+  In other words: with no extra configuration, this behaves like the old
+  tmux companion did - it piggybacks on your existing Claude Code login and
+  subscription, at no additional cost beyond what that login already covers.
+- If you set `ANTHROPIC_API_KEY` to a real API key, the SDK uses that key
+  instead, and every capture and every message you type is billed as normal,
+  metered Claude API usage on that key - separate from, and in addition to,
+  your Claude Code subscription.
+- Anthropic's own SDK documentation is explicit that reusing a claude.ai
+  login is only sanctioned for personal use, not for a product you'd
+  distribute to other people: "Unless previously approved, Anthropic does
+  not allow third party developers to offer claude.ai login or rate limits
+  for their products... Use the API key authentication methods described in
+  the Quickstart instead."
+  Since this companion is a personal script that never leaves your machine,
+  the no-key default is the right choice here - just don't carry that
+  assumption into anything you'd hand to someone else.
+
+Working example (personal use, no separate billing - the default):
+
+```sh
+cd companion
+npm install
+node companion.js
 ```
 
-This tails `relay-server/data/captures.jsonl` for new Run/Submit captures
-and injects each one into the `leetcode-companion` pane, formatted with the
-problem title/slug, language, trigger (Run vs Submit), the problem
-statement (when the capture has one), and the captured code. It tracks its
-own offset into the log so restarting it does not replay captures it
-already injected.
+Working example (separately-billed API key):
 
-**Notes:**
+```sh
+cd companion
+npm install
+COMPANION_BACKEND=claude \
+ANTHROPIC_API_KEY=sk-ant-... \
+COMPANION_MODEL=claude-opus-5 \
+node companion.js
+```
 
-- Captures are only auto-injected while both the relay server and
-  `companion/watch.js` are running. If either is down, captures still get
-  durably logged to `captures.jsonl` (by the relay server) but won't show up
-  in the companion pane until `watch.js` is running again to catch up on
-  the newly appended lines.
-- This is a real Claude Code session, not a free or local model - every
-  injected capture and every message you type into it consumes normal
-  Claude usage for a response, the same as any other Claude Code session.
+`COMPANION_MODEL` is optional for this backend; unset, the SDK uses its own
+default model resolution (whatever the Claude Code CLI itself defaults to).
+
+### Backend: local (Ollama or any OpenAI-compatible endpoint)
+
+`COMPANION_BACKEND=local` talks plain HTTP to an OpenAI-compatible
+chat-completions endpoint - no SDK, no extra dependency, just `fetch`.
+It defaults to a local Ollama install and keeps its own in-process message
+history, resending the full conversation on every turn (standard OpenAI
+chat-completions shape).
+
+Verified directly in this environment against a locally running Ollama
+(`ollama list` showed `gemma3:12b` and `gemma4:26b` already pulled) - both a
+raw HTTP round trip and a full round trip through `companion.js` itself
+returned real model output.
+
+```sh
+# ollama pull llama3.2   # or any model you've already pulled - `ollama list` shows what's available
+cd companion
+npm install
+COMPANION_BACKEND=local \
+COMPANION_MODEL=llama3.2 \
+node companion.js
+```
+
+- `COMPANION_MODEL` is **required** for this backend (there's no sane
+  default across arbitrary local models) - `companion.js` exits with a clear
+  error if it's missing.
+- `COMPANION_BASE_URL` overrides the endpoint (default
+  `http://localhost:11434/v1`, Ollama's OpenAI-compatible route).
+- `COMPANION_API_KEY` is optional - most local servers ignore it, but it's
+  there for endpoints that expect a bearer token even for a dummy value.
+
+### Environment variables (reference)
+
+| Variable                       | Applies to | Default                       |
+| ------------------------------ | ---------- | ------------------------------ |
+| `COMPANION_BACKEND`            | both       | `claude`                       |
+| `COMPANION_MODEL`              | both       | unset (Claude); required for `local` |
+| `COMPANION_BASE_URL`           | local      | `http://localhost:11434/v1`    |
+| `COMPANION_API_KEY`            | local      | unset                          |
+| `ANTHROPIC_API_KEY`            | claude     | unset (falls back to CLI login) |
+| `LEETCODE_CAPTURES_FILE`       | both       | `relay-server/data/captures.jsonl` |
+| `LEETCODE_COMPANION_STATE_FILE`| both       | `companion/.companion-state.json` |
+| `LEETCODE_COMPANION_SCRATCH`   | claude     | `~/.local/state/leetcode-companion/scratch` |
+| `LEETCODE_COMPANION_POLL_MS`   | both       | `1000`                         |
+
+`LEETCODE_COMPANION_SCRATCH` mirrors the old tmux design's intent: the
+Claude backend's SDK session runs with that directory as its working
+directory, not this repo, so it never picks up this project's
+`CLAUDE.md`/`AGENTS.md` or file tree as context.

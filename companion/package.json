@@ -1,0 +1,14 @@
+{
+  "name": "leetcode-capture-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone terminal chat companion that comments on captured LeetCode Run/Submit attempts, backed by either the Claude Agent SDK or a local OpenAI-compatible model.",
+  "main": "companion.js",
+  "scripts": {
+    "start": "node companion.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.233"
+  }
+}

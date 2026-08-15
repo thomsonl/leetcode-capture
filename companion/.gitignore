@@ -1,2 +1,3 @@
-.watch-state.json
-.watch-state.json.tmp
+node_modules/
+.companion-state.json
+.companion-state.json.tmp
