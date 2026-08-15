@@ -6,7 +6,8 @@ and struggle/proficiency notes can be logged back into the Obsidian vault.
 
 ## Components
 
-- `extension/` - Chrome (Manifest V3) content script. Loads on
+- `extension/` - Manifest V3 content script, loadable in Chrome and in
+  Firefox/Zen Browser (Firefox 109+). Loads on
   `leetcode.com/problems/*`, reads the Monaco editor's current code on every
   Run/Submit click, and POSTs it to the local relay server. Makes no other
   network calls.
@@ -26,6 +27,28 @@ Delivery posture: local-only (no remote, no PR pipeline).
 3. Click "Load unpacked" and select the `extension/` directory.
 4. Open any `leetcode.com/problems/<slug>/` page. Open the DevTools console
    and confirm you see `[leetcode-capture] content script active`.
+
+### 1b. Load the extension in Firefox or Zen Browser
+
+The extension is Manifest V3 and works unchanged on Firefox 109+ and on
+Zen Browser (a Firefox/Gecko-based browser with the same WebExtensions
+engine and developer-load path).
+This was verified directly in this environment: both Firefox 153.0.4 and
+Zen Browser 1.21.9b installed `extension/` as a temporary add-on with no
+errors or manifest warnings, using the same underlying remote-debugging
+install path that `about:debugging` uses.
+
+1. Open `about:debugging#/runtime/this-firefox` (works the same in Zen).
+2. Click "Load Temporary Add-on".
+3. Select `extension/manifest.json`.
+4. Open any `leetcode.com/problems/<slug>/` page. Open the DevTools console
+   and confirm you see `[leetcode-capture] content script active`.
+
+Note: a temporary add-on unloads when the browser restarts, so this step
+needs to be repeated each session. Persisting it without reloading would
+require Mozilla's (free) unlisted-distribution signing - that's out of
+scope for this task, but is a future option if session-to-session
+persistence becomes worth the extra setup.
 
 ### 2. Start the relay server
 

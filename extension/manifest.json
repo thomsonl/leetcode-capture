@@ -12,5 +12,11 @@
   ],
   "host_permissions": [
     "http://localhost:8135/*"
-  ]
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "leetcode-capture@thomsonklee.dev",
+      "strict_min_version": "109.0"
+    }
+  }
 }
