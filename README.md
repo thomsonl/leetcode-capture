@@ -72,11 +72,14 @@ relay-server/data/captures.jsonl
 Override the log location with `CAPTURE_LOG_PATH`, and the port with
 `CAPTURE_PORT`, if needed.
 
-Each log line includes the problem slug/title, language, code content at
-click time, trigger (`"run"` or `"submit"`), the extension's timestamp, a
-server-assigned `receivedAt` timestamp, and a per-problem monotonic
-`attemptSeq` that survives server restarts (rebuilt from the existing log
-file on startup).
+Each log line includes the problem slug/title/description, language, code
+content at click time, trigger (`"run"` or `"submit"`), the extension's
+timestamp, a server-assigned `receivedAt` timestamp, and a per-problem
+monotonic `attemptSeq` that survives server restarts (rebuilt from the
+existing log file on startup). `problemDescription` is the full problem
+statement (prompt, examples, constraints) read from the page at capture
+time; it's `null` if the description panel couldn't be found (e.g. the page
+hadn't finished rendering yet).
 
 ### 3. Log a captured session into the vault
 
@@ -98,11 +101,14 @@ Options:
 
 The tool computes attempt count, elapsed time from the first Run to the
 accepted Submit (or the last Submit if never accepted), and appends a
-`### Capture session: <date>` block. It looks for an existing
-`Study/Algorithms/<Topic>.md` note in the vault whose `## LeetCode Problems`
-section links to that problem, and appends there. If no matching topic note
-exists, it creates `Study/Algorithms/Problems/<Problem Title>.md` following
-the vault's note conventions (see `~/Documents/My Brain/AGENTS.md`).
+`### Capture session: <date>` block. If any of the session's captures carry
+a `problemDescription`, the block also includes the problem statement, so
+the note has the question alongside the code and summary. It looks for an
+existing `Study/Algorithms/<Topic>.md` note in the vault whose
+`## LeetCode Problems` section links to that problem, and appends there. If
+no matching topic note exists, it creates
+`Study/Algorithms/Problems/<Problem Title>.md` following the vault's note
+conventions (see `~/Documents/My Brain/AGENTS.md`).
 
 This is manual and explicit by design for v1: run it on request for one
 already-captured session at a time. There is no automatic struggle
@@ -167,9 +173,10 @@ node companion/watch.js
 
 This tails `relay-server/data/captures.jsonl` for new Run/Submit captures
 and injects each one into the `leetcode-companion` pane, formatted with the
-problem title/slug, language, trigger (Run vs Submit), and the captured
-code. It tracks its own offset into the log so restarting it does not replay
-captures it already injected.
+problem title/slug, language, trigger (Run vs Submit), the problem
+statement (when the capture has one), and the captured code. It tracks its
+own offset into the log so restarting it does not replay captures it
+already injected.
 
 **Notes:**
 

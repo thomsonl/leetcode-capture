@@ -98,16 +98,23 @@ function formatMessage(capture) {
   const language = capture.language || 'unknown language';
   const label = triggerLabel(capture.trigger);
   const code = typeof capture.code === 'string' ? capture.code : '';
+  const description = typeof capture.problemDescription === 'string' ? capture.problemDescription : null;
   const fence = '```';
 
-  return [
+  const lines = [
     `[LeetCode capture] ${label} - ${title} (${slug})`,
     `Language: ${language}`,
+  ];
+  if (description) {
+    lines.push('', 'Problem:', description);
+  }
+  lines.push(
     '',
     `${fence}${languageFenceHint(language)}`,
     code,
     fence,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 // Best-effort hint for the markdown fence's language tag. Falls back to no

@@ -65,6 +65,7 @@ function appendCapture(body) {
     receivedAt: new Date().toISOString(),
     problemSlug: body.problemSlug,
     problemTitle: body.problemTitle || null,
+    problemDescription: body.problemDescription || null,
     language: body.language,
     trigger: body.trigger,
     timestamp: body.timestamp,

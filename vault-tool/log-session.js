@@ -91,9 +91,15 @@ function summarize(entries, accepted) {
     ? new Date(lastSubmit.timestamp) - new Date(firstRun.timestamp)
     : null;
 
+  // Not every capture necessarily carries a description (older captures
+  // predate this field, or the DOM panel wasn't found at capture time), so
+  // take the first one that has it.
+  const withDescription = entries.find((e) => e.problemDescription);
+
   return {
     problemSlug: entries[0].problemSlug,
     problemTitle: entries[0].problemTitle || entries[0].problemSlug,
+    problemDescription: withDescription ? withDescription.problemDescription : null,
     language: entries[entries.length - 1].language,
     attemptCount: entries.length,
     runCount: runs.length,
@@ -125,7 +131,11 @@ function buildNoteBlock(summary, freeformNote) {
   if (freeformNote) {
     lines.push(`- Note: ${freeformNote}`);
   }
-  return lines.join("\n") + "\n";
+  let block = lines.join("\n") + "\n";
+  if (summary.problemDescription) {
+    block += `\n**Problem statement:**\n\n${summary.problemDescription}\n`;
+  }
+  return block;
 }
 
 function findTopicNote(vaultPath, slug) {

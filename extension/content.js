@@ -26,6 +26,24 @@
     return document.title.replace(/\s*-\s*LeetCode\s*$/, "").trim();
   }
 
+  function getProblemDescription() {
+    // The full problem statement (prompt, examples, constraints) lives in a
+    // panel identified by `data-track-load="description_content"`. This was
+    // confirmed against live leetcode.com/problems/ pages (two-sum,
+    // valid-parentheses): it's an analytics/telemetry hook attribute, which
+    // tends to be far more stable across LeetCode's frontend rebuilds than
+    // its generated class names - same reasoning as the class-name churn
+    // noted for getProblemTitle() and getLanguage() above. A broader
+    // container (`#qd-content`) also matches but additionally picks up tab
+    // labels ("Description", "Editorial", "Solutions", ...) and other page
+    // chrome, so it's avoided here in favor of this narrower, stable panel.
+    const descEl = document.querySelector('[data-track-load="description_content"]');
+    if (descEl && descEl.textContent.trim()) {
+      return descEl.textContent.trim();
+    }
+    return null;
+  }
+
   function getLanguage() {
     // The language selector button shows the currently selected language.
     const langButtons = document.querySelectorAll("button");
@@ -80,6 +98,7 @@
     const payload = {
       problemSlug: getProblemSlug(),
       problemTitle: getProblemTitle(),
+      problemDescription: getProblemDescription(),
       language: getLanguage(),
       code,
       trigger, // "run" or "submit"
