@@ -77,9 +77,29 @@ function appendCapture(body) {
   return entry;
 }
 
+// CORS headers, sent on every response to /capture (including the OPTIONS
+// preflight). Chrome's content-script fetch() inherits the extension's
+// host_permissions grant and skips CORS entirely, but Firefox/Zen run
+// content-script fetch() as the page's own origin (https://leetcode.com),
+// so a cross-origin POST with a JSON body triggers a real preflight. This
+// server only binds to 127.0.0.1 and only ingests capture data (no
+// secrets, no destructive actions), so a permissive `*` origin is fine -
+// no need for an origin allowlist on a localhost-only dev tool.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 const server = http.createServer((req, res) => {
+  if (req.method === "OPTIONS" && req.url === "/capture") {
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
+
   if (req.method !== "POST" || req.url !== "/capture") {
-    res.writeHead(404, { "Content-Type": "application/json" });
+    res.writeHead(404, { "Content-Type": "application/json", ...CORS_HEADERS });
     res.end(JSON.stringify({ error: "not found" }));
     return;
   }
@@ -92,7 +112,7 @@ const server = http.createServer((req, res) => {
     received += chunk.length;
     if (received > MAX_BODY_BYTES) {
       aborted = true;
-      res.writeHead(413, { "Content-Type": "application/json" });
+      res.writeHead(413, { "Content-Type": "application/json", ...CORS_HEADERS });
       res.end(JSON.stringify({ error: "payload too large" }));
       req.destroy();
       return;
@@ -106,19 +126,19 @@ const server = http.createServer((req, res) => {
     try {
       body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     } catch {
-      res.writeHead(400, { "Content-Type": "application/json" });
+      res.writeHead(400, { "Content-Type": "application/json", ...CORS_HEADERS });
       res.end(JSON.stringify({ error: "invalid JSON" }));
       return;
     }
 
     if (!isValidCapture(body)) {
-      res.writeHead(400, { "Content-Type": "application/json" });
+      res.writeHead(400, { "Content-Type": "application/json", ...CORS_HEADERS });
       res.end(JSON.stringify({ error: "missing or invalid required fields" }));
       return;
     }
 
     const entry = appendCapture(body);
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(200, { "Content-Type": "application/json", ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: true, attemptSeq: entry.attemptSeq }));
   });
 

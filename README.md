@@ -81,6 +81,15 @@ statement (prompt, examples, constraints) read from the page at capture
 time; it's `null` if the description panel couldn't be found (e.g. the page
 hadn't finished rendering yet).
 
+The server answers CORS preflight (`OPTIONS`) requests and sends
+`Access-Control-Allow-Origin: *` on every response to `/capture`. This
+matters specifically for Firefox and Zen Browser: unlike Chrome, they run a
+content script's `fetch()` under the page's own origin
+(`https://leetcode.com`), so the cross-origin POST to `http://localhost:8135`
+is subject to normal CORS rules. Run `npm test` (or `node --test
+server.test.js`) in `relay-server/` to exercise this against a live instance
+of the server.
+
 ### 3. Log a captured session into the vault
 
 Once you've captured a session (a series of Run/Submit clicks on one
