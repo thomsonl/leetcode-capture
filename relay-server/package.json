@@ -5,6 +5,7 @@
   "description": "Localhost-only relay server that logs LeetCode editor captures to a JSON-lines file.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test server.test.js"
   }
 }
