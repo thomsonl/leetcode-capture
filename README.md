@@ -51,7 +51,14 @@ Note: a temporary add-on unloads when the browser restarts, so this step
 needs to be repeated each session. Persisting it without reloading would
 require Mozilla's (free) unlisted-distribution signing - that's out of
 scope for this task, but is a future option if session-to-session
-persistence becomes worth the extra setup.
+persistence becomes worth the extra setup. If that signing is attempted,
+note that `manifest.json`'s `browser_specific_settings.gecko` block
+already declares `data_collection_permissions` (required since Mozilla's
+November 2025 policy change): `websiteContent` is listed as `required`
+because the extension's core function is sending the captured problem
+content and code to the local relay server, and Mozilla's data-collection
+categories count that as "transmission" even though the destination is
+localhost.
 
 ### 2. Start the relay server
 
