@@ -51,57 +51,22 @@ Run/Submit clicks on a LeetCode problem page are injected into the chat as they 
 
 ### 3. (optional) Install the `leetcode` launcher
 
-`bin/leetcode` collapses the `cd companion && node companion.js` dance above into one command.
-Put it on your `PATH` once:
-
 ```sh
 mkdir -p ~/.local/bin
 ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode
 ```
-
-Make sure `~/.local/bin` is on your `PATH` (works the same from bash, zsh, or fish).
-Then from anywhere:
 
 ```sh
 leetcode         # Claude backend (default)
 leetcode -local  # local Ollama backend
 ```
 
-For `leetcode -local`, set `COMPANION_MODEL` yourself first (e.g. `COMPANION_MODEL=llama3.2`) - see "Use a local model instead" below.
+### Configure the local model
 
-### Use a local model instead
+Before using the local backend, set `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
 
-By default the companion talks to Claude Code.
-To use a local model via Ollama instead, set `COMPANION_BACKEND=local` and `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
+macOS/Linux (bash/zsh): `export COMPANION_MODEL=llama3.2`
 
-macOS/Linux (bash/zsh):
+Windows PowerShell: `$env:COMPANION_MODEL="llama3.2"`
 
-```sh
-COMPANION_BACKEND=local COMPANION_MODEL=llama3.2 node companion.js
-```
-
-Windows PowerShell:
-
-```powershell
-$env:COMPANION_BACKEND="local"; $env:COMPANION_MODEL="llama3.2"; node companion.js
-```
-
-Windows cmd:
-
-```cmd
-set COMPANION_BACKEND=local && set COMPANION_MODEL=llama3.2 && node companion.js
-```
-
-To switch back to Claude, just omit `COMPANION_BACKEND` (or set it to `claude`) and run `node companion.js` as usual.
-
-### Relay server (manual/standalone use)
-
-The companion starts and stops the relay server for you.
-To run it standalone instead:
-
-```sh
-cd relay-server
-node server.js
-```
-
-It listens on `http://127.0.0.1:8135` and logs captures to `relay-server/data/captures.jsonl`.
+Windows cmd: `set COMPANION_MODEL=llama3.2`
