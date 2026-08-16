@@ -4,6 +4,12 @@ A browser extension and local relay server that capture LeetCode editor content 
 A vault tool and companion program turn captured sessions into struggle/proficiency notes logged back into an Obsidian vault.
 The companion also gives running commentary on attempts as they happen and doubles as a normal chat session.
 
+## Requirements
+
+- Node.js.
+- An LLM CLI: the companion's default backend uses the Claude Agent SDK, which relies on an installed, logged-in `claude` CLI (Claude Code).
+- The companion also supports a local backend via Ollama (`COMPANION_BACKEND=local`) if you don't want to use the Claude CLI.
+
 ## Setup
 
 ### 1. Load the extension
