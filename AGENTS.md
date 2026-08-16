@@ -23,6 +23,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   'claude_code' }` form preserves the default. That's intentional here (no tools, not acting as a
   coding agent over this repo), but is the first thing to check if Claude-backend responses ever
   seem to be missing Claude Code's usual framing.
+- `companion.js` owns the relay server's lifecycle: it health-checks (`OPTIONS /capture`) on
+  startup, spawns `node server.js` detached only if nothing answers, and stops only the instance it
+  spawned (tracked in `relayServerChild`) via a `process.on('exit', ...)` handler, so a server it
+  found already running is never touched. This is a deliberate durability tradeoff from the
+  server's old always-on behavior - see README.md → Companion for what changed. Verified end-to-end
+  (not just read) in the PR that introduced this: auto-start + real capture flow, exit kills the
+  spawned server, and a manually-started server survives companion exit untouched.
+- Every commit message and PR description in this repo is written in first person (I/my/mine) -
+  the repo's own account is the author, so never refer to the user in the third person.
 
 ## Maintaining this file
 

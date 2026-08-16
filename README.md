@@ -55,6 +55,18 @@ persistence becomes worth the extra setup.
 
 ### 2. Start the relay server
 
+Normally you don't need this step on its own.
+`companion/companion.js` (see [Companion](#companion) below) checks
+whether the relay server is already running when it starts, and starts one
+itself if not, so `node companion.js` alone is the whole workflow.
+Run this step manually only if you want the relay server up independent of
+the companion - for example, testing the extension by itself, or logging a
+session before you've started `companion.js`.
+A manually-started server is left alone by the companion: it won't be
+stopped when `companion.js` exits.
+See the durability tradeoff note in [Companion](#companion) for what
+changed here.
+
 ```sh
 cd relay-server
 node server.js
@@ -155,6 +167,33 @@ submitted it yourself.
 There is no tmux pane and no pane-scraping: it prints the real response
 directly, whether it came from an injected capture or something you typed.
 
+It also owns the relay server's lifecycle, not just its own.
+On launch it checks whether the relay server is already answering on its
+configured host/port.
+If nothing answers, it starts one itself (`node server.js`, inheriting
+`CAPTURE_PORT`/`CAPTURE_LOG_PATH` from its own environment if those are
+set) as a detached background process and prints `companion: relay server
+not detected, starting it now`.
+On exit - `/exit`/`/quit`, Ctrl+C, or any other termination path - it stops
+the relay server it started, but only the one it started: if it found a
+relay server already running (started manually, or left over from another
+companion instance), it leaves that one alone on both ends, neither
+spawning a second one nor stopping it on exit.
+The result is one command, `node companion.js`, instead of two.
+
+**Durability tradeoff.** This is a deliberate change from the relay
+server's previous behavior of always durably logging regardless of whether
+anything was reading the log.
+The relay server's lifetime is now tied to the companion's: if
+`companion.js` isn't running, nobody's reading `captures.jsonl` live, so
+there's no default relay server keeping captures around either.
+A capture made while the extension is loaded but `companion.js` isn't
+running is lost, not queued - it never reaches a server to log it.
+If you need durable logging independent of the companion, start the relay
+server manually first (see [Start the relay server](#2-start-the-relay-server)).
+`companion.js` will detect it, use it, and leave it running on exit rather
+than starting and later stopping its own.
+
 It supports two swappable backends, chosen with `COMPANION_BACKEND`.
 Both backends are given the same tutor system prompt (defined once in
 `companion.js` as `TUTOR_SYSTEM_PROMPT`) so behavior is consistent across
@@ -189,7 +228,11 @@ endpoint over plain HTTP - but `npm install` still needs to run once so
 node companion/companion.js
 ```
 
-One process, one command.
+One process, one command - it starts the relay server for you if nothing
+answers on its configured port yet, and stops the one it started again on
+exit.
+See the durability tradeoff note above for what that means for captures
+made while `companion.js` isn't running.
 It prints a startup banner (backend, model, and the capture log it's
 watching), then drops you into a normal chat prompt.
 Type into it directly at any time - before, after, or in the middle of an
@@ -197,14 +240,14 @@ injected capture - and it sends what you typed the moment you press Enter.
 A capture that arrives while you're mid-line never touches what you've
 already typed; it prints above your prompt and redraws your in-progress
 input afterward.
-`/exit` or `/quit` (or Ctrl+C) ends the session.
+`/exit` or `/quit` (or Ctrl+C) ends the session, and stops the relay server
+too if this instance was the one that started it.
 
-Captures are only auto-injected while both the relay server and
-`companion/companion.js` are running.
-If either is down, captures still get durably logged to `captures.jsonl`
-(by the relay server) but won't show up in the companion chat until
-`companion.js` is running again to catch up on the newly appended lines -
-it tracks its own byte offset into the log (in
+Captures are only auto-injected while `companion/companion.js` itself is
+running - it's now the process that keeps the relay server alive, so the
+old "both the relay server and companion.js need to be up" caveat
+collapses into just one.
+`companion.js` tracks its own byte offset into the log (in
 `companion/.companion-state.json`, gitignored) so restarting it does not
 replay captures it already injected.
 
@@ -326,6 +369,15 @@ zero emoji characters across the whole transcript.
 | `LEETCODE_COMPANION_STATE_FILE`| both       | `companion/.companion-state.json` |
 | `LEETCODE_COMPANION_SCRATCH`   | claude     | `~/.local/state/leetcode-companion/scratch` |
 | `LEETCODE_COMPANION_POLL_MS`   | both       | `1000`                         |
+| `CAPTURE_PORT`                 | both       | `8135` (relay server's own default) |
+| `CAPTURE_LOG_PATH`             | both       | `relay-server/data/captures.jsonl` (relay server's own default) |
+
+`CAPTURE_PORT` and `CAPTURE_LOG_PATH` are relay-server variables
+(documented in [Start the relay server](#2-start-the-relay-server)), but
+`companion.js` reads them too now: it uses `CAPTURE_PORT` for its health
+check and passes both straight through to the relay server it spawns, so a
+custom port or log path stays consistent whether the server was started
+manually or by the companion.
 
 `LEETCODE_COMPANION_SCRATCH` mirrors the old tmux design's intent: the
 Claude backend's SDK session runs with that directory as its working
