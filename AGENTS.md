@@ -17,6 +17,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   printed above the prompt and the prompt is redrawn with the saved line/cursor reinserted
   (`printAboveInput` in `companion.js`). See `README.md` → Companion for credentials, setup, and
   the verified behavior difference between the two backends' auth.
+- Both companion backends share one tutor persona, `TUTOR_SYSTEM_PROMPT` in `companion.js`. For
+  the Claude backend, passing it as a plain `systemPrompt` string *replaces* Claude Code's own
+  default system prompt rather than appending to it - only the SDK's `{ type: 'preset', preset:
+  'claude_code' }` form preserves the default. That's intentional here (no tools, not acting as a
+  coding agent over this repo), but is the first thing to check if Claude-backend responses ever
+  seem to be missing Claude Code's usual framing.
 
 ## Maintaining this file
 
