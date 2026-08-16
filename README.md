@@ -49,6 +49,26 @@ This starts the relay server automatically and drops you into a chat prompt.
 Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
 `/exit` or `/quit` (or Ctrl+C) ends the session.
 
+### 3. (optional) Install the `leetcode` launcher
+
+`bin/leetcode` collapses the `cd companion && node companion.js` dance above into one command.
+Put it on your `PATH` once:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode
+```
+
+Make sure `~/.local/bin` is on your `PATH` (works the same from bash, zsh, or fish).
+Then from anywhere:
+
+```sh
+leetcode         # Claude backend (default)
+leetcode -local  # local Ollama backend
+```
+
+For `leetcode -local`, set `COMPANION_MODEL` yourself first (e.g. `COMPANION_MODEL=llama3.2`) - see "Use a local model instead" below.
+
 ### Use a local model instead
 
 By default the companion talks to Claude Code.
