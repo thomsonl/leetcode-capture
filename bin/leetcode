@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: leetcode [-claude]" >&2
+  echo "  leetcode          start the companion with the local Ollama backend" >&2
+  echo "  leetcode -claude  start the companion with the Claude backend" >&2
+}
+
+if [ "$#" -eq 0 ]; then
+  export COMPANION_BACKEND=local
+  export COMPANION_MODEL="${COMPANION_MODEL:-gemma3:12b}"
+elif [ "$#" -eq 1 ] && [ "$1" = "-claude" ]; then
+  export COMPANION_BACKEND=claude
+else
+  usage
+  exit 1
+fi
+
+source="${BASH_SOURCE[0]}"
+while [ -h "$source" ]; do
+  target="$(readlink "$source")"
+  case "$target" in
+    /*) source="$target" ;;
+    *) source="$(dirname "$source")/$target" ;;
+  esac
+done
+script_dir="$(cd "$(dirname "$source")" && pwd)"
+cd "$script_dir/../companion"
+exec node companion.js
