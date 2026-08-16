@@ -49,6 +49,31 @@ This starts the relay server automatically and drops you into a chat prompt.
 Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
 `/exit` or `/quit` (or Ctrl+C) ends the session.
 
+### Use a local model instead
+
+By default the companion talks to Claude Code.
+To use a local model via Ollama instead, set `COMPANION_BACKEND=local` and `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
+
+macOS/Linux (bash/zsh):
+
+```sh
+COMPANION_BACKEND=local COMPANION_MODEL=llama3.2 node companion.js
+```
+
+Windows PowerShell:
+
+```powershell
+$env:COMPANION_BACKEND="local"; $env:COMPANION_MODEL="llama3.2"; node companion.js
+```
+
+Windows cmd:
+
+```cmd
+set COMPANION_BACKEND=local && set COMPANION_MODEL=llama3.2 && node companion.js
+```
+
+To switch back to Claude, just omit `COMPANION_BACKEND` (or set it to `claude`) and run `node companion.js` as usual.
+
 ### Relay server (manual/standalone use)
 
 The companion starts and stops the relay server for you.
