@@ -58,6 +58,17 @@ Each message you receive is either the student's own code from a Run/Submit atte
 
 Keep your tone warm and encouraging, like a good teaching assistant - not terse, not clinical.`;
 
+// Local-backend-only style addendum: two of Thomson's general writing-style
+// preferences (from his global agent instructions) that are actually about
+// what the model says out loud, unlike the rest of that file which is
+// engineering-workflow guidance that doesn't apply to a chat companion. The
+// Claude backend already inherits these independently from Thomson's real
+// global Claude preferences, so they're kept separate here rather than
+// folded into the shared TUTOR_SYSTEM_PROMPT above.
+const LOCAL_STYLE_ADDENDUM = `Two additional style rules for your responses:
+- Never use an em dash ("—"). Use a plain dash ("-") instead.
+- Never use emojis.`;
+
 const SCRATCH_DIR =
   process.env.LEETCODE_COMPANION_SCRATCH ||
   path.join(os.homedir(), '.local', 'state', 'leetcode-companion', 'scratch');
@@ -142,7 +153,8 @@ class LocalBackend {
     this.apiKey = apiKey;
     // Standard OpenAI chat-completions shape: a leading `role: 'system'`
     // message, resent in full on every turn along with the rest of history.
-    this.history = [{ role: 'system', content: TUTOR_SYSTEM_PROMPT }];
+    // Local-backend-only: append the style addendum (see LOCAL_STYLE_ADDENDUM).
+    this.history = [{ role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${LOCAL_STYLE_ADDENDUM}` }];
   }
 
   async sendMessage(text) {
