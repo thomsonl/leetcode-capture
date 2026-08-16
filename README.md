@@ -61,27 +61,12 @@ leetcode         # Claude backend (default)
 leetcode -local  # local Ollama backend
 ```
 
-### Use a local model instead
+### Configure the local model
 
-By default the companion talks to Claude Code.
-To use a local model via Ollama instead, set `COMPANION_BACKEND=local` and `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
+Before using the local backend, set `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
 
-macOS/Linux (bash/zsh):
+macOS/Linux (bash/zsh): `export COMPANION_MODEL=llama3.2`
 
-```sh
-COMPANION_BACKEND=local COMPANION_MODEL=llama3.2 node companion.js
-```
+Windows PowerShell: `$env:COMPANION_MODEL="llama3.2"`
 
-Windows PowerShell:
-
-```powershell
-$env:COMPANION_BACKEND="local"; $env:COMPANION_MODEL="llama3.2"; node companion.js
-```
-
-Windows cmd:
-
-```cmd
-set COMPANION_BACKEND=local && set COMPANION_MODEL=llama3.2 && node companion.js
-```
-
-To switch back to Claude, just omit `COMPANION_BACKEND` (or set it to `claude`) and run `node companion.js` as usual.
+Windows cmd: `set COMPANION_MODEL=llama3.2`
