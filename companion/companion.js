@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,6 +79,13 @@ const CAPTURES_PATH =
 const STATE_PATH =
   process.env.LEETCODE_COMPANION_STATE_FILE || path.join(__dirname, '.companion-state.json');
 const POLL_MS = Number(process.env.LEETCODE_COMPANION_POLL_MS || 1000);
+
+// Mirrors server.js's own HOST/PORT resolution exactly (127.0.0.1, and
+// CAPTURE_PORT if set) so the health check below asks the same address the
+// relay server actually binds to.
+const RELAY_HOST = '127.0.0.1';
+const RELAY_PORT = process.env.CAPTURE_PORT ? Number(process.env.CAPTURE_PORT) : 8135;
+const RELAY_SERVER_DIR = path.join(REPO_ROOT, 'relay-server');
 
 // --- backend adapters -------------------------------------------------------
 //
@@ -195,6 +203,91 @@ function makeBackend() {
 }
 
 const backend = makeBackend();
+
+// --- relay server lifecycle -------------------------------------------------
+//
+// companion.js now owns the relay server's lifecycle: it starts one on
+// launch if nothing is already listening, and stops the one it started when
+// it exits - one command instead of two. If a server was already running
+// (started separately, or left over from another companion instance), this
+// instance leaves it alone on both ends: it doesn't spawn a second one, and
+// it doesn't stop it on exit. See the "Companion" section of the top-level
+// README.md for the durability tradeoff this implies (captures during a gap
+// where companion.js isn't running are no longer durably logged).
+
+// Set only if *this* process spawned the relay server; stays null if an
+// already-running server was found instead, so the exit handler below knows
+// whether it's allowed to stop it.
+let relayServerChild = null;
+
+async function isRelayServerUp() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 500);
+  try {
+    // OPTIONS /capture is answered unconditionally by server.js (see its
+    // CORS_HEADERS comment) regardless of body or other headers, making it
+    // the cheapest real request to probe with - a plain TCP connect would
+    // also tell us *something* is listening on the port, but not that it's
+    // actually this relay server.
+    await fetch(`http://${RELAY_HOST}:${RELAY_PORT}/capture`, {
+      method: 'OPTIONS',
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function ensureRelayServer() {
+  if (await isRelayServerUp()) return;
+
+  // Pass the environment through unchanged: if Thomson set CAPTURE_PORT or
+  // CAPTURE_LOG_PATH for this companion invocation, server.js reads those
+  // same variables itself, so the spawned server naturally stays in sync
+  // with whatever this companion process is configured for.
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: RELAY_SERVER_DIR,
+    env: process.env,
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  relayServerChild = child;
+  console.log('companion: relay server not detected, starting it now');
+
+  // Wait (bounded) for it to actually come up, so the very first capture
+  // isn't lost to a race between spawning it and its listen() callback.
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await isRelayServerUp()) return;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  console.error(
+    `companion: warning: started the relay server but it hasn't answered on http://${RELAY_HOST}:${RELAY_PORT} yet - continuing anyway`
+  );
+}
+
+function stopRelayServerIfOwned() {
+  if (!relayServerChild) return;
+  try {
+    process.kill(relayServerChild.pid, 'SIGTERM');
+  } catch {
+    // Already gone (e.g. it crashed on its own) - nothing to do.
+  }
+  relayServerChild = null;
+}
+
+// A synchronous 'exit' handler is the one place guaranteed to run
+// regardless of which path led there - rl.close() -> process.exit(0) after
+// /exit, /quit, or Ctrl+C; the pollLoop fatal-error process.exit(1); or a
+// plain fall-through exit - so it's the single point of truth for "did this
+// instance start the server, and if so, stop it."
+process.on('exit', stopRelayServerIfOwned);
 
 // --- capture formatting (adapted from the old watch.js) --------------------
 
@@ -421,6 +514,8 @@ async function pollLoop() {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => rl.close());
 }
+
+await ensureRelayServer();
 
 console.log(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`);
 console.log(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`);
