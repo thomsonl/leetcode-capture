@@ -44,6 +44,22 @@
     return null;
   }
 
+  function getProblemTags() {
+    // LeetCode's own topic tags (e.g. "Array", "Dynamic Programming") live as
+    // plain anchor links to /tag/<slug>/ inside the collapsible "Topics"
+    // panel below the description. Verified directly against live
+    // leetcode.com/problems/ pages (two-sum, house-robber) with
+    // chrome-devtools-axi: `a[href^="/tag/"]` matches exactly the topic tags
+    // and nothing else on the page, and the links are present in the DOM
+    // even while the panel is visually collapsed (height: 0 via CSS, not
+    // absent) - no click/expand needed, no extra permissions.
+    const links = document.querySelectorAll('a[href^="/tag/"]');
+    const tags = Array.from(links)
+      .map((a) => a.textContent.trim())
+      .filter(Boolean);
+    return tags;
+  }
+
   function getLanguage() {
     // The language selector button shows the currently selected language.
     const langButtons = document.querySelectorAll("button");
@@ -99,6 +115,7 @@
       problemSlug: getProblemSlug(),
       problemTitle: getProblemTitle(),
       problemDescription: getProblemDescription(),
+      problemTags: getProblemTags(),
       language: getLanguage(),
       code,
       trigger, // "run" or "submit"

@@ -25,7 +25,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
+const { defaultVaultPath, safeFileName, findTopicNoteByProblemLink } = require("./vault-notes");
 
 function parseArgs(argv) {
   const args = { dryRun: false, accepted: false };
@@ -138,22 +138,6 @@ function buildNoteBlock(summary, freeformNote) {
   return block;
 }
 
-function findTopicNote(vaultPath, slug) {
-  const algDir = path.join(vaultPath, "Study", "Algorithms");
-  if (!fs.existsSync(algDir)) return null;
-
-  const files = fs.readdirSync(algDir).filter((f) => f.endsWith(".md"));
-  const needle = `/problems/${slug}/`;
-  for (const file of files) {
-    const fullPath = path.join(algDir, file);
-    const content = fs.readFileSync(fullPath, "utf8");
-    if (content.includes(needle)) {
-      return fullPath;
-    }
-  }
-  return null;
-}
-
 function appendToTopicNote(filePath, noteBlock) {
   let content = fs.readFileSync(filePath, "utf8");
   const sectionHeader = "## LeetCode Problems";
@@ -183,8 +167,7 @@ function createPerProblemNote(vaultPath, summary, noteBlock) {
   const problemsDir = path.join(vaultPath, "Study", "Algorithms", "Problems");
   fs.mkdirSync(problemsDir, { recursive: true });
 
-  const safeName = summary.problemTitle.replace(/[\\/:*?"<>|]/g, "-");
-  const filePath = path.join(problemsDir, `${safeName}.md`);
+  const filePath = path.join(problemsDir, `${safeFileName(summary.problemTitle)}.md`);
 
   const frontmatter = "---\ntags:\n  - study/algorithms\n---\n\n";
   const heading = `[${summary.problemTitle}](https://leetcode.com/problems/${summary.problemSlug}/)\n\n`;
@@ -210,7 +193,7 @@ function main() {
   }
 
   const logPath = args.log || path.join(__dirname, "..", "relay-server", "data", "captures.jsonl");
-  const vaultPath = args.vault || path.join(os.homedir(), "Documents", "My Brain");
+  const vaultPath = args.vault || defaultVaultPath();
 
   const entries = loadCaptures(logPath, args.slug);
   const summary = summarize(entries, args.accepted);
@@ -221,7 +204,7 @@ function main() {
     return;
   }
 
-  const topicNote = findTopicNote(vaultPath, args.slug);
+  const topicNote = findTopicNoteByProblemLink(vaultPath, args.slug);
   if (topicNote) {
     appendToTopicNote(topicNote, noteBlock);
     console.log(`Appended capture session to ${topicNote}`);

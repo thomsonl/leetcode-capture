@@ -6,7 +6,8 @@
   "description": "Standalone terminal chat companion that comments on captured LeetCode Run/Submit attempts, backed by either the Claude Agent SDK or a local OpenAI-compatible model.",
   "main": "companion.js",
   "scripts": {
-    "start": "node companion.js"
+    "start": "node companion.js",
+    "test": "node --test vault-summary.test.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.233"

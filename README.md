@@ -84,14 +84,18 @@ relay-server/data/captures.jsonl
 Override the log location with `CAPTURE_LOG_PATH`, and the port with
 `CAPTURE_PORT`, if needed.
 
-Each log line includes the problem slug/title/description, language, code
-content at click time, trigger (`"run"` or `"submit"`), the extension's
-timestamp, a server-assigned `receivedAt` timestamp, and a per-problem
-monotonic `attemptSeq` that survives server restarts (rebuilt from the
-existing log file on startup). `problemDescription` is the full problem
-statement (prompt, examples, constraints) read from the page at capture
-time; it's `null` if the description panel couldn't be found (e.g. the page
-hadn't finished rendering yet).
+Each log line includes the problem slug/title/description/tags, language,
+code content at click time, trigger (`"run"` or `"submit"`), the
+extension's timestamp, a server-assigned `receivedAt` timestamp, and a
+per-problem monotonic `attemptSeq` that survives server restarts (rebuilt
+from the existing log file on startup). `problemDescription` is the full
+problem statement (prompt, examples, constraints) read from the page at
+capture time; it's `null` if the description panel couldn't be found (e.g.
+the page hadn't finished rendering yet). `problemTags` is LeetCode's own
+topic tags for the problem (e.g. `["Array", "Dynamic Programming"]`, read
+from the page's "Topics" panel), or `[]` if none were found; the companion's
+[Vault auto-summary](#vault-auto-summary) feature is what actually uses
+this field.
 
 The server answers CORS preflight (`OPTIONS`) requests and sends
 `Access-Control-Allow-Origin: *` on every response to `/capture`. This
@@ -134,6 +138,13 @@ conventions (see `~/Documents/My Brain/AGENTS.md`).
 This is manual and explicit by design for v1: run it on request for one
 already-captured session at a time. There is no automatic struggle
 classifier and no background sync loop.
+
+The topic/per-problem note-linking logic this relies on
+(`findTopicNoteByProblemLink`, `ensurePerProblemNoteFile`, and generic
+section read/write helpers) lives in `vault-tool/vault-notes.js`, shared
+with the companion's automatic vault auto-summary feature (see
+[Vault auto-summary](#vault-auto-summary) below) rather than duplicated
+between the two. Run `npm test` in `vault-tool/` to exercise it.
 
 ## Fixtures
 
@@ -356,6 +367,86 @@ describing the approach, confirming correctness, flagging non-optimal
 complexity, and giving a real hint only once asked - with zero em dashes and
 zero emoji characters across the whole transcript.
 
+### Vault auto-summary
+
+Off by default. Set `VAULT_AUTO_SUMMARY=1` to turn on a feature specific to
+Thomson's own Obsidian vault: every **Submit** (not Run) turns the
+companion's own tutoring commentary on that submission into a durable,
+structured note under `Study/Algorithms/` in the vault, instead of that
+commentary living only in the ephemeral terminal chat. A portable checkout
+of this repo for someone else won't have this vault's structure, or even
+use Obsidian, so this stays off unless explicitly enabled - Thomson turns it
+on in his own untracked environment (`VAULT_AUTO_SUMMARY=1`, and optionally
+`VAULT_PATH` if the vault isn't at the default `~/Documents/My Brain`).
+
+**No second LLM call.** The whole point is to reuse the tutoring response
+that's already being generated for the Submit, not summarize it again
+separately. When the toggle is on, a Submit's capture message gets one
+extra instruction appended, asking the model to tack a machine-readable
+block onto the very end of the same reply it was already going to give.
+The companion parses that block back off before printing the reply, so the
+chat experience in the terminal is unchanged - the block never appears
+there. See `companion/vault-summary.js` for the addendum text, the parsing,
+and the note-writing logic (kept in its own module, separate from
+`companion.js`'s readline/relay-server plumbing, specifically so it can be
+unit-tested directly - `npm test` in `companion/`).
+
+**What gets written**, distilled from that same response:
+- What the student is doing right, and what they're not connecting - one
+  short paragraph each.
+- A **per-problem rating, out of 5 stars**: how the submitted code's time
+  complexity compares to the best achievable complexity for that specific
+  problem. Matching the optimal is 5 stars regardless of what the optimal
+  actually is.
+- A **per-topic rating, out of 10**: a holistic proficiency judgment for
+  that topic overall (e.g. Dynamic Programming), considering every attempt
+  at it the model knows about - not a strict average of the star ratings.
+
+**Known honest limitation.** Both of those ratings are LLM judgment calls,
+not verified facts - LeetCode doesn't expose either "the optimal complexity
+for this problem" or "what complexity is this code" directly, so the model
+has to infer both. This is reliable for well-known problems and can be
+wrong on obscure ones; treat a 5-star rating as informed opinion, not a
+verified benchmark.
+
+**Topic tags come from LeetCode itself**, not from the model. The
+extension reads them from the page's own "Topics" panel
+(`a[href^="/tag/"]`, e.g. `Array`, `Dynamic Programming`) and sends them
+through as `problemTags` on the capture - see `extension/content.js`. This
+was verified directly against live `leetcode.com/problems/` pages
+(`two-sum`, `house-robber`) with `chrome-devtools-axi`: those links are
+present in the DOM even while the Topics panel is visually collapsed (CSS
+`height: 0`, not absent), so no click/expand or extra permission is needed
+to read them - the same "confirm the real DOM, don't assume it" pattern
+already used for `problemDescription` in this repo.
+
+**Note structure**, extending `vault-tool`'s existing per-problem/per-topic
+linking rather than a new pattern:
+- Each problem gets its own note under `Study/Algorithms/Problems/<Problem
+  Title>.md` (the same file `vault-tool/log-session.js` would use), with an
+  `## AI Notes` section carrying the rating, complexity note, doing-right/
+  not-connecting summary, and wikilinks up to whichever topic note(s) it
+  matched.
+- Only LeetCode tags that already have a curated `Study/Algorithms/<Tag>.md`
+  note in the vault get linked and rated - a raw tag with no note yet (e.g.
+  `Array` and `Hash Table` have none as of this writing) is still recorded
+  as plain text on the problem note, but doesn't get a topic index entry.
+  This deliberately never auto-creates a new topic note for every raw
+  LeetCode tag; those are curated concept notes with real prose, not stubs
+  to generate.
+- Each matched topic note gets an `## AI Topic Index` section: the overall
+  proficiency line plus one wikilinked bullet per problem attempted under
+  it, rebuilt each time so updating one problem's line never disturbs the
+  others.
+- Every write is an in-place rewrite of that specific section, not an
+  append - a repeated Submit on the same problem reads what's already in
+  its `## AI Notes` section first and factors that into the new version
+  (fed back to the model as context in the same addendum), rather than
+  discarding it. `vault-tool/vault-notes.js`'s `upsertSection`/`readSection`
+  do the actual read-modify-write; `vault-tool/vault-notes.test.js` and
+  `companion/vault-summary.test.js` both cover this directly, including
+  that repeated identical writes are idempotent.
+
 ### Environment variables (reference)
 
 | Variable                       | Applies to | Default                       |
@@ -371,6 +462,8 @@ zero emoji characters across the whole transcript.
 | `LEETCODE_COMPANION_POLL_MS`   | both       | `1000`                         |
 | `CAPTURE_PORT`                 | both       | `8135` (relay server's own default) |
 | `CAPTURE_LOG_PATH`             | both       | `relay-server/data/captures.jsonl` (relay server's own default) |
+| `VAULT_AUTO_SUMMARY`           | both       | off (unset/`0`) - set `1`/`true`/`yes` to enable |
+| `VAULT_PATH`                   | both       | `~/Documents/My Brain` (only read when `VAULT_AUTO_SUMMARY` is on) |
 
 `CAPTURE_PORT` and `CAPTURE_LOG_PATH` are relay-server variables
 (documented in [Start the relay server](#2-start-the-relay-server)), but
