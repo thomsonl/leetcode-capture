@@ -6,9 +6,18 @@ The companion also gives running commentary on attempts as they happen and doubl
 
 ## Requirements
 
-- Node.js.
-- An LLM CLI: the companion's default backend uses the Claude Agent SDK, which relies on an installed, logged-in `claude` CLI (Claude Code).
-- The companion also supports a local backend via Ollama (`COMPANION_BACKEND=local`) if you don't want to use the Claude CLI.
+- **Node.js**
+  - macOS: `brew install node`
+  - Linux: use your distro's package manager (e.g. `sudo apt install nodejs npm` on Debian/Ubuntu) or https://nodejs.org
+  - Windows: `winget install OpenJS.NodeJS.LTS` or the installer from https://nodejs.org
+- **Claude Code** (the `claude` CLI) - the companion's default backend uses the Claude Agent SDK, which relies on an installed, logged-in `claude` CLI.
+  - macOS/Linux: `curl -fsSL https://claude.ai/install.sh | bash`
+  - Windows (PowerShell): `irm https://claude.ai/install.ps1 | iex`
+  - Or via npm on any OS: `npm install -g @anthropic-ai/claude-code`
+- **Ollama** (optional, only for the local backend, `COMPANION_BACKEND=local`)
+  - macOS: `brew install ollama` or https://ollama.com/download
+  - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
+  - Windows: installer from https://ollama.com/download
 
 ## Setup
 
