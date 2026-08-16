@@ -2,16 +2,15 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: leetcode [-claude]" >&2
-  echo "  leetcode          start the companion with the local Ollama backend" >&2
-  echo "  leetcode -claude  start the companion with the Claude backend" >&2
+  echo "usage: leetcode [-local]" >&2
+  echo "  leetcode         start the companion with the Claude backend" >&2
+  echo "  leetcode -local  start the companion with the local Ollama backend" >&2
 }
 
 if [ "$#" -eq 0 ]; then
-  export COMPANION_BACKEND=local
-  export COMPANION_MODEL="${COMPANION_MODEL:-gemma3:12b}"
-elif [ "$#" -eq 1 ] && [ "$1" = "-claude" ]; then
   export COMPANION_BACKEND=claude
+elif [ "$#" -eq 1 ] && [ "$1" = "-local" ]; then
+  export COMPANION_BACKEND=local
 else
   usage
   exit 1

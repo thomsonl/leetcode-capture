@@ -63,11 +63,11 @@ Make sure `~/.local/bin` is on your `PATH` (works the same from bash, zsh, or fi
 Then from anywhere:
 
 ```sh
-leetcode          # local Ollama backend, default model gemma3:12b
-leetcode -claude  # Claude backend
+leetcode         # Claude backend (default)
+leetcode -local  # local Ollama backend
 ```
 
-`leetcode` honors an existing `COMPANION_MODEL` if you've already set one; otherwise it defaults to `gemma3:12b` for the local backend.
+For `leetcode -local`, set `COMPANION_MODEL` yourself first (e.g. `COMPANION_MODEL=llama3.2`) - see "Use a local model instead" below.
 
 ### Use a local model instead
 
