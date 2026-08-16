@@ -49,15 +49,6 @@ This starts the relay server automatically and drops you into a chat prompt.
 Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
 `/exit` or `/quit` (or Ctrl+C) ends the session.
 
-### 3. Log a captured session into the vault (optional)
-
-```sh
-node vault-tool/log-session.js --slug two-sum --note "Brute force first, then hashmap trick." --accepted
-```
-
-Options: `--slug`, `--log`, `--vault`, `--note`, `--accepted`, `--dry-run`.
-See `vault-tool/log-session.js` for details.
-
 ### Relay server (manual/standalone use)
 
 The companion starts and stops the relay server for you.
