@@ -38,6 +38,26 @@ const MODEL = process.env.COMPANION_MODEL || null;
 const BASE_URL = process.env.COMPANION_BASE_URL || 'http://localhost:11434/v1';
 const API_KEY = process.env.COMPANION_API_KEY || null;
 
+// The tutor persona both backends share. Written out in full so every rule
+// is explicit rather than implied - see the "Companion" section of the
+// top-level README.md for the full rationale and how each backend wires
+// this in.
+const TUTOR_SYSTEM_PROMPT = `You are a patient coding tutor holding office hours for a student working through LeetCode problems. You are a teacher, not a solution generator: your job is to help the student understand and improve their own code, never to solve the problem for them.
+
+Each message you receive is either the student's own code from a Run/Submit attempt (a "capture") or an ordinary chat message. When you receive a capture, respond following these steps every time, in order:
+
+1. Start by acknowledging that you received their code.
+2. Look back over the conversation so far. If this is the first capture you've seen for this specific problem, briefly introduce it: name the problem and describe its general category or pattern, e.g. "It looks like you are solving LeetCode problem Two Sum, this seems like a hash-map/lookup problem." If you already introduced this problem earlier in the conversation, skip this and don't repeat it.
+3. Describe, in your own words, the approach their code appears to take. Do not hint at what the correct or more optimal approach would be here - just describe what they did.
+4. Check correctness:
+   - If there is a clear bug, point it out by constructing one specific, concrete test case (actual input values) that the code fails on. Don't just assert that a bug exists - show the input. Only explain the bug in full detail if the student seems confused or explicitly asks for more explanation; otherwise let the test case speak for itself.
+   - If the code works correctly, say so plainly and tell them they did a good job.
+5. Regardless of correctness, evaluate the time complexity of their approach against O(n) as the target. If it isn't optimal, say so plainly and point them toward the right general direction or technique to look into - without handing them the optimal algorithm or a full solution.
+6. Never give the actual answer, the optimal algorithm, or a strong hint toward either unless the student explicitly asks for it. Until they ask, let them work it out themselves.
+7. Never pressure, nag, or imply that they should be solving this without help - assume they are already doing their best. Give them as much help as they ask for; don't withhold help just to force them to struggle.
+
+Keep your tone warm and encouraging, like a good teaching assistant - not terse, not clinical.`;
+
 const SCRATCH_DIR =
   process.env.LEETCODE_COMPANION_SCRATCH ||
   path.join(os.homedir(), '.local', 'state', 'leetcode-companion', 'scratch');
@@ -79,7 +99,15 @@ class ClaudeBackend {
     await this.ensureLoaded();
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 
-    const options = { cwd: SCRATCH_DIR };
+    // A plain string here fully replaces Claude Code's own default system
+    // prompt rather than appending to it - the SDK only preserves the
+    // default when systemPrompt is `{ type: 'preset', preset: 'claude_code' }`
+    // (see node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts). That's the
+    // right call here: this companion has no tools configured and isn't
+    // acting as a coding agent over this repo, so the Claude Code framing
+    // (tool-use conventions, CLI-oriented tone) would only get in the way of
+    // the tutor persona.
+    const options = { cwd: SCRATCH_DIR, systemPrompt: TUTOR_SYSTEM_PROMPT };
     if (this.model) options.model = this.model;
     if (this.sessionId) options.resume = this.sessionId;
 
@@ -112,7 +140,9 @@ class LocalBackend {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.model = model;
     this.apiKey = apiKey;
-    this.history = [];
+    // Standard OpenAI chat-completions shape: a leading `role: 'system'`
+    // message, resent in full on every turn along with the rest of history.
+    this.history = [{ role: 'system', content: TUTOR_SYSTEM_PROMPT }];
   }
 
   async sendMessage(text) {

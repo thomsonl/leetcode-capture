@@ -156,6 +156,19 @@ There is no tmux pane and no pane-scraping: it prints the real response
 directly, whether it came from an injected capture or something you typed.
 
 It supports two swappable backends, chosen with `COMPANION_BACKEND`.
+Both backends are given the same tutor system prompt (defined once in
+`companion.js` as `TUTOR_SYSTEM_PROMPT`) so behavior is consistent across
+them: acknowledge the code, name the problem and its pattern on the first
+attempt at it, describe the approach without hinting at a fix, point out
+bugs via a concrete failing test case rather than a bare assertion, praise
+correct solutions, and always call out time complexity against an O(n)
+target - without ever handing over the optimal algorithm unless asked.
+For the Claude backend, this is passed as a plain `systemPrompt` string,
+which *replaces* Claude Code's own default system prompt rather than
+appending to it (the SDK only preserves the default when `systemPrompt` is
+the `{ type: 'preset', preset: 'claude_code' }` form) - intentional here,
+since this companion runs no tools and isn't acting as a coding agent over
+this repo.
 
 ### Setup
 
