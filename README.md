@@ -297,6 +297,22 @@ node companion.js
 - `COMPANION_API_KEY` is optional - most local servers ignore it, but it's
   there for endpoints that expect a bearer token even for a dummy value.
 
+This backend also gets two extra style rules appended to its system message
+(`LOCAL_STYLE_ADDENDUM` in `companion.js`): never use an em dash, never use
+emojis.
+These are two of Thomson's general writing-style preferences, not tutor
+behavior, so they're kept separate from `TUTOR_SYSTEM_PROMPT` rather than
+folded into it.
+The Claude backend doesn't need this addendum - it already inherits the same
+preferences from Thomson's real global Claude configuration independently of
+this project.
+Verified directly in this environment: a real capture run through this
+backend (against `gemma4:26b` via Ollama) produced tutor-shaped responses -
+acknowledging the code, naming the problem and pattern on first sight,
+describing the approach, confirming correctness, flagging non-optimal
+complexity, and giving a real hint only once asked - with zero em dashes and
+zero emoji characters across the whole transcript.
+
 ### Environment variables (reference)
 
 | Variable                       | Applies to | Default                       |
