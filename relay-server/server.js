@@ -66,6 +66,7 @@ function appendCapture(body) {
     problemSlug: body.problemSlug,
     problemTitle: body.problemTitle || null,
     problemDescription: body.problemDescription || null,
+    problemTags: Array.isArray(body.problemTags) ? body.problemTags : [],
     language: body.language,
     trigger: body.trigger,
     timestamp: body.timestamp,

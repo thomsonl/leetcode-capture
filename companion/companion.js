@@ -28,6 +28,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { prepareVaultContext, extractVaultBlock, writeVaultAutoSummary, defaultVaultPath } from './vault-summary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -38,6 +39,13 @@ const BACKEND = process.env.COMPANION_BACKEND || 'claude';
 const MODEL = process.env.COMPANION_MODEL || null;
 const BASE_URL = process.env.COMPANION_BASE_URL || 'http://localhost:11434/v1';
 const API_KEY = process.env.COMPANION_API_KEY || null;
+
+// Off by default: a portable checkout of this repo for someone other than
+// Thomson won't have this vault's Study/Algorithms structure, or even use
+// Obsidian. Thomson turns this on in his own untracked environment. See the
+// "Vault auto-summary" section below and README.md for what it does.
+const VAULT_AUTO_SUMMARY = /^(1|true|yes)$/i.test(process.env.VAULT_AUTO_SUMMARY || '');
+const VAULT_PATH = process.env.VAULT_PATH || defaultVaultPath();
 
 // The tutor persona both backends share. Written out in full so every rule
 // is explicit rather than implied - see the "Companion" section of the
@@ -334,6 +342,16 @@ function formatCaptureMessage(capture) {
   return lines.join('\n');
 }
 
+// --- vault auto-summary (VAULT_AUTO_SUMMARY) --------------------------------
+//
+// Turns the companion's own tutoring response to a Submit into a durable,
+// structured note in Thomson's Obsidian vault, updated in place as the
+// session progresses. The actual logic (building the addendum, parsing the
+// model's reply, writing the notes) lives in vault-summary.js, split out so
+// it can be unit-tested without booting this file's readline loop / relay
+// server lifecycle - see that file's header for the full design, and
+// README.md → "Vault auto-summary" for user-facing docs.
+
 // --- terminal chat loop ------------------------------------------------------
 //
 // A capture can arrive from the file tailer at any moment, including while
@@ -380,7 +398,11 @@ function enqueue(task) {
   return result;
 }
 
-function sendAndPrint(label, text) {
+// onReply, when given, runs on the raw reply before it's printed and may
+// return a transformed string - used by handleCaptureLine to peel the vault
+// auto-summary's JSON block back off a Submit reply (see extractVaultBlock)
+// before it ever reaches the terminal.
+function sendAndPrint(label, text, { onReply } = {}) {
   return enqueue(async () => {
     let reply;
     try {
@@ -389,7 +411,8 @@ function sendAndPrint(label, text) {
       printAboveInput(`${label ? `${label}\n` : ''}companion: error talking to backend (${BACKEND}): ${err.message}`);
       return;
     }
-    printAboveInput(`${label ? `${label}\n` : ''}${reply}`);
+    const displayText = onReply ? onReply(reply) : reply;
+    printAboveInput(`${label ? `${label}\n` : ''}${displayText}`);
   });
 }
 
@@ -451,9 +474,42 @@ async function handleCaptureLine(line) {
     printAboveInput(`companion: warning: skipping malformed capture JSON: ${err.message}`);
     return;
   }
-  const message = formatCaptureMessage(capture);
   const label = `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`;
-  await sendAndPrint(label, message);
+
+  // Only Submits (not Runs) drive the vault auto-summary, and only when the
+  // toggle is on - see the "vault auto-summary" section above. When active,
+  // one extra instruction is appended to the same message so the single
+  // reply carries both the tutoring commentary and the structured vault
+  // data; no second LLM call.
+  let vaultContext = null;
+  if (VAULT_AUTO_SUMMARY && capture.trigger === 'submit') {
+    try {
+      vaultContext = prepareVaultContext({ capture, vaultPath: VAULT_PATH });
+    } catch (err) {
+      printAboveInput(`companion: warning: could not prepare vault auto-summary context (${err.message})`);
+    }
+  }
+  const message = formatCaptureMessage(capture) + (vaultContext ? vaultContext.addendum : '');
+
+  await sendAndPrint(label, message, {
+    onReply: vaultContext
+      ? (reply) => {
+          const { displayText, vaultData } = extractVaultBlock(reply, {
+            warn: (msg) => printAboveInput(`companion: warning: ${msg}`),
+          });
+          if (vaultData) {
+            try {
+              writeVaultAutoSummary({ capture, vaultContext, vaultData });
+            } catch (err) {
+              printAboveInput(`companion: warning: vault auto-summary write failed (${err.message})`);
+            }
+          } else {
+            printAboveInput('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write');
+          }
+          return displayText;
+        }
+      : undefined,
+  });
 }
 
 async function poll() {
@@ -519,6 +575,11 @@ await ensureRelayServer();
 
 console.log(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`);
 console.log(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`);
+console.log(
+  VAULT_AUTO_SUMMARY
+    ? `companion: vault auto-summary ON - writing to ${VAULT_PATH}`
+    : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
+);
 console.log('companion: type to chat directly; captures are injected automatically. /exit to quit.');
 rl.prompt();
 

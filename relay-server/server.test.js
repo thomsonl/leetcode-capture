@@ -96,6 +96,7 @@ test("relay server CORS/preflight handling", async (t) => {
       problemSlug: "two-sum",
       problemTitle: "Two Sum",
       problemDescription: "Given an array of integers...",
+      problemTags: ["Array", "Hash Table"],
       language: "python3",
       code: "def two_sum(nums, target): pass",
       trigger: "submit",
@@ -127,5 +128,6 @@ test("relay server CORS/preflight handling", async (t) => {
     assert.equal(logged.length, 1);
     assert.equal(logged[0].problemSlug, "two-sum");
     assert.equal(logged[0].trigger, "submit");
+    assert.deepEqual(logged[0].problemTags, ["Array", "Hash Table"]);
   });
 });

@@ -5,9 +5,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Four components, each self-contained with no shared build tooling: `extension/` (MV3 content script, no build step - loads unpacked in Chrome, and as a temporary add-on in Firefox/Zen via `about:debugging#/runtime/this-firefox`; carries `browser_specific_settings.gecko.id` for Firefox), `relay-server/` (plain Node `http`, no deps), `vault-tool/` (Node CLI, no deps), `companion/` (single-process Node program, ESM, one real dependency - `@anthropic-ai/claude-agent-sdk` - for its Claude backend). See `README.md` for setup/usage of all four.
 - The extension reads Monaco's code via DOM (`.monaco-editor .view-lines`), not the `monaco` JS global - avoids needing a page-context injection. If LeetCode's DOM structure changes, this is the first place to check.
 - The problem description is read from `[data-track-load="description_content"]` (an analytics hook attribute, more stable than LeetCode's generated class names - verified against live `leetcode.com/problems/*` pages). `#qd-content` also matches but additionally picks up tab labels and other page chrome, so it's avoided.
+- LeetCode's own topic tags are read from `a[href^="/tag/"]` (verified live against `leetcode.com/problems/two-sum/` and `/house-robber/` with `chrome-devtools-axi`: matches exactly the "Topics" panel's links and nothing else, present in the DOM even while that panel is visually collapsed). Sent as `problemTags` on the capture; see `vault-tool/vault-notes.js`'s `findTopicNoteByTagName` for how a tag gets matched to an existing vault topic note.
 - The relay server rebuilds its per-problem `attemptSeq` counter from the existing log file on startup, so restarts don't reset sequence numbers. Log format is one JSON object per line at `relay-server/data/captures.jsonl` (gitignored).
 - The relay server sends permissive CORS headers (`Access-Control-Allow-Origin: *`) and answers the `OPTIONS` preflight on `/capture`. This is load-bearing, not decorative: Chrome's content-script `fetch()` bypasses CORS via the extension's `host_permissions`, but Firefox/Zen run content-script `fetch()` under the page's own origin, so without these headers every capture from Firefox/Zen is silently dropped (see git history for the original bug/fix). `relay-server/server.test.js` (`npm test` in `relay-server/`) is the regression test - run it before touching CORS or route handling in `server.js`.
-- `vault-tool/log-session.js` matches a problem slug to a vault topic note by searching `Study/Algorithms/*.md` for a link containing `/problems/<slug>/`; falls back to creating a per-problem note under `Study/Algorithms/Problems/`. See `~/Documents/My Brain/AGENTS.md` for vault conventions.
+- `vault-tool/vault-notes.js` holds the shared per-problem/per-topic note-linking logic (topic lookup, per-problem note creation, generic markdown-section read/upsert) used by both `vault-tool/log-session.js` (the manual CLI) and `companion/vault-summary.js` (the automatic feature below) - extend it there rather than duplicating logic in either caller. `log-session.js` matches a problem slug to a topic note by searching `Study/Algorithms/*.md` for a link containing `/problems/<slug>/`; falls back to creating a per-problem note under `Study/Algorithms/Problems/`. `npm test` in `vault-tool/` covers `vault-notes.js` directly, including that `upsertSection` is idempotent. See `~/Documents/My Brain/AGENTS.md` for vault conventions.
 - `fixtures/captures.jsonl` is a sample capture log for exercising the vault tool without a live capture session (`--dry-run` to preview without writing).
 - `companion/companion.js` is a single Node process (no tmux, no CLI pane-scraping): it tails
   captures the same way the old `watch.js` did and drives a normal `readline` chat loop, sending
@@ -32,6 +33,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   spawned server, and a manually-started server survives companion exit untouched.
 - Every commit message and PR description in this repo is written in first person (I/my/mine) -
   the repo's own account is the author, so never refer to the user in the third person.
+- Vault auto-summary (`VAULT_AUTO_SUMMARY`, off by default): on a Submit, turns the companion's own
+  tutoring reply into a durable vault note - see README.md → "Vault auto-summary" for the full
+  design. The logic lives in `companion/vault-summary.js`, not `companion.js` itself, specifically
+  so it's unit-testable without booting the readline loop or relay-server lifecycle (`npm test` in
+  `companion/` - the first automated tests this program has had). The load-bearing constraint: no
+  second LLM call - a Submit's addendum (`buildVaultAddendum`) asks the model to tack a
+  machine-readable `<<<VAULT_JSON>>>...<<<END_VAULT_JSON>>>` block onto the end of the *same* reply
+  already being generated; `extractVaultBlock` peels it back off before the reply is printed, so the
+  terminal chat is unchanged. Both the per-problem star rating and per-topic proficiency score are
+  LLM judgment calls, not verified facts (LeetCode exposes neither "optimal complexity" nor "this
+  code's complexity" directly) - this limitation is stated in the note itself, not just here.
+  Verified end-to-end in the PR that introduced this: a real subprocess run of `companion.js`
+  against a stub OpenAI-compatible backend, asserting the JSON block never reaches stdout and both
+  the per-problem and topic-index vault files come out with the expected content.
 
 ## Maintaining this file
 
