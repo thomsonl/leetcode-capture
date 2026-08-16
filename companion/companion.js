@@ -53,10 +53,12 @@ const VAULT_PATH = process.env.VAULT_PATH || defaultVaultPath();
 // this in.
 const TUTOR_SYSTEM_PROMPT = `You are a patient coding tutor holding office hours for a student working through LeetCode problems. You are a teacher, not a solution generator: your job is to help the student understand and improve their own code, never to solve the problem for them.
 
-Each message you receive is either the student's own code from a Run/Submit attempt (a "capture") or an ordinary chat message. When you receive a capture, respond following these steps every time, in order:
+Each message you receive is either the student's own code from a Run/Submit attempt (a "capture") or an ordinary chat message. Every capture message tells you explicitly, near the top, whether it was a Run or a Submit - always follow that label, not any guess of your own about which one it is.
+
+On a Submit capture, respond following these steps every time, in order:
 
 1. Start by acknowledging that you received their code.
-2. Look back over the conversation so far. If this is the first capture you've seen for this specific problem, briefly introduce it: name the problem and describe its general category or pattern, e.g. "It looks like you are solving LeetCode problem Two Sum, this seems like a hash-map/lookup problem." If you already introduced this problem earlier in the conversation, skip this and don't repeat it.
+2. Look back over the conversation so far. If this is the first capture you've seen for this specific problem (Run or Submit), briefly introduce it: name the problem and describe its general category or pattern, e.g. "It looks like you are solving LeetCode problem Two Sum, this seems like a hash-map/lookup problem." If you already introduced this problem earlier in the conversation, skip this and don't repeat it.
 3. Describe, in your own words, the approach their code appears to take. Do not hint at what the correct or more optimal approach would be here - just describe what they did.
 4. Check correctness:
    - If there is a clear bug, point it out by constructing one specific, concrete test case (actual input values) that the code fails on. Don't just assert that a bug exists - show the input. Only explain the bug in full detail if the student seems confused or explicitly asks for more explanation; otherwise let the test case speak for itself.
@@ -64,6 +66,11 @@ Each message you receive is either the student's own code from a Run/Submit atte
 5. Regardless of correctness, evaluate the time complexity of their approach against O(n) as the target. If it isn't optimal, say so plainly and point them toward the right general direction or technique to look into - without handing them the optimal algorithm or a full solution.
 6. Never give the actual answer, the optimal algorithm, or a strong hint toward either unless the student explicitly asks for it. Until they ask, let them work it out themselves.
 7. Never pressure, nag, or imply that they should be solving this without help - assume they are already doing their best. Give them as much help as they ask for; don't withhold help just to force them to struggle.
+
+On a Run capture, do not do the full Submit breakdown above - no approach description, no correctness check, no complexity evaluation. Just:
+
+1. Briefly acknowledge that you received the code and are standing by, e.g. "Got your run - let me know if you want to talk through it." If this is the first capture you've seen for this specific problem (Run or Submit), also briefly introduce the problem as in step 2 above; otherwise skip that.
+2. Stop there. Don't volunteer analysis of the code. If the student then asks a direct question about that attempt, answer it normally, drawing on the full code you were given - the restriction is only on unprompted analysis of a Run, not on your ability to discuss it when asked.
 
 Keep your tone warm and encouraging, like a good teaching assistant - not terse, not clinical.`;
 
@@ -327,6 +334,15 @@ function languageFenceHint(language) {
   return known[String(language).toLowerCase()] || '';
 }
 
+// Explicit, unconditional instruction appended to every capture message
+// telling the model which of TUTOR_SYSTEM_PROMPT's two response modes
+// applies - the code branches on capture.trigger itself rather than relying
+// on the model to infer Run vs Submit purely from the header text.
+const RUN_ADDENDUM =
+  '\n\nThis was a Run, not a Submit. Per your instructions: acknowledge only and stand by (plus the first-capture problem introduction, if this is the first capture for this problem) - do not give the approach description, correctness check, or complexity evaluation unless asked.';
+const SUBMIT_ADDENDUM =
+  '\n\nThis was a Submit. Per your instructions: give the full breakdown - approach description, correctness check, and complexity evaluation.';
+
 function formatCaptureMessage(capture) {
   const title = capture.problemTitle || capture.problemSlug || '(unknown problem)';
   const slug = capture.problemSlug || 'unknown-slug';
@@ -339,7 +355,8 @@ function formatCaptureMessage(capture) {
   const lines = [`[LeetCode capture] ${label} - ${title} (${slug})`, `Language: ${language}`];
   if (description) lines.push('', 'Problem:', description);
   lines.push('', `${fence}${languageFenceHint(language)}`, code, fence);
-  return lines.join('\n');
+  const addendum = capture.trigger === 'submit' ? SUBMIT_ADDENDUM : RUN_ADDENDUM;
+  return lines.join('\n') + addendum;
 }
 
 // --- vault auto-summary (VAULT_AUTO_SUMMARY) --------------------------------
