@@ -100,9 +100,9 @@ test('requestModelCode resolves with the responder\'s result when inject.js answ
   // matching response carrying the model's code.
   const events = mockEventTarget();
   events.addEventListener('leetcode-capture:request-code', (event) => {
-    const { requestId } = event.detail;
+    const { requestId } = JSON.parse(event.detail);
     events.dispatchEvent(new CustomEvent('leetcode-capture:code-response', {
-      detail: { requestId, result: { code: 'def solve():\n    pass', language: 'python' } },
+      detail: JSON.stringify({ requestId, result: { code: 'def solve():\n    pass', language: 'python' } }),
     }));
   });
 
@@ -116,7 +116,30 @@ test('requestModelCode ignores a response carrying a mismatched requestId', asyn
   const events = mockEventTarget();
   events.addEventListener('leetcode-capture:request-code', () => {
     events.dispatchEvent(new CustomEvent('leetcode-capture:code-response', {
-      detail: { requestId: 'stale-id', result: { code: 'wrong', language: 'python' } },
+      detail: JSON.stringify({ requestId: 'stale-id', result: { code: 'wrong', language: 'python' } }),
+    }));
+  });
+
+  const result = await requestModelCode(events, events, 50);
+  assert.equal(result, null);
+});
+
+// Regression test for the Firefox-specific bug fixed alongside this test:
+// Firefox's Xray wrapper boundary throws "Permission denied to access
+// property" when reading a property off a CustomEvent `detail` object
+// created in the *other* JS realm (content script <-> page script).
+// requestModelCode() now JSON-stringifies `detail` on the request side and
+// JSON.parses it on the response side specifically to avoid ever touching
+// a property on a cross-realm object. This test guards the parse side: a
+// response event whose `detail` isn't valid JSON (as would happen if
+// something upstream regressed back to passing a raw object, which
+// JSON.parse would reject rather than silently "work" the way property
+// access on a raw object might in Chrome) must be ignored, not throw.
+test('requestModelCode ignores (and does not throw on) a malformed non-JSON response detail', async () => {
+  const events = mockEventTarget();
+  events.addEventListener('leetcode-capture:request-code', () => {
+    events.dispatchEvent(new CustomEvent('leetcode-capture:code-response', {
+      detail: 'not valid json',
     }));
   });
 

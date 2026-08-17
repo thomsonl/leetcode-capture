@@ -26,7 +26,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   after switching the language selector (LeetCode replaces the model in place on a language switch, still
   correctly detected) - Firefox/Zen was reasoned about only (matching the CustomEvent/script-tag-injection
   approach that already works identically on both), not independently live-verified, since chrome-devtools-axi
-  only drives Chromium. `.view-line`'s rendered text uses U+00A0 (non-breaking space) where the real source
+  only drives Chromium. This reasoning-only Firefox gap turned out to miss a real bug: Firefox enforces Xray
+  wrapper security boundaries between a content script's isolated realm and the page's MAIN-world realm, so
+  reading a property (e.g. `.requestId`) off a `CustomEvent`'s `detail` object created *in the other realm*
+  throws `Permission denied to access property "..."` even though the value is present - Chrome doesn't
+  enforce this for a page-context-injected `<script>`, so it looked fine there. Confirmed live in Thomson's
+  own Firefox console against the merged PR #16/#17 fix. Both `content.js`'s `requestModelCode()` and
+  `inject.js`'s request listener now `JSON.stringify` the whole `{ requestId, ... }` payload into `detail`
+  as a plain string and `JSON.parse` it back out on the receiving side, in both directions of the protocol -
+  a string primitive crosses the realm boundary cleanly on both browsers, avoiding the need for Firefox's
+  `cloneInto()` (which doesn't exist in Chrome and would need feature-detection). `extension/content.test.js`
+  covers the parse side (a malformed non-JSON `detail` is ignored, not thrown). Chrome-side regression-checked
+  after this fix via Playwright's cached headless Chromium loading the real `inject.js`/`content.js`
+  request-response logic against a page with a faked `monaco` global (same sandboxing approach as the WAR
+  match-pattern note below) - real Firefox/Zen verification of this specific fix was not done in the PR that
+  introduced it (no Firefox available in that sandbox); confirm live in Firefox/Zen before trusting this is
+  fully closed. `.view-line`'s rendered text uses U+00A0 (non-breaking space) where the real source
   has a plain space (confirmed live via charCode) - `getEditorCodeFromDom()`'s `.replace(/ /g, " ")` (NBSP to
   space) is a real normalization, not a no-op; the model path never has this problem since `getValue()`
   returns the real source text directly.

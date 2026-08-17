@@ -43,8 +43,33 @@
     return { code: model.getValue(), language: model.getLanguageId() };
   }
 
+  // event.detail crosses from content.js's isolated world into this page
+  // world (and the response event's detail crosses back the other way).
+  // Firefox enforces Xray wrapper security boundaries between those two
+  // realms: reading a property off a plain object that was created in the
+  // *other* realm throws "Permission denied to access property ..." even
+  // though the value is there - it's the property access itself that's
+  // blocked, not a missing value. Chrome doesn't enforce this the same way
+  // for a page-context-injected <script>, so this was invisible there.
+  // Confirmed live in Firefox/Zen (Thomson's console): "Uncaught Error:
+  // Permission denied to access property "requestId"" at this line, when
+  // it read `event.detail.requestId` directly.
+  //
+  // Fix: never touch a property on a cross-realm object. JSON.stringify the
+  // whole payload into `detail` as a plain string instead - a string
+  // primitive crosses the realm boundary cleanly on both browsers - and
+  // JSON.parse it back out on the receiving side. This avoids needing
+  // Firefox's `cloneInto()` (which doesn't exist in Chrome and would need
+  // feature-detection) and fixes both directions of this protocol
+  // identically, since both content.js and inject.js now only ever read
+  // `event.detail` itself (a string), never a property of it.
   document.addEventListener("leetcode-capture:request-code", (event) => {
-    const requestId = event.detail && event.detail.requestId;
+    let requestId = null;
+    try {
+      requestId = JSON.parse(event.detail).requestId;
+    } catch (err) {
+      requestId = null;
+    }
     let result = null;
     try {
       result = readEditorCode();
@@ -55,7 +80,7 @@
     }
     document.dispatchEvent(
       new CustomEvent("leetcode-capture:code-response", {
-        detail: { requestId, result },
+        detail: JSON.stringify({ requestId, result }),
       })
     );
   });
