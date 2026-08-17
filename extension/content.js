@@ -149,6 +149,14 @@
   // to the DOM scrape uniformly. `requestEvents`/`responseEvents` are
   // injectable (default `document`) purely so content.test.js can exercise
   // this round-trip with a plain mock EventTarget, without a real DOM.
+  // See inject.js for why `detail` is JSON-stringified rather than a plain
+  // object: on Firefox, reading a property off a CustomEvent's `detail`
+  // when that object was created in the *other* JS realm (content
+  // script <-> page script) throws "Permission denied to access property"
+  // due to Xray wrapper boundaries - Chrome doesn't enforce this the same
+  // way, so it only surfaced live on Firefox/Zen. A JSON string primitive
+  // crosses the realm boundary cleanly on both browsers, so both directions
+  // of this request/response protocol use it.
   function requestModelCode(requestEvents = document, responseEvents = document, timeoutMs = 500) {
     return new Promise((resolve) => {
       const requestId = `${Date.now()}-${Math.random()}`;
@@ -158,15 +166,21 @@
       }, timeoutMs);
 
       function onResponse(event) {
-        if (!event.detail || event.detail.requestId !== requestId) return;
+        let payload;
+        try {
+          payload = JSON.parse(event.detail);
+        } catch (err) {
+          return;
+        }
+        if (!payload || payload.requestId !== requestId) return;
         clearTimeout(timer);
         responseEvents.removeEventListener("leetcode-capture:code-response", onResponse);
-        resolve(event.detail.result);
+        resolve(payload.result);
       }
 
       responseEvents.addEventListener("leetcode-capture:code-response", onResponse);
       requestEvents.dispatchEvent(
-        new CustomEvent("leetcode-capture:request-code", { detail: { requestId } })
+        new CustomEvent("leetcode-capture:request-code", { detail: JSON.stringify({ requestId }) })
       );
     });
   }
