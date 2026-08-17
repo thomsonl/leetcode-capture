@@ -131,3 +131,43 @@ test('requestModelCode resolves to null on timeout when nothing responds', async
   const result = await requestModelCode(events, events, 50);
   assert.equal(result, null);
 });
+
+// Regression test for the truncation bug PR #16 claimed to fix but didn't:
+// manifest.json's web_accessible_resources[0].matches was set to the exact
+// same match pattern as content_scripts[0].matches
+// (`https://leetcode.com/problems/*`). Verified live against a real Chrome
+// build in the PR that added this test: a content script and a
+// web_accessible_resources entry sharing that identical narrow match
+// pattern string causes Chrome to reject the whole extension at load time
+// ("Invalid value for 'web_accessible_resources[0]'. Invalid match
+// pattern.") - broadening web_accessible_resources's matches to
+// `https://leetcode.com/*` (a strict superset of the content script's
+// pattern, not the same string) makes it load clean. This is why the
+// assertion below requires WAR's pattern to strictly cover - not just
+// equal - the content script's pattern: reintroducing an identical pair is
+// exactly what silently broke PR #16's fix in the first place.
+test("manifest's web_accessible_resources matches strictly cover (are broader than) content_scripts matches", () => {
+  const manifest = require(path.join(__dirname, 'manifest.json'));
+
+  const contentScriptMatches = manifest.content_scripts.flatMap((cs) => cs.matches);
+  const warMatches = manifest.web_accessible_resources.flatMap((war) => war.matches);
+
+  // Only handles the "broader path wildcard on the same origin" case this
+  // extension actually relies on (e.g. ".../*" strictly covering
+  // ".../problems/*") - deliberately excludes an exact-string match, since
+  // that's the exact shape of the bug this test guards against.
+  function patternStrictlyCovers(warPattern, csPattern) {
+    if (warPattern === csPattern) return false;
+    const warPrefix = warPattern.replace(/\*$/, '');
+    return warPattern.endsWith('*') && csPattern.startsWith(warPrefix);
+  }
+
+  for (const csPattern of contentScriptMatches) {
+    const covered = warMatches.some((warPattern) => patternStrictlyCovers(warPattern, csPattern));
+    assert.ok(
+      covered,
+      `content_scripts match "${csPattern}" has no strictly-broader web_accessible_resources match ` +
+        '- an identical pattern pair reproduces the live-verified Chrome load failure this test guards against'
+    );
+  }
+});

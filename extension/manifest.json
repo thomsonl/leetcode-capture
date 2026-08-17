@@ -16,7 +16,7 @@
   "web_accessible_resources": [
     {
       "resources": ["inject.js"],
-      "matches": ["https://leetcode.com/problems/*"]
+      "matches": ["https://leetcode.com/*"]
     }
   ],
   "browser_specific_settings": {

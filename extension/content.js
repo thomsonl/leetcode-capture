@@ -176,10 +176,17 @@
       await injectPageScript();
       const modelResult = await requestModelCode();
       if (modelResult && typeof modelResult.code === "string") {
+        console.log("[leetcode-capture] editor code read from Monaco model (full source, not just what's on screen)");
         return modelResult.code;
       }
+      // injectPageScript() resolved but the round-trip came back empty/null -
+      // e.g. requestModelCode() timed out, or inject.js couldn't find an
+      // editor. This is the silent-fallback case that made PR #16 look like
+      // a fix while actually still truncating for real users: log loudly so
+      // it's never invisible again.
+      console.warn("[leetcode-capture] model-based editor read returned no code, falling back to DOM scrape (may be truncated to what's on screen)");
     } catch (err) {
-      console.warn("[leetcode-capture] model-based editor read failed, falling back to DOM scrape", err);
+      console.warn("[leetcode-capture] model-based editor read failed, falling back to DOM scrape (may be truncated to what's on screen)", err);
     }
     return getEditorCodeFromDom();
   }
