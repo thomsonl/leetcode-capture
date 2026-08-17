@@ -35,6 +35,7 @@ import {
   resolveVaultConfig,
   validateVaultPath,
 } from './vault-summary.js';
+import { stylingEnabled, dim, roleLabel, promptString, renderMarkdown } from './terminal-format.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -298,7 +299,7 @@ async function ensureRelayServer() {
   });
   child.unref();
   relayServerChild = child;
-  console.log('companion: relay server not detected, starting it now');
+  console.log(dim('companion: relay server not detected, starting it now'));
 
   // Wait (bounded) for it to actually come up, so the very first capture
   // isn't lost to a race between spawning it and its listen() callback.
@@ -310,7 +311,9 @@ async function ensureRelayServer() {
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   console.error(
-    `companion: warning: started the relay server but it hasn't answered on http://${RELAY_HOST}:${RELAY_PORT} yet - continuing anyway`
+    dim(
+      `companion: warning: started the relay server but it hasn't answered on http://${RELAY_HOST}:${RELAY_PORT} yet - continuing anyway`
+    )
   );
 }
 
@@ -405,7 +408,7 @@ function formatCaptureMessage(capture) {
 // new text, then redraws the prompt with the saved line reinserted. Both
 // captures and normal replies to typed input go through this same path.
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: promptString() });
 let stopping = false;
 
 function printAboveInput(text) {
@@ -452,7 +455,9 @@ function sendAndPrint(label, text, { onReply } = {}) {
     try {
       reply = await backend.sendMessage(text);
     } catch (err) {
-      printAboveInput(`${label ? `${label}\n` : ''}companion: error talking to backend (${BACKEND}): ${err.message}`);
+      printAboveInput(
+        dim(`${label ? `${label}\n` : ''}companion: error talking to backend (${BACKEND}): ${err.message}`)
+      );
       return;
     }
     const displayText = onReply ? onReply(reply) : reply;
@@ -461,11 +466,15 @@ function sendAndPrint(label, text, { onReply } = {}) {
     // render as total silence after the label - that's indistinguishable
     // from "the reply never arrived" (see LocalBackend.sendMessage's own
     // empty-reply guard for the concrete case this was written for).
-    const safeDisplayText =
-      typeof displayText === 'string' && displayText.trim()
-        ? displayText
-        : 'companion: warning: backend returned an empty reply';
-    printAboveInput(`${label ? `${label}\n` : ''}${safeDisplayText}`);
+    const isEmpty = !(typeof displayText === 'string' && displayText.trim());
+    // A "tutor" role label distinguishes an actual reply from the capture's
+    // own status label above it and from de-emphasized system lines - but
+    // only when styling is on; adding a line here unconditionally would
+    // change what non-TTY output looks like, which must stay exactly as it
+    // was before this feature existed (see terminal-format.js).
+    const header = [label, stylingEnabled() && !isEmpty ? roleLabel('tutor') : null].filter(Boolean).join('\n');
+    const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
+    printAboveInput(`${header ? `${header}\n` : ''}${body}`);
   });
 }
 
@@ -484,7 +493,7 @@ rl.on('line', (line) => {
 
 rl.on('close', () => {
   stopping = true;
-  process.stdout.write('\ncompanion: goodbye\n');
+  process.stdout.write(`\n${dim('companion: goodbye')}\n`);
   process.exit(0);
 });
 
@@ -497,7 +506,7 @@ function loadOffset() {
     if (typeof parsed.offset === 'number' && parsed.offset >= 0) return parsed.offset;
   } catch (err) {
     if (err.code !== 'ENOENT') {
-      console.error(`companion: warning: could not read state file (${err.message}); starting fresh`);
+      console.error(dim(`companion: warning: could not read state file (${err.message}); starting fresh`));
     }
   }
   // No usable state: this is effectively a first run. Start at the current
@@ -524,10 +533,12 @@ async function handleCaptureLine(line) {
   try {
     capture = JSON.parse(trimmed);
   } catch (err) {
-    printAboveInput(`companion: warning: skipping malformed capture JSON: ${err.message}`);
+    printAboveInput(dim(`companion: warning: skipping malformed capture JSON: ${err.message}`));
     return;
   }
-  const label = `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`;
+  const label = dim(
+    `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`
+  );
 
   // Print an instant, local, non-LLM acknowledgement before the backend call
   // below even starts - the tutor persona's own step 1 (acknowledging receipt
@@ -535,7 +546,9 @@ async function handleCaptureLine(line) {
   // and can lag several seconds behind, longer for Submit. This line is just
   // a deterministic confirmation that the capture arrived.
   printAboveInput(
-    `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`,
+    dim(
+      `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`
+    ),
   );
 
   // Only Submits (not Runs) drive the vault auto-summary, and only when the
@@ -552,7 +565,7 @@ async function handleCaptureLine(line) {
         algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER,
       });
     } catch (err) {
-      printAboveInput(`companion: warning: could not prepare vault auto-summary context (${err.message})`);
+      printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
     }
   }
   const message = formatCaptureMessage(capture) + (vaultContext ? vaultContext.addendum : '');
@@ -561,16 +574,18 @@ async function handleCaptureLine(line) {
     onReply: vaultContext
       ? (reply) => {
           const { displayText, vaultData } = extractVaultBlock(reply, {
-            warn: (msg) => printAboveInput(`companion: warning: ${msg}`),
+            warn: (msg) => printAboveInput(dim(`companion: warning: ${msg}`)),
           });
           if (vaultData) {
             try {
               writeVaultAutoSummary({ capture, vaultContext, vaultData });
             } catch (err) {
-              printAboveInput(`companion: warning: vault auto-summary write failed (${err.message})`);
+              printAboveInput(dim(`companion: warning: vault auto-summary write failed (${err.message})`));
             }
           } else {
-            printAboveInput('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write');
+            printAboveInput(
+              dim('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write')
+            );
           }
           return displayText;
         }
@@ -587,7 +602,7 @@ async function poll() {
   }
 
   if (stats.size < offset) {
-    printAboveInput('companion: capture log shrank; resetting offset to 0');
+    printAboveInput(dim('companion: capture log shrank; resetting offset to 0'));
     offset = 0;
   }
   if (stats.size <= offset) return;
@@ -625,7 +640,7 @@ async function pollLoop() {
       // eslint-disable-next-line no-await-in-loop
       await poll();
     } catch (err) {
-      printAboveInput(`companion: error during capture poll: ${err.stack || err.message}`);
+      printAboveInput(dim(`companion: error during capture poll: ${err.stack || err.message}`));
     }
     if (stopping) break;
     // eslint-disable-next-line no-await-in-loop
@@ -639,17 +654,19 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
 await ensureRelayServer();
 
-console.log(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`);
-console.log(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`);
+console.log(dim(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`));
+console.log(dim(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`));
 console.log(
-  VAULT_AUTO_SUMMARY
-    ? `companion: vault auto-summary ON - writing to ${VAULT_PATH}`
-    : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
+  dim(
+    VAULT_AUTO_SUMMARY
+      ? `companion: vault auto-summary ON - writing to ${VAULT_PATH}`
+      : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
+  )
 );
-console.log('companion: type to chat directly; captures are injected automatically. /exit to quit.');
+console.log(dim('companion: type to chat directly; captures are injected automatically. /exit to quit.'));
 rl.prompt();
 
 pollLoop().catch((err) => {
-  console.error(`companion: fatal: ${err.stack || err.message}`);
+  console.error(dim(`companion: fatal: ${err.stack || err.message}`));
   process.exit(1);
 });

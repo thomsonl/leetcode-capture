@@ -49,6 +49,9 @@ This starts the relay server automatically and drops you into a chat prompt.
 Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
 `/exit` or `/quit` (or Ctrl+C) ends the session.
 
+In a real terminal, the prompt and the tutor's replies are colored and labeled, status/error lines are dimmed, and the tutor's markdown (headers, bold, lists, fenced code blocks) renders instead of showing raw syntax.
+Colors are skipped automatically when output isn't a terminal (piped to a file or another program) or when `NO_COLOR` is set - output stays plain text in both cases.
+
 ### 3. (optional) Install the `leetcode` launcher
 
 ```sh
