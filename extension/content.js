@@ -80,10 +80,19 @@
     "Erlang", "Elixir", "MySQL", "MS SQL Server", "Oracle", "PostgreSQL",
   ]);
 
-  function getEditorCode() {
+  // Monaco is a virtualized/windowed editor: it only keeps DOM nodes for
+  // the lines currently rendered in the viewport (plus a small overscan
+  // buffer), and removes lines from the DOM entirely once they scroll out
+  // of view. That makes getEditorCodeFromDom() below correct only for
+  // whatever happens to be on screen at capture time - fine for a
+  // screenful of code, silently incomplete beyond that. getEditorCode()
+  // therefore prefers reading Monaco's actual editor model (the full,
+  // unwindowed source) via a page-world injection, and only falls back to
+  // the DOM scrape if that fails for any reason (extension resource
+  // blocked, page script CSP, Monaco not loaded yet, etc.) so a capture is
+  // still better than none.
+  function getEditorCodeFromDom() {
     // Monaco renders each line of code as DOM text inside `.view-lines`.
-    // Reading via the DOM avoids needing to inject into the page's JS
-    // context to reach the `monaco` global.
     const viewLines = document.querySelector(".monaco-editor .view-lines");
     if (!viewLines) return null;
 
@@ -99,13 +108,84 @@
       return topA - topB;
     });
 
+    // Monaco's rendered `.view-line` DOM uses U+00A0 (non-breaking space)
+    // for whitespace, not a plain U+0020 space - confirmed live
+    // (chrome-devtools-axi against a real leetcode.com problem page: a
+    // `.view-line`'s textContent came back with charCode 160 where the
+    // actual source has an ordinary space). So this replace is a real
+    // normalization back to plain spaces, not a no-op.
     return lineEls
       .map((line) => line.textContent.replace(/ /g, " "))
       .join("\n");
   }
 
+  // Injects inject.js as a real <script> tag so it runs in the page's own
+  // MAIN world (where the `monaco` global lives) rather than this content
+  // script's isolated world. See inject.js for why this approach (rather
+  // than a declarative MV3 `"world": "MAIN"` content script) is used for
+  // both Chrome and Firefox/Zen.
+  let pageScriptInjection = null;
+  function injectPageScript() {
+    if (pageScriptInjection) return pageScriptInjection;
+    pageScriptInjection = new Promise((resolve, reject) => {
+      if (document.getElementById("leetcode-capture-inject")) {
+        resolve();
+        return;
+      }
+      const script = document.createElement("script");
+      script.id = "leetcode-capture-inject";
+      script.src = chrome.runtime.getURL("inject.js");
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("leetcode-capture: failed to load inject.js"));
+      (document.head || document.documentElement).appendChild(script);
+    });
+    return pageScriptInjection;
+  }
+
+  // Asks inject.js (running in the page's MAIN world) for the current
+  // editor model's full text over a CustomEvent round-trip on `document` -
+  // both worlds share the same DOM, so this needs no postMessage. Resolves
+  // to `null` (rather than rejecting) on timeout so callers can fall back
+  // to the DOM scrape uniformly. `requestEvents`/`responseEvents` are
+  // injectable (default `document`) purely so content.test.js can exercise
+  // this round-trip with a plain mock EventTarget, without a real DOM.
+  function requestModelCode(requestEvents = document, responseEvents = document, timeoutMs = 500) {
+    return new Promise((resolve) => {
+      const requestId = `${Date.now()}-${Math.random()}`;
+      const timer = setTimeout(() => {
+        responseEvents.removeEventListener("leetcode-capture:code-response", onResponse);
+        resolve(null);
+      }, timeoutMs);
+
+      function onResponse(event) {
+        if (!event.detail || event.detail.requestId !== requestId) return;
+        clearTimeout(timer);
+        responseEvents.removeEventListener("leetcode-capture:code-response", onResponse);
+        resolve(event.detail.result);
+      }
+
+      responseEvents.addEventListener("leetcode-capture:code-response", onResponse);
+      requestEvents.dispatchEvent(
+        new CustomEvent("leetcode-capture:request-code", { detail: { requestId } })
+      );
+    });
+  }
+
+  async function getEditorCode() {
+    try {
+      await injectPageScript();
+      const modelResult = await requestModelCode();
+      if (modelResult && typeof modelResult.code === "string") {
+        return modelResult.code;
+      }
+    } catch (err) {
+      console.warn("[leetcode-capture] model-based editor read failed, falling back to DOM scrape", err);
+    }
+    return getEditorCodeFromDom();
+  }
+
   async function sendCapture(trigger) {
-    const code = getEditorCode();
+    const code = await getEditorCode();
     if (code === null) {
       console.warn("[leetcode-capture] editor content not found, skipping capture");
       return;
@@ -201,13 +281,14 @@
     }
   }
 
-  // Test-only hook: exposes the button matchers to content.test.js via
-  // plain CommonJS require(), so they're unit-testable with simple mock
-  // button objects (no jsdom, no build step) without changing anything
-  // about how this script runs as a real content script - `module` is
-  // undefined in the browser, so this is a no-op there.
+  // Test-only hook: exposes the button matchers and the model-read
+  // message-passing logic to content.test.js via plain CommonJS require(),
+  // so they're unit-testable with simple mocks (no jsdom, no build step)
+  // without changing anything about how this script runs as a real content
+  // script - `module` is undefined in the browser, so this is a no-op
+  // there.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { matchesRunButton, matchesSubmitButton };
+    module.exports = { matchesRunButton, matchesSubmitButton, requestModelCode };
     return;
   }
 
