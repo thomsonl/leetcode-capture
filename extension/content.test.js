@@ -20,7 +20,17 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const { matchesRunButton, matchesSubmitButton } = require(path.join(__dirname, 'content.js'));
+const { matchesRunButton, matchesSubmitButton, requestModelCode } = require(path.join(__dirname, 'content.js'));
+
+// Minimal EventTarget-like mock so requestModelCode's CustomEvent
+// request/response round-trip (normally against `document`, shared between
+// content.js's isolated world and inject.js's page world) is testable
+// without a real DOM. Node's built-in EventTarget already implements
+// addEventListener/removeEventListener/dispatchEvent correctly, so this
+// just aliases it rather than reimplementing event dispatch.
+function mockEventTarget() {
+  return new EventTarget();
+}
 
 function mockButton({ locator = null, ariaLabel = null, hasPlayIcon = false, text = '' } = {}) {
   return {
@@ -83,4 +93,41 @@ test('data-e2e-locator, when present, is authoritative even if text would otherw
   const btn = mockButton({ locator: 'console-run-button', text: 'Submit' });
   assert.equal(matchesRunButton(btn), true);
   assert.equal(matchesSubmitButton(btn), false);
+});
+
+test('requestModelCode resolves with the responder\'s result when inject.js answers', async () => {
+  // Simulates inject.js: on the request event, synchronously dispatch a
+  // matching response carrying the model's code.
+  const events = mockEventTarget();
+  events.addEventListener('leetcode-capture:request-code', (event) => {
+    const { requestId } = event.detail;
+    events.dispatchEvent(new CustomEvent('leetcode-capture:code-response', {
+      detail: { requestId, result: { code: 'def solve():\n    pass', language: 'python' } },
+    }));
+  });
+
+  const result = await requestModelCode(events, events, 500);
+  assert.deepEqual(result, { code: 'def solve():\n    pass', language: 'python' });
+});
+
+test('requestModelCode ignores a response carrying a mismatched requestId', async () => {
+  // Guards against a stale/duplicate response (e.g. from an overlapping
+  // in-flight request) being mistaken for the current one.
+  const events = mockEventTarget();
+  events.addEventListener('leetcode-capture:request-code', () => {
+    events.dispatchEvent(new CustomEvent('leetcode-capture:code-response', {
+      detail: { requestId: 'stale-id', result: { code: 'wrong', language: 'python' } },
+    }));
+  });
+
+  const result = await requestModelCode(events, events, 50);
+  assert.equal(result, null);
+});
+
+test('requestModelCode resolves to null on timeout when nothing responds', async () => {
+  // The case that matters most for the fallback path: inject.js never
+  // loaded, or Monaco wasn't reachable, so no response ever arrives.
+  const events = mockEventTarget();
+  const result = await requestModelCode(events, events, 50);
+  assert.equal(result, null);
 });

@@ -13,6 +13,12 @@
   "host_permissions": [
     "http://localhost:8135/*"
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["https://leetcode.com/problems/*"]
+    }
+  ],
   "browser_specific_settings": {
     "gecko": {
       "id": "leetcode-capture@thomsonklee.dev",

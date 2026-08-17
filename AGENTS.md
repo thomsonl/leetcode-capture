@@ -7,7 +7,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   declared as `websiteContent`/`required` because the extension transmits captured problem
   content and code to the local relay server and Mozilla counts localhost as "transmission" too),
   `relay-server/` (plain Node `http`, no deps), `vault-tool/` (Node CLI, no deps), `companion/` (single-process Node program, ESM, one real dependency - `@anthropic-ai/claude-agent-sdk` - for its Claude backend). See `README.md` for setup/usage of all four.
-- The extension reads Monaco's code via DOM (`.monaco-editor .view-lines`), not the `monaco` JS global - avoids needing a page-context injection. If LeetCode's DOM structure changes, this is the first place to check.
+- The extension reads code from Monaco's actual editor model (`monaco.editor.getEditors()`, filtered to the
+  editor whose DOM node has a non-zero `getBoundingClientRect()` - LeetCode has a second, hidden/offscreen
+  Monaco instance on the page - then `.getModel().getValue()`), not the rendered `.view-lines` DOM. Monaco
+  virtualizes rendered lines (only keeps DOM nodes for what's on screen plus overscan), so DOM scraping
+  silently truncates anything beyond a screenful - confirmed live: a 156-line solution showed only 10
+  `.view-line` elements in the DOM but the model always has the full text. `extension/inject.js` is injected
+  as a real `<script>` tag (not a declarative MV3 `"world": "MAIN"` content script - Firefox only gained
+  reliable support for that in Firefox 128, after this extension's `strict_min_version: 109`) so it runs in
+  the page's MAIN world where `monaco` lives, and talks back to `content.js`'s isolated world over
+  `CustomEvent`s on `document` (`leetcode-capture:request-code` / `leetcode-capture:code-response`, matched
+  by a request id) - both worlds share the same DOM, so no `postMessage` is needed.
+  `getEditorCode()` in `content.js` awaits that round-trip (500ms timeout) and falls back to the old
+  DOM-scrape (`getEditorCodeFromDom()`) if it fails for any reason, so a capture still happens even if
+  injection is ever blocked. Verified live end-to-end with chrome-devtools-axi against a real
+  leetcode.com/problems/two-sum/ page (full protocol round-trip using the real `inject.js` source, not a
+  mock): full capture of a 150+ line C++ solution well beyond one screen, a short solution, and a capture
+  after switching the language selector (LeetCode replaces the model in place on a language switch, still
+  correctly detected) - Firefox/Zen was reasoned about only (matching the CustomEvent/script-tag-injection
+  approach that already works identically on both), not independently live-verified, since chrome-devtools-axi
+  only drives Chromium. `.view-line`'s rendered text uses U+00A0 (non-breaking space) where the real source
+  has a plain space (confirmed live via charCode) - `getEditorCodeFromDom()`'s `.replace(/ /g, " ")` (NBSP to
+  space) is a real normalization, not a no-op; the model path never has this problem since `getValue()`
+  returns the real source text directly.
 - The problem description is read from `[data-track-load="description_content"]` (an analytics hook attribute, more stable than LeetCode's generated class names - verified against live `leetcode.com/problems/*` pages). `#qd-content` also matches but additionally picks up tab labels and other page chrome, so it's avoided.
 - LeetCode's own topic tags are read from `a[href^="/tag/"]` (verified live against `leetcode.com/problems/two-sum/` and `/house-robber/` with `chrome-devtools-axi`: matches exactly the "Topics" panel's links and nothing else, present in the DOM even while that panel is visually collapsed). Sent as `problemTags` on the capture; see `vault-tool/vault-notes.js`'s `findTopicNoteByTagName` for how a tag gets matched to an existing vault topic note.
 - The relay server rebuilds its per-problem `attemptSeq` counter from the existing log file on startup, so restarts don't reset sequence numbers. Log format is one JSON object per line at `relay-server/data/captures.jsonl` (gitignored).
