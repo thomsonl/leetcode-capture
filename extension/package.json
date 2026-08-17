@@ -1,0 +1,9 @@
+{
+  "name": "leetcode-capture-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MV3 content script that captures LeetCode Run/Submit attempts - no build step, no dependencies. This package.json exists only to run content.test.js.",
+  "scripts": {
+    "test": "node --test content.test.js"
+  }
+}
