@@ -30,6 +30,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   has a plain space (confirmed live via charCode) - `getEditorCodeFromDom()`'s `.replace(/ /g, " ")` (NBSP to
   space) is a real normalization, not a no-op; the model path never has this problem since `getValue()`
   returns the real source text directly.
+- `manifest.json`'s `web_accessible_resources[0].matches` must be a *strictly broader* match pattern than
+  `content_scripts[0].matches`, not merely equal to it - PR #16's model-read fix (above) initially shipped
+  with both set to the identical string `https://leetcode.com/problems/*`, and that exact pairing made real
+  Chrome reject the whole extension at load time ("Invalid value for 'web_accessible_resources[0]'. Invalid
+  match pattern.") - confirmed live by loading the real unpacked extension into a real Chrome instance.
+  Silent failure mode: `getEditorCode()`'s DOM-scrape fallback had zero logging, so the truncation bug PR #16
+  was meant to fix kept happening with no visible cause. Fixed by broadening WAR's pattern to
+  `https://leetcode.com/*`; `getEditorCode()` now logs which path (model vs. DOM-scrape) produced each
+  capture and warns loudly on fallback. `extension/content.test.js` asserts WAR's matches strictly cover
+  content_scripts's matches, specifically rejecting an identical pair. To sandbox-test extension loading
+  without a system Chrome install: launch Playwright's cached Chromium
+  (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --headless=new --load-extension=<dir>
+  --disable-extensions-except=<dir> --enable-logging=stderr --v=1`) and grep its log for "Failed to load
+  extension" - real leetcode.com is unreachable from a headless browser here (Cloudflare's bot challenge), so
+  end-to-end capture behavior needs a local page serving the unmodified content.js/inject.js against a faked
+  `monaco` global instead (see the PR that added this note for the pattern). `sleep` is blocked in this
+  harness's Bash tool and silently kills the whole command chain - use a spin-loop (`for i in $(seq 1 N); do
+  :; done`) or split across separate tool calls instead.
 - The problem description is read from `[data-track-load="description_content"]` (an analytics hook attribute, more stable than LeetCode's generated class names - verified against live `leetcode.com/problems/*` pages). `#qd-content` also matches but additionally picks up tab labels and other page chrome, so it's avoided.
 - LeetCode's own topic tags are read from `a[href^="/tag/"]` (verified live against `leetcode.com/problems/two-sum/` and `/house-robber/` with `chrome-devtools-axi`: matches exactly the "Topics" panel's links and nothing else, present in the DOM even while that panel is visually collapsed). Sent as `problemTags` on the capture; see `vault-tool/vault-notes.js`'s `findTopicNoteByTagName` for how a tag gets matched to an existing vault topic note.
 - The relay server rebuilds its per-problem `attemptSeq` counter from the existing log file on startup, so restarts don't reset sequence numbers. Log format is one JSON object per line at `relay-server/data/captures.jsonl` (gitignored).
