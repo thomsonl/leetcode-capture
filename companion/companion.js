@@ -476,6 +476,15 @@ async function handleCaptureLine(line) {
   }
   const label = `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`;
 
+  // Print an instant, local, non-LLM acknowledgement before the backend call
+  // below even starts - the tutor persona's own step 1 (acknowledging receipt
+  // in its own words) still happens too, but that's baked into the real reply
+  // and can lag several seconds behind, longer for Submit. This line is just
+  // a deterministic confirmation that the capture arrived.
+  printAboveInput(
+    `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`,
+  );
+
   // Only Submits (not Runs) drive the vault auto-summary, and only when the
   // toggle is on - see the "vault auto-summary" section above. When active,
   // one extra instruction is appended to the same message so the single
