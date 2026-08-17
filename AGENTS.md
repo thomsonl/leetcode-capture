@@ -147,6 +147,21 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   fallbacks still cover it, but confirm the real value with a live DOM inspection if this ever needs
   revisiting.
 
+- `companion/terminal-format.js` owns companion.js's CLI-look styling (colored/labeled prompt and
+  tutor replies, dimmed `companion: ...` status/error lines, markdown rendering via
+  `marked`/`marked-terminal`) - a separate module specifically so the styling decision (TTY or not,
+  `NO_COLOR` or not) is computed once at import time and every exported helper already no-ops
+  correctly, rather than each call site in companion.js carrying its own branch. Gates on
+  `process.stdout.isTTY` explicitly rather than trusting chalk's/marked-terminal's own ambient
+  color-support detection - confirmed live that this sandbox sometimes has `FORCE_COLOR` set even
+  on a piped, non-TTY stdout, which would otherwise leak ANSI codes into piped output. Because
+  `enabled` is frozen at import time, a test that wants the TTY-on behavior must set
+  `process.stdout.isTTY = true` *and* import the module via dynamic `import()` (not a static
+  `import` statement, which ES modules hoist and evaluate before any preceding line of code, TTY
+  flag included) - see `companion/terminal-format.test.js`'s header comment and `runInChild` for
+  the working pattern. `companion/companion.test.js` spawns companion.js with piped stdio, so it
+  doubles as the non-TTY/no-ANSI regression path end-to-end.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

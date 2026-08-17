@@ -145,3 +145,25 @@ test('a normal reply with populated `content` still prints as before', async () 
   assert.match(out, /got your Run for Two Sum - taking a look/);
   assert.match(out, /Got your run - standing by\./);
 });
+
+// companion.js is spawned with piped (non-TTY) stdio in every test in this
+// file, same as a real piped/redirected invocation - so this also doubles
+// as the "piping companion's output stays plain" regression: a markdown
+// reply must come through with its raw syntax untouched and, critically, no
+// ANSI escape codes at all (see terminal-format.js's stylingEnabled - it
+// gates on process.stdout.isTTY explicitly rather than trusting ambient
+// color-support detection, precisely so a piped child like this one never
+// emits escape codes even if the environment sets FORCE_COLOR).
+test('a markdown reply stays as raw, unrendered text with no ANSI codes over a pipe', async () => {
+  const markdownReply =
+    '**Nice work!** Here is a fenced block:\n\n```python\ndef f(x):\n    return x\n```\n\n- one\n- two';
+  const out = await runCompanion({
+    stubReplyFor: () => ({ role: 'assistant', content: markdownReply }),
+    capture: makeCapture({ trigger: 'submit', attemptSeq: 1 }),
+  });
+
+  assert.match(out, /\*\*Nice work!\*\*/); // bold markers left literal, not rendered
+  assert.match(out, /```python/); // fence markers left literal, not stripped
+  assert.match(out, /- one\n- two/); // list markers left as-is, no re-indentation
+  assert.ok(!out.includes('\x1b['), `expected no ANSI escape codes in piped output, got: ${JSON.stringify(out)}`);
+});
