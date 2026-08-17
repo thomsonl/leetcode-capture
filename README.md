@@ -61,6 +61,31 @@ leetcode         # Claude backend (default)
 leetcode -local  # local Ollama backend
 ```
 
+### Configure the vault
+
+`vault-tool/log-session.js` and the companion's vault auto-summary feature (`VAULT_AUTO_SUMMARY=1`, see below) both write into an Obsidian vault.
+By default they use Thomson's own vault, at `~/Documents/My Brain`, with algorithm notes under its `Study/Algorithms` subfolder - no configuration is needed to reproduce that setup.
+
+To point either tool at a different vault, copy `vault.config.example.json` to `vault.config.json` at the repo root (gitignored, since it holds a personal absolute path) and fill in your own values:
+
+```json
+{
+  "vaultPath": "/absolute/path/to/your/vault",
+  "algorithmsSubfolder": "Study/Algorithms"
+}
+```
+
+Both keys are optional; a missing key falls back to the next source below.
+Precedence, highest first:
+
+1. Environment variables: `VAULT_PATH` and `VAULT_ALGORITHMS_SUBFOLDER`.
+2. `vault.config.json`'s `vaultPath` and `algorithmsSubfolder`.
+3. Built-in defaults (Thomson's own vault and subfolder, above).
+
+`log-session.js`'s `--vault <path>` CLI flag outranks all of the above for that one invocation.
+
+If the resolved vault path doesn't exist, both tools fail with a clear error naming the exact path instead of silently creating a new folder tree there.
+
 ### Configure the local model
 
 Before using the local backend, set `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
