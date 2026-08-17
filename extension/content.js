@@ -136,30 +136,79 @@
     }
   }
 
-  function findButtonByText(patterns) {
-    const candidates = document.querySelectorAll("button");
-    for (const btn of candidates) {
-      const text = btn.textContent.trim().toLowerCase();
-      if (patterns.some((p) => text === p)) {
-        return btn;
-      }
-    }
-    return null;
+  // The Run button is icon-only on the live page (a FontAwesome play-icon
+  // SVG, no visible text) - btn.textContent is empty for it, so a
+  // text-based match never fires and Run captures were silently never
+  // sent at all. Confirmed via live DOM inspection (Thomson, chrome
+  // devtools). The Submit button does still carry visible "Submit" text
+  // today, but is matched the same layered way here so a future LeetCode
+  // frontend change that strips its text too doesn't silently reintroduce
+  // this exact bug.
+  //
+  // Each button is checked against several independent signals, in order
+  // from most to least specific, and matches on the first one that's
+  // present - not all buttons carry every signal:
+  //   1. `data-e2e-locator` - LeetCode's own e2e test hook attribute
+  //      ("console-run-button" / "console-submit-button"), the same kind
+  //      of stable, non-styling attribute already relied on elsewhere in
+  //      this extension (see getProblemDescription's data-track-load).
+  //   2. `aria-label` - LeetCode adds this to icon-only buttons for
+  //      accessibility, so it's expected to stay present even without
+  //      visible text.
+  //   3. A FontAwesome play-icon SVG inside the button (`.fa-play`, or
+  //      `data-icon="play"` on the <svg> itself) - specific to Run, since
+  //      Submit has no play icon.
+  //   4. Visible button text ("run"/"run code"/"submit") - the original,
+  //      pre-this-fix behavior, kept as a last-resort fallback for
+  //      whichever variant of the page still has it.
+  function matchesRunButton(btn) {
+    const locator = btn.getAttribute("data-e2e-locator");
+    if (locator) return locator === "console-run-button";
+    const ariaLabel = (btn.getAttribute("aria-label") || "").trim().toLowerCase();
+    if (ariaLabel) return ariaLabel === "run" || ariaLabel === "run code";
+    if (btn.querySelector('svg.fa-play, svg[data-icon="play"]')) return true;
+    const text = btn.textContent.trim().toLowerCase();
+    return text === "run" || text === "run code";
+  }
+
+  function matchesSubmitButton(btn) {
+    const locator = btn.getAttribute("data-e2e-locator");
+    if (locator) return locator === "console-submit-button";
+    const ariaLabel = (btn.getAttribute("aria-label") || "").trim().toLowerCase();
+    if (ariaLabel) return ariaLabel === "submit";
+    const text = btn.textContent.trim().toLowerCase();
+    return text === "submit";
   }
 
   // LeetCode's Run/Submit buttons are re-rendered by React fairly often, so
   // instead of binding listeners to specific button elements once, delegate
-  // from a stable ancestor and match on click target text.
+  // from a stable ancestor and match on click target. Prefer the nearest
+  // `[data-e2e-locator]` ancestor over the nearest `<button>` - confirmed
+  // live (Thomson, chrome devtools) that LeetCode puts this attribute
+  // directly on the Submit button (`data-e2e-locator="console-submit-button"`,
+  // alongside `aria-label="Submit"`); matchesRunButton/matchesSubmitButton
+  // check the *same* element either way (the locator lookup is a no-op if
+  // absent), so this only matters if a future page ever puts the locator on
+  // a wrapping element instead of the `<button>` itself.
   function handleDelegatedClick(event) {
-    const btn = event.target.closest("button");
+    const btn = event.target.closest("[data-e2e-locator]") || event.target.closest("button");
     if (!btn) return;
 
-    const text = btn.textContent.trim().toLowerCase();
-    if (text === "run" || text === "run code") {
+    if (matchesRunButton(btn)) {
       sendCapture("run");
-    } else if (text === "submit") {
+    } else if (matchesSubmitButton(btn)) {
       sendCapture("submit");
     }
+  }
+
+  // Test-only hook: exposes the button matchers to content.test.js via
+  // plain CommonJS require(), so they're unit-testable with simple mock
+  // button objects (no jsdom, no build step) without changing anything
+  // about how this script runs as a real content script - `module` is
+  // undefined in the browser, so this is a no-op there.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { matchesRunButton, matchesSubmitButton };
+    return;
   }
 
   document.addEventListener("click", handleDelegatedClick, true);

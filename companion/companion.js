@@ -159,7 +159,10 @@ class ClaudeBackend {
         }
       }
     }
-    if (resultText !== null) return resultText;
+    if (resultText !== null && resultText.trim()) return resultText;
+    if (resultText !== null) {
+      throw new Error('Agent SDK query succeeded but returned an empty result');
+    }
     throw new Error(errorNote || 'no result message received from the Agent SDK');
   }
 }
@@ -205,7 +208,20 @@ class LocalBackend {
     }
 
     const data = await response.json();
-    const replyText = data?.choices?.[0]?.message?.content ?? '';
+    const message = data?.choices?.[0]?.message;
+    // Some locally-hosted "thinking" models (e.g. Ollama's gemma-family
+    // thinking variants) put their whole answer in a separate `reasoning`
+    // field and leave `content` empty, especially on the longer responses a
+    // Submit's full breakdown asks for - a plain `content ?? ''` here would
+    // silently hand sendAndPrint an empty string, which prints nothing but
+    // the capture's label, looking exactly like "the reply never arrived"
+    // even though the backend technically succeeded. Fall back to
+    // `reasoning` before giving up.
+    const replyText = (message?.content && message.content.trim()) || (message?.reasoning && message.reasoning.trim()) || '';
+    if (!replyText) {
+      this.history.pop();
+      throw new Error('local backend returned an empty reply (no content or reasoning in the response)');
+    }
     this.history.push({ role: 'assistant', content: replyText });
     return replyText;
   }
@@ -429,7 +445,16 @@ function sendAndPrint(label, text, { onReply } = {}) {
       return;
     }
     const displayText = onReply ? onReply(reply) : reply;
-    printAboveInput(`${label ? `${label}\n` : ''}${displayText}`);
+    // Defense in depth: even if a backend or onReply transform ever hands
+    // back an empty/whitespace-only string without throwing, never let that
+    // render as total silence after the label - that's indistinguishable
+    // from "the reply never arrived" (see LocalBackend.sendMessage's own
+    // empty-reply guard for the concrete case this was written for).
+    const safeDisplayText =
+      typeof displayText === 'string' && displayText.trim()
+        ? displayText
+        : 'companion: warning: backend returned an empty reply';
+    printAboveInput(`${label ? `${label}\n` : ''}${safeDisplayText}`);
   });
 }
 

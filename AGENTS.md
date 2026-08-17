@@ -51,6 +51,37 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Verified end-to-end in the PR that introduced this: a real subprocess run of `companion.js`
   against a stub OpenAI-compatible backend, asserting the JSON block never reaches stdout and both
   the per-problem and topic-index vault files come out with the expected content.
+- `sendAndPrint` in `companion.js` prints a capture's reply only after the backend call fully
+  resolves - if a backend call ever resolves with an empty/falsy reply (rather than throwing), the
+  old code printed just the capture's label with nothing after it, indistinguishable from "the
+  reply never arrived." Hit live with `COMPANION_BACKEND=local` against an Ollama "thinking" model
+  (e.g. `gemma4:26b`): it sometimes puts its whole answer in a `reasoning` field on the chat message
+  and leaves `content` empty, more likely on the longer response a Submit's full breakdown asks for
+  than on a Run's short acknowledgement - `LocalBackend.sendMessage` now falls back to `reasoning`
+  and throws (surfacing the existing `companion: error talking to backend` line) if both are empty;
+  `sendAndPrint` also has a defense-in-depth guard for any backend returning an empty string.
+  `companion/companion.test.js` (`npm test` in `companion/`) is the regression test - spawns a real
+  companion.js subprocess against a stub OpenAI-compatible server returning `reasoning`-only
+  replies. When reproducing companion.js issues locally with a custom capture log path, set both
+  `CAPTURE_LOG_PATH` (what `relay-server/server.js` writes to) and `LEETCODE_CAPTURES_FILE` (what
+  `companion.js` tails) - they default to the same physical path but are read independently, so
+  setting only one while `companion.js` auto-spawns its own relay server (see the lifecycle note
+  above) points the two at different files and captures silently vanish.
+- `extension/content.js`'s Run button is icon-only on the live page (a FontAwesome play-icon SVG,
+  no visible text) - a text-only click match (`btn.textContent.trim() === 'run'`) never fires for
+  it, so Run captures were silently never sent at all. Confirmed via live DOM inspection against a
+  real leetcode.com problem page: the Submit button carries `data-e2e-locator="console-submit-button"`
+  and `aria-label="Submit"`; `matchesRunButton`/`matchesSubmitButton` now check, in order,
+  `data-e2e-locator`, `aria-label`, a play-icon SVG (Run only), then text - so no single LeetCode
+  frontend change can silently reintroduce this bug. `handleDelegatedClick` looks up the click
+  target via `closest('[data-e2e-locator]')` first, falling back to `closest('button')`.
+  `extension/content.test.js` (`npm test` in `extension/` - the first automated tests this
+  component has had; content.js exports the matchers via a `module.exports` guarded to be a no-op
+  in the real browser, so no build step or jsdom is needed) covers this with mock button objects.
+  The exact Run-side `data-e2e-locator` value (assumed `"console-run-button"`, mirroring Submit's
+  naming) was not independently confirmed live - if it turns out different, the aria-label/icon
+  fallbacks still cover it, but confirm the real value with a live DOM inspection if this ever needs
+  revisiting.
 
 ## Maintaining this file
 
