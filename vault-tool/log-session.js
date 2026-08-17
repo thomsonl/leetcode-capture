@@ -12,7 +12,9 @@
 //   --log <path>       Path to the captures.jsonl log file
 //                       (default: ../relay-server/data/captures.jsonl)
 //   --vault <path>     Path to the Obsidian vault root
-//                       (default: ~/Documents/My Brain)
+//                       (default: VAULT_PATH env var, then vault.config.json's
+//                       "vaultPath", then ~/Documents/My Brain - see
+//                       vault-notes.js's resolveVaultConfig)
 //   --note <text>      Freeform note text to include (optional)
 //   --accepted         Mark the session as accepted (last Submit passed)
 //   --dry-run          Print the note instead of writing it
@@ -25,7 +27,12 @@
 
 const fs = require("fs");
 const path = require("path");
-const { defaultVaultPath, safeFileName, findTopicNoteByProblemLink } = require("./vault-notes");
+const {
+  safeFileName,
+  findTopicNoteByProblemLink,
+  resolveVaultConfig,
+  validateVaultPath,
+} = require("./vault-notes");
 
 function parseArgs(argv) {
   const args = { dryRun: false, accepted: false };
@@ -163,8 +170,8 @@ function appendToTopicNote(filePath, noteBlock) {
   fs.writeFileSync(filePath, content);
 }
 
-function createPerProblemNote(vaultPath, summary, noteBlock) {
-  const problemsDir = path.join(vaultPath, "Study", "Algorithms", "Problems");
+function createPerProblemNote(vaultPath, summary, noteBlock, algorithmsSubfolder) {
+  const problemsDir = path.join(vaultPath, algorithmsSubfolder, "Problems");
   fs.mkdirSync(problemsDir, { recursive: true });
 
   const filePath = path.join(problemsDir, `${safeFileName(summary.problemTitle)}.md`);
@@ -193,7 +200,11 @@ function main() {
   }
 
   const logPath = args.log || path.join(__dirname, "..", "relay-server", "data", "captures.jsonl");
-  const vaultPath = args.vault || defaultVaultPath();
+  const vaultConfig = resolveVaultConfig();
+  // --vault is an explicit per-invocation override, so it outranks both the
+  // env var and the config file resolveVaultConfig() already applied.
+  const vaultPath = args.vault || vaultConfig.vaultPath;
+  const algorithmsSubfolder = vaultConfig.algorithmsSubfolder;
 
   const entries = loadCaptures(logPath, args.slug);
   const summary = summarize(entries, args.accepted);
@@ -204,12 +215,14 @@ function main() {
     return;
   }
 
-  const topicNote = findTopicNoteByProblemLink(vaultPath, args.slug);
+  validateVaultPath(vaultPath);
+
+  const topicNote = findTopicNoteByProblemLink(vaultPath, args.slug, algorithmsSubfolder);
   if (topicNote) {
     appendToTopicNote(topicNote, noteBlock);
     console.log(`Appended capture session to ${topicNote}`);
   } else {
-    const created = createPerProblemNote(vaultPath, summary, noteBlock);
+    const created = createPerProblemNote(vaultPath, summary, noteBlock, algorithmsSubfolder);
     console.log(`No matching topic note found; wrote per-problem note to ${created}`);
   }
 }

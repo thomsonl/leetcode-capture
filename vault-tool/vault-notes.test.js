@@ -12,6 +12,10 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  defaultVaultPath,
+  vaultConfigFilePath,
+  resolveVaultConfig,
+  validateVaultPath,
   safeFileName,
   findTopicNoteByProblemLink,
   findTopicNoteByTagName,
@@ -25,6 +29,43 @@ function makeTempVault() {
   const algDir = path.join(vaultPath, "Study", "Algorithms");
   fs.mkdirSync(algDir, { recursive: true });
   return vaultPath;
+}
+
+// resolveVaultConfig() reads vault.config.json from a fixed path derived
+// from __dirname inside vault-notes.js, so these tests swap the real config
+// file (if any - there shouldn't be one committed) out of the way for the
+// duration of each test rather than parameterizing the function, keeping
+// the production code path identical to what callers actually use.
+function withVaultConfigFile(contentsOrNull, fn) {
+  const configPath = vaultConfigFilePath();
+  const backupPath = `${configPath}.test-backup`;
+  const hadExisting = fs.existsSync(configPath);
+  if (hadExisting) fs.renameSync(configPath, backupPath);
+
+  try {
+    if (contentsOrNull !== null) fs.writeFileSync(configPath, contentsOrNull);
+    fn();
+  } finally {
+    if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+    if (hadExisting) fs.renameSync(backupPath, configPath);
+  }
+}
+
+function withEnv(vars, fn) {
+  const prior = {};
+  for (const key of Object.keys(vars)) prior[key] = process.env[key];
+  try {
+    for (const [key, value] of Object.entries(vars)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fn();
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 test("safeFileName strips filesystem-unsafe characters", () => {
@@ -92,4 +133,95 @@ test("readSection returns null for a missing section and the trimmed body for an
   const content = "# Note\n\n## AI Notes\n\nbody text here\n\n## Next\n\nother\n";
   assert.equal(readSection(content, "## AI Notes"), "body text here");
   assert.equal(readSection(content, "## Missing"), null);
+});
+
+test("resolveVaultConfig falls back to built-in defaults with no config file and no env vars", () => {
+  withEnv({ VAULT_PATH: undefined, VAULT_ALGORITHMS_SUBFOLDER: undefined }, () => {
+    withVaultConfigFile(null, () => {
+      const config = resolveVaultConfig();
+      assert.equal(config.vaultPath, defaultVaultPath());
+      assert.equal(config.algorithmsSubfolder, path.join("Study", "Algorithms"));
+    });
+  });
+});
+
+test("resolveVaultConfig reads vaultPath and algorithmsSubfolder from the config file", () => {
+  withEnv({ VAULT_PATH: undefined, VAULT_ALGORITHMS_SUBFOLDER: undefined }, () => {
+    withVaultConfigFile(
+      JSON.stringify({ vaultPath: "/tmp/some-other-vault", algorithmsSubfolder: "Notes/DSA" }),
+      () => {
+        const config = resolveVaultConfig();
+        assert.equal(config.vaultPath, "/tmp/some-other-vault");
+        assert.equal(config.algorithmsSubfolder, "Notes/DSA");
+      }
+    );
+  });
+});
+
+test("resolveVaultConfig prefers env vars over the config file, which is preferred over defaults", () => {
+  withVaultConfigFile(
+    JSON.stringify({ vaultPath: "/tmp/config-file-vault", algorithmsSubfolder: "Config/Subfolder" }),
+    () => {
+      withEnv({ VAULT_PATH: "/tmp/env-vault", VAULT_ALGORITHMS_SUBFOLDER: "Env/Subfolder" }, () => {
+        const config = resolveVaultConfig();
+        assert.equal(config.vaultPath, "/tmp/env-vault");
+        assert.equal(config.algorithmsSubfolder, "Env/Subfolder");
+      });
+    }
+  );
+});
+
+test("resolveVaultConfig throws a clear error for a malformed config file", () => {
+  withVaultConfigFile("{ not valid json", () => {
+    assert.throws(() => resolveVaultConfig(), /not valid JSON/);
+  });
+});
+
+test("validateVaultPath throws naming the exact missing path instead of creating it", () => {
+  const missingPath = path.join(os.tmpdir(), "leetcode-capture-does-not-exist-" + Date.now());
+  assert.throws(() => validateVaultPath(missingPath), new RegExp(missingPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(fs.existsSync(missingPath), false, "must not have been created as a side effect");
+});
+
+test("validateVaultPath succeeds for an existing directory (no .obsidian required)", () => {
+  const vaultPath = makeTempVault();
+  assert.doesNotThrow(() => validateVaultPath(vaultPath));
+});
+
+test("ensurePerProblemNoteFile fails loudly instead of fabricating a vault directory tree", () => {
+  const missingVaultPath = path.join(os.tmpdir(), "leetcode-capture-missing-vault-" + Date.now());
+  assert.throws(
+    () => ensurePerProblemNoteFile(missingVaultPath, { problemSlug: "two-sum", problemTitle: "1. Two Sum" }),
+    /Vault path does not exist/
+  );
+  assert.equal(fs.existsSync(missingVaultPath), false);
+});
+
+test("findTopicNoteByProblemLink and findTopicNoteByTagName respect a custom algorithmsSubfolder", () => {
+  const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), "leetcode-capture-vault-test-"));
+  const customDir = path.join(vaultPath, "Notes", "DSA");
+  fs.mkdirSync(customDir, { recursive: true });
+  const notePath = path.join(customDir, "Dynamic Programming.md");
+  fs.writeFileSync(
+    notePath,
+    "## LeetCode Problems\n\n- [x] [198. House Robber](https://leetcode.com/problems/house-robber/)\n"
+  );
+
+  const subfolder = path.join("Notes", "DSA");
+  assert.equal(findTopicNoteByProblemLink(vaultPath, "house-robber", subfolder), notePath);
+  assert.equal(findTopicNoteByTagName(vaultPath, "dynamic programming", subfolder), notePath);
+  // Default subfolder must not find it, proving the parameter is load-bearing.
+  assert.equal(findTopicNoteByProblemLink(vaultPath, "house-robber"), null);
+});
+
+test("ensurePerProblemNoteFile writes under a custom algorithmsSubfolder", () => {
+  const vaultPath = makeTempVault();
+  const subfolder = path.join("Notes", "DSA");
+  const filePath = ensurePerProblemNoteFile(
+    vaultPath,
+    { problemSlug: "house-robber", problemTitle: "198. House Robber" },
+    subfolder
+  );
+  assert.equal(filePath, path.join(vaultPath, "Notes", "DSA", "Problems", "198. House Robber.md"));
+  assert.equal(fs.existsSync(filePath), true);
 });

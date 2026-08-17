@@ -29,6 +29,8 @@ const require = createRequire(import.meta.url);
 const vaultNotes = require('../vault-tool/vault-notes.js');
 
 export const defaultVaultPath = vaultNotes.defaultVaultPath;
+export const resolveVaultConfig = vaultNotes.resolveVaultConfig;
+export const validateVaultPath = vaultNotes.validateVaultPath;
 
 const VAULT_JSON_RE = /<<<VAULT_JSON>>>([\s\S]*?)<<<END_VAULT_JSON>>>/;
 export const AI_NOTES_HEADER = '## AI Notes';
@@ -50,17 +52,18 @@ export function starRatingLine(stars) {
 // instructing it to emit the structured block. Returns null if the capture
 // doesn't carry enough to act on (missing slug/title - shouldn't happen
 // with a current extension build, but captures can predate a field).
-export function prepareVaultContext({ capture, vaultPath }) {
+export function prepareVaultContext({ capture, vaultPath, algorithmsSubfolder }) {
   if (!capture.problemSlug || !capture.problemTitle) return null;
 
   const tags = Array.isArray(capture.problemTags)
     ? capture.problemTags.filter((t) => typeof t === 'string' && t.trim())
     : [];
 
-  const problemNotePath = vaultNotes.ensurePerProblemNoteFile(vaultPath, {
-    problemSlug: capture.problemSlug,
-    problemTitle: capture.problemTitle,
-  });
+  const problemNotePath = vaultNotes.ensurePerProblemNoteFile(
+    vaultPath,
+    { problemSlug: capture.problemSlug, problemTitle: capture.problemTitle },
+    algorithmsSubfolder
+  );
   const priorAiNotes = vaultNotes.readSection(fs.readFileSync(problemNotePath, 'utf8'), AI_NOTES_HEADER);
 
   // Only tags that already have a curated Study/Algorithms/<Tag>.md note get
@@ -70,7 +73,7 @@ export function prepareVaultContext({ capture, vaultPath }) {
   const topicNotePaths = {};
   const priorTopicIndexes = {};
   for (const tag of tags) {
-    const topicPath = vaultNotes.findTopicNoteByTagName(vaultPath, tag);
+    const topicPath = vaultNotes.findTopicNoteByTagName(vaultPath, tag, algorithmsSubfolder);
     if (!topicPath) continue;
     matchedTopics.push(tag);
     topicNotePaths[tag] = topicPath;

@@ -13,6 +13,71 @@ function defaultVaultPath() {
   return path.join(os.homedir(), "Documents", "My Brain");
 }
 
+const DEFAULT_ALGORITHMS_SUBFOLDER = path.join("Study", "Algorithms");
+
+// Optional, gitignored config file at the repo root letting a user other
+// than Thomson point this tool at their own vault without touching code or
+// setting env vars every session. Plain JSON, parsed with JSON.parse, per
+// this project's no-external-deps convention (see CLAUDE.md). Both keys are
+// optional; a missing file is not an error - it just means "use env vars
+// and/or the built-in defaults", which is what Thomson's own setup already
+// relies on.
+function vaultConfigFilePath() {
+  return path.join(__dirname, "..", "vault.config.json");
+}
+
+function loadVaultConfigFile() {
+  const configPath = vaultConfigFilePath();
+  if (!fs.existsSync(configPath)) return {};
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, "utf8");
+  } catch (err) {
+    throw new Error(`Could not read vault config file at ${configPath}: ${err.message}`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Vault config file at ${configPath} is not valid JSON: ${err.message}`);
+  }
+}
+
+// Single place both log-session.js and companion/vault-summary.js resolve
+// the vault path and the algorithm-notes subfolder through, so the two
+// consumers can never disagree on precedence. Precedence, highest first:
+// explicit env var, then the config file, then the built-in default - so a
+// vault.config.json with no VAULT_PATH/VAULT_ALGORITHMS_SUBFOLDER set still
+// lets a stray env var win, and no config file at all reproduces Thomson's
+// existing behavior exactly.
+function resolveVaultConfig() {
+  const fileConfig = loadVaultConfigFile();
+  const vaultPath = process.env.VAULT_PATH || fileConfig.vaultPath || defaultVaultPath();
+  const algorithmsSubfolder =
+    process.env.VAULT_ALGORITHMS_SUBFOLDER || fileConfig.algorithmsSubfolder || DEFAULT_ALGORITHMS_SUBFOLDER;
+  return { vaultPath, algorithmsSubfolder };
+}
+
+// Fails loudly, naming the exact path and how to fix it, rather than letting
+// a wrong or unset vault path silently fabricate a brand-new folder tree
+// (the old behavior - ensurePerProblemNoteFile used to mkdirSync the whole
+// path unconditionally). A missing .obsidian folder only warns, since a
+// legitimate vault path passed via config/env could plausibly not carry one
+// (e.g. .obsidian excluded from a synced copy) - that's a much lower-risk
+// false negative than treating a bare "does this directory exist" check as
+// fatal would be.
+function validateVaultPath(vaultPath) {
+  if (!fs.existsSync(vaultPath) || !fs.statSync(vaultPath).isDirectory()) {
+    throw new Error(
+      `Vault path does not exist: ${vaultPath}\n` +
+        "Set VAULT_PATH, or \"vaultPath\" in vault.config.json (see README.md), to your Obsidian vault's absolute path."
+    );
+  }
+  if (!fs.existsSync(path.join(vaultPath, ".obsidian"))) {
+    console.warn(`Warning: ${vaultPath} exists but has no .obsidian folder - is this really an Obsidian vault?`);
+  }
+}
+
 // Shared with log-session.js's per-problem note filenames, so the manual CLI
 // and the automatic feature always agree on where a given problem's note
 // lives.
@@ -25,8 +90,8 @@ function safeFileName(title) {
 // original log-session.js matching strategy: it finds a topic note Thomson
 // has already curated to include this specific problem, regardless of the
 // note's filename.
-function findTopicNoteByProblemLink(vaultPath, slug) {
-  const algDir = path.join(vaultPath, "Study", "Algorithms");
+function findTopicNoteByProblemLink(vaultPath, slug, algorithmsSubfolder = DEFAULT_ALGORITHMS_SUBFOLDER) {
+  const algDir = path.join(vaultPath, algorithmsSubfolder);
   if (!fs.existsSync(algDir)) return null;
 
   const files = fs.readdirSync(algDir).filter((f) => f.endsWith(".md"));
@@ -50,8 +115,8 @@ function findTopicNoteByProblemLink(vaultPath, slug) {
 // LeetCode tag (e.g. "Array", "Hash Table" have no note of their own yet),
 // since those are curated concept notes with real prose, not stubs to
 // generate. Returns the absolute path, or null if no matching note exists.
-function findTopicNoteByTagName(vaultPath, tagName) {
-  const algDir = path.join(vaultPath, "Study", "Algorithms");
+function findTopicNoteByTagName(vaultPath, tagName, algorithmsSubfolder = DEFAULT_ALGORITHMS_SUBFOLDER) {
+  const algDir = path.join(vaultPath, algorithmsSubfolder);
   if (!fs.existsSync(algDir)) return null;
 
   const target = `${tagName}.md`.toLowerCase();
@@ -66,8 +131,13 @@ function findTopicNoteByTagName(vaultPath, tagName) {
 // so a note this creates and one log-session.js creates are
 // indistinguishable, and either tool can safely extend a note the other one
 // started.
-function ensurePerProblemNoteFile(vaultPath, { problemSlug, problemTitle }) {
-  const problemsDir = path.join(vaultPath, "Study", "Algorithms", "Problems");
+function ensurePerProblemNoteFile(
+  vaultPath,
+  { problemSlug, problemTitle },
+  algorithmsSubfolder = DEFAULT_ALGORITHMS_SUBFOLDER
+) {
+  validateVaultPath(vaultPath);
+  const problemsDir = path.join(vaultPath, algorithmsSubfolder, "Problems");
   fs.mkdirSync(problemsDir, { recursive: true });
 
   const filePath = path.join(problemsDir, `${safeFileName(problemTitle)}.md`);
@@ -123,6 +193,10 @@ function upsertSection(content, header, bodyText) {
 
 module.exports = {
   defaultVaultPath,
+  DEFAULT_ALGORITHMS_SUBFOLDER,
+  vaultConfigFilePath,
+  resolveVaultConfig,
+  validateVaultPath,
   safeFileName,
   findTopicNoteByProblemLink,
   findTopicNoteByTagName,

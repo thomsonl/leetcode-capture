@@ -28,7 +28,13 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { prepareVaultContext, extractVaultBlock, writeVaultAutoSummary, defaultVaultPath } from './vault-summary.js';
+import {
+  prepareVaultContext,
+  extractVaultBlock,
+  writeVaultAutoSummary,
+  resolveVaultConfig,
+  validateVaultPath,
+} from './vault-summary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -45,7 +51,12 @@ const API_KEY = process.env.COMPANION_API_KEY || null;
 // Obsidian. Thomson turns this on in his own untracked environment. See the
 // "Vault auto-summary" section below and README.md for what it does.
 const VAULT_AUTO_SUMMARY = /^(1|true|yes)$/i.test(process.env.VAULT_AUTO_SUMMARY || '');
-const VAULT_PATH = process.env.VAULT_PATH || defaultVaultPath();
+const { vaultPath: VAULT_PATH, algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER } = resolveVaultConfig();
+// Fail loudly at startup, not on the first Submit - a wrong or unset vault
+// path should never silently fabricate a new folder tree (see
+// vault-notes.js's validateVaultPath). Only checked when the feature is
+// actually on, so a portable checkout with it off never needs a real vault.
+if (VAULT_AUTO_SUMMARY) validateVaultPath(VAULT_PATH);
 
 // The tutor persona both backends share. Written out in full so every rule
 // is explicit rather than implied - see the "Companion" section of the
@@ -535,7 +546,11 @@ async function handleCaptureLine(line) {
   let vaultContext = null;
   if (VAULT_AUTO_SUMMARY && capture.trigger === 'submit') {
     try {
-      vaultContext = prepareVaultContext({ capture, vaultPath: VAULT_PATH });
+      vaultContext = prepareVaultContext({
+        capture,
+        vaultPath: VAULT_PATH,
+        algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER,
+      });
     } catch (err) {
       printAboveInput(`companion: warning: could not prepare vault auto-summary context (${err.message})`);
     }
