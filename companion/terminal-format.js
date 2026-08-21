@@ -32,11 +32,27 @@ const enabled = stylingEnabled();
 // above ever leaking a color decision we didn't intend.
 const c = new Chalk({ level: enabled ? 1 : 0 });
 
+// A comfortable reading measure (chars per line), independent of how wide
+// the actual terminal window is - matching Claude Code's own CLI look,
+// where prose wraps well short of a wide/ultrawide terminal's full width
+// rather than stretching edge to edge. Capped by the real terminal width
+// too, for a narrower-than-comfortable window.
+const COMFORTABLE_WIDTH = 80;
+
+function contentWidth() {
+  return Math.min(process.stdout.columns || 80, COMFORTABLE_WIDTH);
+}
+
 if (enabled) {
   marked.use(
     markedTerminal({
-      width: process.stdout.columns || 80,
-      reflowText: false,
+      width: contentWidth(),
+      // Reflow (word-wrap) prose text to the width above rather than
+      // leaving lines exactly as the model generated them - the width is
+      // deliberately narrower than the terminal now, so without this,
+      // text would still run to the terminal's own edge regardless of the
+      // configured width.
+      reflowText: true,
     })
   );
 }
@@ -48,31 +64,37 @@ export function dim(text) {
   return enabled ? c.dim(text) : text;
 }
 
-const ROLE_STYLES = {
-  you: (text) => c.cyanBright.bold(text),
-  tutor: (text) => c.magentaBright.bold(text),
-};
-
-// A short, styled role label ("you", "tutor"). Returns '' when styling is
-// off - callers must skip adding the label line entirely in that case
-// rather than printing an empty line, so non-TTY output stays byte-for-byte
-// what it was before this label existed (see companion.js's sendAndPrint).
-export function roleLabel(role) {
-  if (!enabled) return '';
-  const style = ROLE_STYLES[role];
-  return style ? style(role) : role;
+// The readline prompt marker. Plain '> ' when styling is off, matching the
+// prompt this program has always used; just the ">" colored when styling is
+// on - no "you"/role text (see turnMarker below for the tutor-reply side of
+// the same convention).
+export function promptString() {
+  return enabled ? `${c.cyanBright.bold('>')} ` : '> ';
 }
 
-// The readline prompt string. Plain '> ' when styling is off, matching the
-// prompt this program has always used.
-export function promptString() {
-  return enabled ? `${c.cyanBright.bold('you')} ${c.dim('›')} ` : '> ';
+// The marker opening a tutor reply turn - a single bullet, replacing the
+// old "tutor" role label and framing rule. '' when styling is off, same
+// convention as the rest of this module's labels: callers must skip adding
+// it entirely in that case, not print an empty prefix, so non-TTY output
+// stays exactly the raw reply text.
+export function turnMarker() {
+  if (!enabled) return '';
+  return `${c.magentaBright('•')} `;
+}
+
+// A thin rule marking off the pinned input box from the conversation above
+// it, at the same comfortable width prose wraps to. '' when styling is off
+// - there is no persistent input box over a pipe.
+export function boxRule() {
+  if (!enabled) return '';
+  return c.dim('─'.repeat(contentWidth()));
 }
 
 // Renders markdown (headers, bold/emphasis, lists, fenced code blocks with
-// syntax highlighting) to ANSI-styled text for a real TTY. Returns the text
-// unchanged when styling is off, so piped output keeps showing the raw
-// markdown exactly as before this feature existed.
+// syntax highlighting) to ANSI-styled text for a real TTY, wrapped to the
+// comfortable width above. Returns the text unchanged when styling is off,
+// so piped output keeps showing the raw markdown exactly as before this
+// feature existed.
 export function renderMarkdown(text) {
   if (!enabled) return text;
   // marked-terminal pads block elements with blank lines; collapse runs of
@@ -83,40 +105,12 @@ export function renderMarkdown(text) {
 
 // --- streaming reply support -------------------------------------------
 //
-// Phase 2 of the CLI look (phase 1, above: colored role/prompt styling and
-// one-shot markdown rendering). Two pieces: framing a reply turn's start
-// and end with a role-labeled rule so consecutive turns don't visually run
-// together, and rendering markdown safely as it streams in rather than only
-// once a reply is fully done. companion.js owns *when* a turn starts/ends
-// and how each piece reaches the terminal (it has the readline instance);
-// this module only owns what each piece looks like.
-
-// Terminal width to frame against, capped well below a very wide terminal -
-// a rule that stretches the full width of an ultrawide window reads as a
-// wall, not a frame.
-function frameWidth() {
-  const cols = process.stdout.columns || 80;
-  return Math.max(20, Math.min(cols, 100));
-}
-
-// A horizontal rule with a role label cut into it, e.g. "── tutor ─────...",
-// opening one reply turn. '' when styling is off, same convention as
-// roleLabel - callers must skip the frame entirely rather than print an
-// empty line.
-export function frameTop(role) {
-  if (!enabled) return '';
-  const width = frameWidth();
-  const label = roleLabel(role) || role;
-  const tail = '─'.repeat(Math.max(1, width - role.length - 4));
-  return `${c.dim('── ')}${label}${c.dim(` ${tail}`)}`;
-}
-
-// The matching closing rule, printed once a reply turn finishes. '' when
-// styling is off.
-export function frameBottom() {
-  if (!enabled) return '';
-  return c.dim('─'.repeat(frameWidth()));
-}
+// Two pieces on top of the styling/rendering above: rendering markdown
+// safely as it streams in rather than only once a reply is fully done, and
+// a spinner while waiting on the backend. companion.js owns *when* a reply
+// starts/ends and how each piece reaches the terminal (it has the readline
+// instance and the pinned input box); this module only owns what each piece
+// looks like.
 
 // One frame of the "waiting for the backend" spinner, cycling through
 // SPINNER_FRAME_COUNT frames on request - callers own the timing

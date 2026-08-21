@@ -147,35 +147,35 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   fallbacks still cover it, but confirm the real value with a live DOM inspection if this ever needs
   revisiting.
 
-- `companion/terminal-format.js` owns companion.js's CLI-look styling (colored/labeled prompt and
-  tutor replies, dimmed `companion: ...` status/error lines, markdown rendering via
-  `marked`/`marked-terminal`) - a separate module specifically so the styling decision (TTY or not,
-  `NO_COLOR` or not) is computed once at import time and every exported helper already no-ops
-  correctly, rather than each call site in companion.js carrying its own branch. Gates on
-  `process.stdout.isTTY` explicitly rather than trusting chalk's/marked-terminal's own ambient
-  color-support detection - confirmed live that this sandbox sometimes has `FORCE_COLOR` set even
-  on a piped, non-TTY stdout, which would otherwise leak ANSI codes into piped output. Because
-  `enabled` is frozen at import time, a test that wants the TTY-on behavior must set
-  `process.stdout.isTTY = true` *and* import the module via dynamic `import()` (not a static
-  `import` statement, which ES modules hoist and evaluate before any preceding line of code, TTY
-  flag included) - see `companion/terminal-format.test.js`'s header comment and `runInChild` for
-  the working pattern. `companion/companion.test.js` spawns companion.js with piped stdio, so it
-  doubles as the non-TTY/no-ANSI regression path end-to-end.
+- `companion/terminal-format.js` owns companion.js's CLI-look styling: a `>` prompt marker, a `•`
+  marker opening a tutor reply turn (`turnMarker`, replacing an earlier "tutor" role-label/framing-rule
+  design - no per-speaker labels any more), dimmed `companion: ...` status/error lines, and markdown
+  rendering via `marked`/`marked-terminal` wrapped to a comfortable reading width (`COMFORTABLE_WIDTH`,
+  currently 80 cols, capped by a narrower real terminal) rather than the terminal's full width - a
+  separate module specifically so the styling decision (TTY or not, `NO_COLOR` or not) is computed
+  once at import time and every exported helper already no-ops correctly, rather than each call site
+  in companion.js carrying its own branch. Gates on `process.stdout.isTTY` explicitly rather than
+  trusting chalk's/marked-terminal's own ambient color-support detection - confirmed live that this
+  sandbox sometimes has `FORCE_COLOR` set even on a piped, non-TTY stdout, which would otherwise leak
+  ANSI codes into piped output. Because `enabled` is frozen at import time, a test that wants the
+  TTY-on behavior must set `process.stdout.isTTY = true` *and* import the module via dynamic
+  `import()` (not a static `import` statement, which ES modules hoist and evaluate before any
+  preceding line of code, TTY flag included) - see `companion/terminal-format.test.js`'s header
+  comment and `runInChild` for the working pattern. `companion/companion.test.js` spawns companion.js
+  with piped stdio, so it doubles as the non-TTY/no-ANSI regression path end-to-end.
 
-- Phase 2 of the CLI look (streaming replies + boxed/framed turns, on top of phase 1 above):
-  `terminal-format.js` adds `frameTop`/`frameBottom` (a role-labeled rule opening/closing a reply
-  turn), `spinnerFrame` (one frame of a "waiting on the backend" spinner - the timing/redraw is
-  `companion.js`'s job, since only it has the readline instance), and `createMarkdownStreamer`
-  (feeds a reply in incrementally, only rendering a block once it reaches a safe boundary - a blank
-  line outside a fenced code block, or a fence's own close - so a still-open fence or mid-block
-  chunk is never handed to `marked`/`marked-terminal`, which renders those as broken/uncoloured
-  text; disabled/non-TTY mode is a pure per-chunk pass-through, matching how a non-streaming reply
-  already looked over a pipe). Both backends' `sendMessage(text, { onChunk })` now take an optional
-  `onChunk` and call it with each visible text delta: `ClaudeBackend` sets
-  `includePartialMessages: true` and reads `stream_event` messages' `content_block_delta`/`text_delta`
-  events; `LocalBackend` requests `stream: Boolean(onChunk)` and parses the OpenAI-compatible SSE
-  response itself (`response.body.getReader()`), still falling back to `reasoning` if `content`
-  stays empty end to end, same as the non-streaming path.
+  `terminal-format.js` also owns streaming support: `spinnerFrame` (one frame of a "waiting on the
+  backend" spinner - the timing/redraw is `companion.js`'s job, since only it has the readline
+  instance) and `createMarkdownStreamer` (feeds a reply in incrementally, only rendering a block once
+  it reaches a safe boundary - a blank line outside a fenced code block, or a fence's own close - so
+  a still-open fence or mid-block chunk is never handed to `marked`/`marked-terminal`, which renders
+  those as broken/uncoloured text; disabled/non-TTY mode is a pure per-chunk pass-through, matching
+  how a non-streaming reply already looked over a pipe). Both backends' `sendMessage(text, {
+  onChunk })` take an optional `onChunk` and call it with each visible text delta: `ClaudeBackend`
+  sets `includePartialMessages: true` and reads `stream_event` messages'
+  `content_block_delta`/`text_delta` events; `LocalBackend` requests `stream: Boolean(onChunk)` and
+  parses the OpenAI-compatible SSE response itself (`response.body.getReader()`), still falling back
+  to `reasoning` if `content` stays empty end to end, same as the non-streaming path.
   In `companion.js`, `sendAndPrint` only streams when there's no `onReply` transform - a vault
   auto-summary Submit turn (`onReply` set) always waits for the whole reply, since `extractVaultBlock`
   can only identify and strip the trailing `<<<VAULT_JSON>>>` block once the reply is complete, and
@@ -184,22 +184,51 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   JSON chunk and the visible reply's arrival, and that `VAULT_JSON` never appears in the output,
   distinct from a separate test proving genuine incremental delivery on the streaming path (both
   matter: a stub that always answers instantly can't tell a real stream from a fast one-shot flush).
-  A whole reply "turn" (spinner, frame, one or many streamed pieces) is written through
-  `beginTurn()`/`writeTurn()`/`endTurn()`, not `printAboveInput` - pausing readline for the turn's
-  duration (a keystroke mid-reply is simply buffered and replayed once the turn ends, rather than
-  echoing into the middle of it) instead of paying for a full clear/redraw of the prompt on every
-  streamed piece, which was flickery. Consecutive rendered blocks from separate
-  `streamer.push()`/`finish()` calls are joined with an explicit blank line in `sendAndPrint`
-  (`writeReplyPiece`) - each call's `renderMarkdown` independently `trimEnd()`s its own boundary, so
-  without this the paragraph spacing between them silently disappears; confirmed live under a real
-  pty (`python3 -c 'import pty; ...'`, no `node-pty` dependency needed) driving a stub SSE backend,
-  which is also how the spinner-then-frame sequencing, streamed markdown/code-fence rendering, the
-  error path, and the prompt correctly restoring after a turn were all eyeballed end to end - real
-  ANSI escape codes over a piped `node --test` run don't show this class of bug, only a live
-  terminal does. `ClaudeBackend`'s streaming path itself has no automated test (matches this file's
-  existing backend-coverage gap: only `local` is exercised via subprocess tests) - reasoned about
-  from the Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not
-  independently live-verified against a real Claude account.
+
+- The input area is a small pinned box (a thin rule, then the `>` prompt) that stays the last thing
+  on screen, styled/TTY mode only. `bottomRowsShown` tracks how many terminal rows, ending at the
+  cursor's current row, the box (or, mid-spinner, its temporary one-line replacement) currently
+  occupies; `clearBottomRows()` clears exactly that many before new content is written, and
+  `drawBox()` redraws the box fresh afterward, setting it back to 2. `printAboveInput` and every
+  streamed reply piece (`sendAndPrint`'s `writeReplyPiece`) go through this same clear/print/redraw
+  cycle - throttled to real markdown block boundaries by `createMarkdownStreamer`, not raw network
+  chunks, so the box stays visibly pinned through a whole streaming reply without flickering on every
+  tiny piece. Consecutive rendered blocks are separated by exactly one blank line in `writeReplyPiece`
+  - each piece already ends with its own trailing newline (so the box's rule has a fresh line to
+  start on), which accounts for the first half of that blank line, so only one more newline (not two)
+  is written before a second-or-later piece; writing two produced a real double-blank-line bug,
+  caught live (see below). A turn-boundary flag (`turnBoundaryPending`/`consumeTurnBoundary`) makes
+  exactly one blank line separate whole turns from each other too - set at the end of every turn,
+  consumed by whichever prints first for the next one (a capture's local ack, or a typed reply's own
+  first output), so it's correct regardless of which runs first.
+
+  `drawBox()` redraws via `rl.prompt(true)` alone - readline's own rendering already reflects the
+  current line and cursor position correctly on its own, including mid-line edits, confirmed live via
+  a minimal probe script. An earlier version additionally did `rl.write(savedLine)` (inherited from
+  this feature's very first cut, when it was structurally impossible to trigger): `rl.write()` does
+  not just *display* text, it *inserts* it into the buffer at the cursor position - calling it with
+  the very text `rl.prompt(true)` had just re-rendered from that same `rl.line` duplicated every
+  character on screen (and in the buffer) the moment a keystroke landed in the gap between two box
+  redraws, e.g. typing while a reply is streaming in. Also confirmed live: reset `bottomRowsShown = 0`
+  at the very top of `rl.on('line', ...)`, before anything else runs - pressing Enter is readline's
+  own native handling, and it already finalizes the prompt row as permanent scrollback and moves the
+  cursor to a fresh row *before* this listener ever fires, so `bottomRowsShown` from whenever the box
+  was last drawn is stale at that point; clearing "that many rows" without resetting first walks
+  straight up onto the line just typed and erases it.
+
+  All of the above - the pinned box across a streaming reply, the turn separator, the `rl.write`
+  duplication bug and its fix, the `rl.on('line')` stale-row-count bug and its fix, wrapped markdown
+  and code-fence rendering, the error path, and readline's own arrow-key/backspace editing continuing
+  to work against the box - were verified live, not just by reading the code: a real pty (Python's
+  `pty` module, no `node-pty` dependency needed) for a quick first pass, then a real `tmux` pane
+  (`tmux capture-pane -p`, which renders ANSI cursor movement/clear sequences the way a real terminal
+  would rather than showing their raw escape codes in log order) once the `pty`-only approach turned
+  out to be actively misleading for reasoning about multi-step clear/redraw sequences - piped
+  `node --test` output never exercises any of this, since none of it runs off a real TTY.
+  `ClaudeBackend`'s streaming path itself still has no automated test (matches this file's existing
+  backend-coverage gap: only `local` is exercised via subprocess tests) - reasoned about from the
+  Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not independently
+  live-verified against a real Claude account.
 
 ## Maintaining this file
 
