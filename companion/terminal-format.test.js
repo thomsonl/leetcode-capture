@@ -55,10 +55,9 @@ test('styling is off (plain markdown, no ANSI) when stdout is not a TTY', async 
   const out = await runInChild({
     isTTY: false,
     script: `
-      const { renderMarkdown, dim, roleLabel, promptString } = await import('./terminal-format.js');
+      const { renderMarkdown, dim, promptString } = await import('./terminal-format.js');
       console.log(renderMarkdown('**bold** text\\n\\n\`\`\`js\\nconst x = 1;\\n\`\`\`'));
       console.log(dim('companion: status'));
-      console.log(JSON.stringify(roleLabel('tutor')));
       console.log(JSON.stringify(promptString()));
     `,
   });
@@ -66,20 +65,22 @@ test('styling is off (plain markdown, no ANSI) when stdout is not a TTY', async 
   assert.match(out, /\*\*bold\*\* text/); // raw markdown syntax untouched
   assert.match(out, /```js/);
   assert.match(out, /companion: status/);
-  assert.match(out, /""/); // roleLabel returns '' when styling is off
   assert.match(out, /"> "/); // promptString falls back to the plain '> '
 });
 
-test('styling renders markdown and colors when stdout is a TTY', async () => {
+test('styling renders markdown (wrapped to a comfortable width, not the full terminal) and colors when stdout is a TTY', async () => {
   const out = await runInChild({
     isTTY: true,
-    script: `
-      const { renderMarkdown, dim, roleLabel, promptString } = await import('./terminal-format.js');
-      console.log(renderMarkdown('# Header\\n\\n**bold** text\\n\\nHere:\\n\\n\`\`\`js\\nconst x = 1;\\n\`\`\`'));
-      console.log(dim('companion: status'));
-      console.log(roleLabel('tutor'));
-      console.log(promptString());
-    `,
+    script: [
+      'process.stdout.columns = 200;', // an ultrawide terminal - content must not stretch to fill it
+      "const { renderMarkdown, dim, promptString } = await import('./terminal-format.js');",
+      "const longParagraph = new Array(40).fill('word').join(' ');",
+      "const fence = '```';",
+      "const md = ['# Header', '', '**bold** text', '', longParagraph, '', 'Here:', '', fence + 'js', 'const x = 1;', fence].join('\\n');",
+      'console.log(renderMarkdown(md));',
+      "console.log(dim('companion: status'));",
+      'console.log(promptString());',
+    ].join('\n'),
   });
   assert.ok(out.includes(ESC), 'expected ANSI escape codes when styling is on');
   // The fenced code block is set off from prose (marked-terminal indents
@@ -88,7 +89,13 @@ test('styling renders markdown and colors when stdout is a TTY', async () => {
   assert.ok(!out.includes('**bold**'), 'bold markers should have been rendered, not left literal');
   assert.match(out, /bold/); // the word itself still present, just styled
   assert.match(out, /const/);
-  assert.match(out, /tutor/);
+  assert.match(out, />/); // promptString's ">" marker
+  // The 200-char paragraph must wrap well short of the 200-column terminal -
+  // strip ANSI codes and check the longest rendered line stays bounded to
+  // the comfortable measure, not the terminal width.
+  const stripped = out.replace(/\x1b\[[0-9;]*m/g, '');
+  const longestLine = Math.max(...stripped.split('\n').map((l) => l.length));
+  assert.ok(longestLine < 100, `expected wrapping well under the 200-col terminal, longest line was ${longestLine} chars`);
 });
 
 test('NO_COLOR disables styling even on a TTY', async () => {
@@ -105,36 +112,37 @@ test('NO_COLOR disables styling even on a TTY', async () => {
   assert.ok(!out.includes(ESC), `expected no ANSI escape codes under NO_COLOR, got: ${JSON.stringify(out)}`);
 });
 
-// --- frameTop / frameBottom / spinnerFrame (phase 2: CLI look) -------------
+// --- turnMarker / boxRule / spinnerFrame (Claude-Code-TUI-like turns) ------
 
-test('frameTop/frameBottom are empty when styling is off, same convention as roleLabel', async () => {
+test('turnMarker/boxRule are empty when styling is off - piped output stays undecorated', async () => {
   const out = await runInChild({
     isTTY: false,
     script: `
-      const { frameTop, frameBottom } = await import('./terminal-format.js');
-      console.log(JSON.stringify(frameTop('tutor')));
-      console.log(JSON.stringify(frameBottom()));
+      const { turnMarker, boxRule } = await import('./terminal-format.js');
+      console.log(JSON.stringify(turnMarker()));
+      console.log(JSON.stringify(boxRule()));
     `,
   });
-  assert.match(out, /^""/m);
-  assert.match(out, /^""/m);
+  const lines = out.trim().split('\n');
+  assert.equal(lines[0], '""');
+  assert.equal(lines[1], '""');
 });
 
-test('frameTop embeds the role label in a rule, and frameBottom is a plain rule, when styling is on', async () => {
+test('turnMarker is a bullet, boxRule is a plain rule, when styling is on', async () => {
   const out = await runInChild({
     isTTY: true,
     script: `
-      const { frameTop, frameBottom } = await import('./terminal-format.js');
-      console.log(frameTop('tutor'));
-      console.log(frameBottom());
+      const { turnMarker, boxRule } = await import('./terminal-format.js');
+      console.log(turnMarker());
+      console.log(boxRule());
     `,
   });
-  const [top, bottom] = out.split('\n');
-  assert.ok(top.includes(ESC), 'expected frameTop to carry ANSI styling');
-  assert.match(top, /tutor/);
-  assert.ok(top.includes('─'), 'expected frameTop to include rule characters');
-  assert.ok(bottom.includes(ESC), 'expected frameBottom to carry ANSI styling');
-  assert.ok(!bottom.includes('tutor'), 'frameBottom should not repeat the role label');
+  const [marker, rule] = out.split('\n');
+  assert.ok(marker.includes(ESC), 'expected turnMarker to carry ANSI styling');
+  assert.ok(marker.includes('•'), 'expected turnMarker to include the bullet character');
+  assert.ok(rule.includes(ESC), 'expected boxRule to carry ANSI styling');
+  assert.ok(rule.includes('─'), 'expected boxRule to include rule characters');
+  assert.ok(!rule.includes('•'), 'boxRule should not repeat the turn marker');
 });
 
 test('spinnerFrame cycles through distinct glyphs and stays plain text off a TTY', async () => {

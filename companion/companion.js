@@ -39,9 +39,9 @@ import {
   stylingEnabled,
   dim,
   promptString,
+  turnMarker,
+  boxRule,
   renderMarkdown,
-  frameTop,
-  frameBottom,
   spinnerFrame,
   createMarkdownStreamer,
 } from './terminal-format.js';
@@ -475,14 +475,55 @@ function formatCaptureMessage(capture) {
 // --- terminal chat loop ------------------------------------------------------
 //
 // A capture can arrive from the file tailer at any moment, including while
-// Thomson is mid-way through typing a line. Node's readline has no built-in
-// "print without disturbing the current input line" call, so printAboveInput
-// saves the in-progress line + cursor, clears the rendered prompt, prints the
-// new text, then redraws the prompt with the saved line reinserted. Both
-// captures and normal replies to typed input go through this same path.
+// Thomson is mid-way through typing a line. The input area is a small
+// pinned box - a thin rule, then the "> " prompt - that stays the last
+// thing on screen: printAboveInput clears the box, prints the new text
+// above where it was, then redraws the box fresh (see drawBox - readline's
+// own rl.prompt(true) already renders the current line/cursor correctly on
+// its own, so there's nothing to save and reinsert). Both captures and
+// normal replies to typed input go through this same path, including each
+// individually-streamed piece of a reply, so the box stays visible (pinned
+// at the bottom) throughout a reply rather than only reappearing once it's
+// fully done.
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: promptString() });
 let stopping = false;
+
+// How many terminal rows, ending at the cursor's current row and extending
+// upward, are occupied by the box (or, mid-spinner, its temporary
+// replacement) - i.e. how many rows the next print needs to clear before
+// writing new content. 0 until the box is first drawn. Only meaningful in
+// styled/TTY mode; non-TTY output never reserves any rows at all.
+let bottomRowsShown = 0;
+
+function clearBottomRows() {
+  if (!stylingEnabled()) return;
+  for (let i = 0; i < bottomRowsShown; i += 1) {
+    readline.clearLine(process.stdout, 0);
+    readline.cursorTo(process.stdout, 0);
+    if (i < bottomRowsShown - 1) readline.moveCursor(process.stdout, 0, -1);
+  }
+  bottomRowsShown = 0;
+}
+
+// Draws the box (rule + "> " prompt) at the cursor's current position - the
+// caller is responsible for having cleared whatever was there first (see
+// clearBottomRows). rl.prompt(true) alone already renders readline's own
+// current line and cursor position correctly (verified live: it reflects
+// whatever was typed, including mid-line edits, with no help needed) - no
+// manual re-insertion of a "saved" line. That matters here specifically
+// because a turn no longer pauses readline for its duration (see
+// sendAndPrint): a keystroke can land between two box redraws, and manually
+// re-inserting a previously-saved line back into a buffer readline's own
+// keypress handling has since updated would duplicate it. A no-op in
+// non-styled mode: the plain '> ' prompt there is just readline's own,
+// undecorated, and never needs a rule or an explicit redraw of its own.
+function drawBox() {
+  if (!stylingEnabled()) return;
+  process.stdout.write(`${boxRule()}\n`);
+  rl.prompt(true);
+  bottomRowsShown = 2;
+}
 
 function printAboveInput(text) {
   const body = text.endsWith('\n') ? text : `${text}\n`;
@@ -490,18 +531,25 @@ function printAboveInput(text) {
     process.stdout.write(body);
     return;
   }
-  const savedLine = rl.line;
-  const savedCursor = rl.cursor;
-  readline.clearLine(process.stdout, 0);
-  readline.cursorTo(process.stdout, 0);
+  clearBottomRows();
   process.stdout.write(body);
-  rl.prompt(true);
-  if (savedLine) {
-    rl.write(savedLine);
-    if (savedCursor < savedLine.length) {
-      readline.moveCursor(process.stdout, -(savedLine.length - savedCursor), 0);
-    }
-  }
+  drawBox();
+}
+
+// Marks the start of a new turn (a capture's whole exchange, or a typed
+// message's reply) so exactly one blank line separates it from whatever
+// came before - never more, never none. Set at the end of every turn;
+// consumed (and cleared) by whichever print happens first for the next one,
+// wherever that is - a capture's local ack, or a typed reply's own first
+// output - so it's correct regardless of which of those runs first, without
+// each needing to know about the other. Styled/TTY only, like every other
+// decoration in this file - piped output stays exactly the raw text stream
+// it's always been, with no separators inserted.
+let turnBoundaryPending = false;
+function consumeTurnBoundary() {
+  if (!stylingEnabled() || !turnBoundaryPending) return '';
+  turnBoundaryPending = false;
+  return '\n';
 }
 
 // Serializes every backend call (typed messages and injected captures alike)
@@ -518,68 +566,31 @@ function enqueue(task) {
   return result;
 }
 
-// --- reply turn presentation -------------------------------------------
-//
-// A single reply turn (a typed message's answer, or a capture's tutoring
-// reply) can involve several writes in quick succession - a spinner, a
-// framing rule, one or many streamed chunks, a closing rule - and none of
-// them can afford printAboveInput's full save/clear/redraw-the-prompt
-// dance on every single write; done that often it would flicker constantly.
-// Instead a turn claims the terminal for its own duration: beginTurn()
-// saves and clears the in-progress input line once and pauses readline (so
-// a keystroke can't echo into the middle of a reply - it's simply buffered
-// and replayed once the turn ends), and the returned endTurn() reverses
-// both. writeTurn() is a raw, newline-agnostic write for use inside that
-// window - unlike printAboveInput, it never appends a newline of its own,
-// since a streamed chunk (or the raw, unrendered passthrough used when
-// styling is off) can end mid-word and must reach the terminal exactly as
-// received.
-function beginTurn() {
-  const savedLine = rl.line;
-  const savedCursor = rl.cursor;
-  rl.pause();
-  if (process.stdout.isTTY) {
-    readline.clearLine(process.stdout, 0);
-    readline.cursorTo(process.stdout, 0);
-  }
-  return function endTurn() {
-    rl.resume();
-    if (process.stdout.isTTY) {
-      rl.prompt(true);
-      if (savedLine) {
-        rl.write(savedLine);
-        if (savedCursor < savedLine.length) {
-          readline.moveCursor(process.stdout, -(savedLine.length - savedCursor), 0);
-        }
-      }
-    }
-  };
-}
-
-function writeTurn(text) {
-  if (text) process.stdout.write(text);
-}
-
-// The "waiting for the backend" indicator: redrawn in place on the turn's
-// current line until the first content is ready to replace it. A plain
-// no-op (no frames, no cursor movement) whenever styling is off, so a
-// piped/non-TTY invocation is never touched by it - see terminal-format.js's
-// stylingEnabled.
+// The "waiting for the backend" indicator: temporarily replaces the box
+// with a single animated line until the first content is ready, redrawn in
+// place on that same line each tick. A plain no-op whenever styling is off,
+// so a piped/non-TTY invocation is never touched by it - see
+// terminal-format.js's stylingEnabled.
 function startSpinner() {
   if (!stylingEnabled()) return () => {};
+  clearBottomRows();
   let i = 0;
   let stopped = false;
-  writeTurn(spinnerFrame(i));
+  process.stdout.write(spinnerFrame(i));
+  bottomRowsShown = 1;
   const timer = setInterval(() => {
     i += 1;
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
-    writeTurn(spinnerFrame(i));
+    process.stdout.write(spinnerFrame(i));
   }, 120);
   return function stopSpinner() {
     if (stopped) return;
     stopped = true;
     clearInterval(timer);
+    // Leaves an empty, still-reserved row - clearBottomRows (bottomRowsShown
+    // stays 1) picks it up cleanly on whatever prints next, same as if a
+    // one-line box were there.
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
   };
@@ -593,56 +604,49 @@ function startSpinner() {
 // non-streaming branch below.
 function sendAndPrint(label, text, { onReply } = {}) {
   return enqueue(async () => {
-    if (label) printAboveInput(label);
+    const separator = consumeTurnBoundary();
+    if (label) printAboveInput(separator + label);
+    else if (separator) printAboveInput(''); // separator alone - printAboveInput('') is exactly one blank line
 
     const streaming = !onReply;
-    const endTurn = beginTurn();
     const stopSpinner = startSpinner();
 
-    // Tracks whether the turn's own most recent write ended in a newline,
-    // so the turn can be closed with exactly one trailing newline
-    // regardless of which branch below produced its last piece - streamed
-    // raw chunks (no newline of their own) and rendered blocks (always
-    // ended with one) both pass through here.
-    let endsWithNewline = true;
-    function write(text) {
-      if (!text) return;
-      writeTurn(text);
-      endsWithNewline = text.endsWith('\n');
-    }
-    function ensureNewline() {
-      if (!endsWithNewline) write('\n');
-    }
-
     if (streaming) {
-      let frameOpen = false;
+      let wroteMarker = false;
       let anyChunk = false;
-      let wroteBlock = false;
       const streamer = createMarkdownStreamer();
 
-      function openFrame() {
-        if (frameOpen) return;
-        frameOpen = true;
-        stopSpinner();
-        const top = frameTop('tutor');
-        if (top) write(`${top}\n`);
-      }
-
-      // Writes one flushed piece of the reply. In styled/TTY mode, each
-      // piece is a complete rendered markdown block that renderMarkdown
-      // already trimEnd()'d at its own boundary - blocks are separated with
-      // a blank line here so consecutive streamer.push()/finish() calls
-      // (each trimmed independently, unlike a single one-shot render) don't
-      // lose the paragraph spacing a non-streaming reply would have kept.
-      // In non-styled mode a piece is a raw, possibly mid-word text chunk -
-      // no separator, no modification at all, straight pass-through.
+      // Writes one flushed piece of the reply above the box, then redraws
+      // the box fresh below it - each call is its own printAboveInput-style
+      // clear/print/redraw cycle, throttled by the streamer to real
+      // markdown block boundaries (not raw network chunks), so the box
+      // stays visibly pinned through a whole reply without flickering on
+      // every tiny piece. The turn marker (•) opens the very first piece;
+      // consecutive blocks are separated by a blank line, since each is
+      // rendered independently and trimmed at its own boundary - without
+      // this the paragraph spacing between them would be lost. In
+      // non-styled mode a piece is raw, possibly mid-word text - no marker,
+      // no separator, straight pass-through.
       function writeReplyPiece(piece) {
         if (!piece) return;
-        if (stylingEnabled()) {
-          if (wroteBlock) write('\n\n');
-          wroteBlock = true;
+        if (!stylingEnabled()) {
+          // Raw, possibly mid-word pass-through - no marker, no separator,
+          // and critically no newline added: a chunk boundary can fall
+          // anywhere, and injecting one here would corrupt piped output.
+          process.stdout.write(piece);
+          return;
         }
-        write(piece);
+        stopSpinner();
+        clearBottomRows();
+        // Each piece always ends with its own trailing newline (added
+        // below, so the box's rule has a fresh line to start on) - that
+        // newline already accounts for the first half of a blank-line
+        // separator, so only one more newline (not two) is needed here to
+        // leave exactly one blank row before a second-or-later piece.
+        process.stdout.write(wroteMarker ? '\n' : turnMarker());
+        wroteMarker = true;
+        process.stdout.write(piece.endsWith('\n') ? piece : `${piece}\n`);
+        drawBox();
       }
 
       let reply;
@@ -650,18 +654,15 @@ function sendAndPrint(label, text, { onReply } = {}) {
         reply = await backend.sendMessage(text, {
           onChunk: (chunk) => {
             anyChunk = true;
-            openFrame();
             writeReplyPiece(streamer.push(chunk));
           },
         });
       } catch (err) {
         stopSpinner();
-        if (frameOpen) {
-          const bottom = frameBottom();
-          if (bottom) write(`${bottom}\n`);
-        }
-        write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
-        endTurn();
+        clearBottomRows();
+        process.stdout.write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
+        drawBox();
+        turnBoundaryPending = true;
         return;
       }
 
@@ -674,19 +675,15 @@ function sendAndPrint(label, text, { onReply } = {}) {
       // onChunk call ever fired) still has a real reply to show - feed it
       // to the streamer as one final push, exactly like a real chunk would
       // be, so it renders instead of being lost.
-      if (!anyChunk && !isEmpty) {
-        openFrame();
-        writeReplyPiece(streamer.push(reply));
-      }
-      stopSpinner();
+      if (!anyChunk && !isEmpty) writeReplyPiece(streamer.push(reply));
       writeReplyPiece(streamer.finish());
-      ensureNewline();
-      if (frameOpen) {
-        const bottom = frameBottom();
-        if (bottom) write(`${bottom}\n`);
+      if (isEmpty) {
+        stopSpinner();
+        clearBottomRows();
+        process.stdout.write(`${dim('companion: warning: backend returned an empty reply')}\n`);
+        drawBox();
       }
-      if (isEmpty) write(`${dim('companion: warning: backend returned an empty reply')}\n`);
-      endTurn();
+      turnBoundaryPending = true;
       return;
     }
 
@@ -698,26 +695,39 @@ function sendAndPrint(label, text, { onReply } = {}) {
       reply = await backend.sendMessage(text);
     } catch (err) {
       stopSpinner();
-      write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
-      endTurn();
+      clearBottomRows();
+      process.stdout.write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
+      drawBox();
+      turnBoundaryPending = true;
       return;
     }
     stopSpinner();
+    clearBottomRows();
     const displayText = onReply(reply);
     const isEmpty = !(typeof displayText === 'string' && displayText.trim());
-    const header = !isEmpty ? frameTop('tutor') : null;
+    const marker = stylingEnabled() && !isEmpty ? turnMarker() : '';
     const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
-    const footer = !isEmpty ? frameBottom() : null;
-    write([header, body, footer].filter(Boolean).join('\n'));
-    ensureNewline();
-    endTurn();
+    process.stdout.write(`${marker}${body.endsWith('\n') ? body : `${body}\n`}`);
+    drawBox();
+    turnBoundaryPending = true;
   });
 }
 
 rl.on('line', (line) => {
+  // Pressing Enter is readline's own native handling, not ours - it
+  // finalizes the prompt row it was editing as permanent scrollback and
+  // moves the cursor to a genuinely fresh row, all before this listener
+  // ever runs. bottomRowsShown still says "2" from whenever the box was
+  // last drawn, and that's now stale: what it counted (the rule above the
+  // prompt, and the prompt row itself) has already left our hands, so
+  // clearing "bottomRowsShown rows" here would walk straight up onto the
+  // line Thomson just typed and erase it. Reset to 0 - nothing left for us
+  // to clear - before the reply's own printAboveInput/box calls run.
+  bottomRowsShown = 0;
   const text = line.trim();
   if (!text) {
-    rl.prompt();
+    if (stylingEnabled()) drawBox();
+    else rl.prompt();
     return;
   }
   if (text === '/exit' || text === '/quit') {
@@ -780,11 +790,15 @@ async function handleCaptureLine(line) {
   // below even starts - the tutor persona's own step 1 (acknowledging receipt
   // in its own words) still happens too, but that's baked into the real reply
   // and can lag several seconds behind, longer for Submit. This line is just
-  // a deterministic confirmation that the capture arrived.
+  // a deterministic confirmation that the capture arrived, and is this
+  // capture-driven turn's true first output, so it's what consumes the
+  // pending turn-boundary blank line (see consumeTurnBoundary) - sendAndPrint
+  // itself won't add a second one before the label that follows.
   printAboveInput(
-    dim(
-      `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`
-    ),
+    consumeTurnBoundary() +
+      dim(
+        `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`
+      ),
   );
 
   // Only Submits (not Runs) drive the vault auto-summary, and only when the
@@ -900,7 +914,8 @@ console.log(
   )
 );
 console.log(dim('companion: type to chat directly; captures are injected automatically. /exit to quit.'));
-rl.prompt();
+if (stylingEnabled()) drawBox();
+else rl.prompt();
 
 pollLoop().catch((err) => {
   console.error(dim(`companion: fatal: ${err.stack || err.message}`));
