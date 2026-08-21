@@ -44,6 +44,7 @@ import {
   renderMarkdown,
   spinnerFrame,
   createMarkdownStreamer,
+  refreshWidth,
 } from './terminal-format.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -511,6 +512,18 @@ let stopping = false;
 // styled/TTY mode; non-TTY output never reserves any rows at all.
 let bottomRowsShown = 0;
 
+// True for the duration of one sendAndPrint call (a typed message's reply,
+// or a capture's whole exchange) - lets the resize handler (see near the
+// bottom of this file) tell whether it's safe to force an immediate box
+// redraw. Mid-turn, bottomRowsShown might mean "a 1-row spinner" rather
+// than "a 2-row box" at any given moment, so blindly redrawing a 2-row box
+// there would corrupt whatever's actually on screen; the safe move is to
+// only update the *width* used for future draws and let the turn's own
+// writes catch up naturally. Idle (turnActive false), the box's state is
+// simple and known, so resizing can redraw it immediately instead of
+// leaving it looking stale until something else happens to print.
+let turnActive = false;
+
 function clearBottomRows() {
   if (!stylingEnabled()) return;
   for (let i = 0; i < bottomRowsShown; i += 1) {
@@ -619,95 +632,69 @@ function startSpinner() {
 // non-streaming branch below.
 function sendAndPrint(label, text, { onReply } = {}) {
   return enqueue(async () => {
-    const separator = consumeTurnBoundary();
-    if (label) printAboveInput(separator + label);
-    else if (separator) printAboveInput(''); // separator alone - printAboveInput('') is exactly one blank line
+    turnActive = true;
+    try {
+      await sendAndPrintTurn(label, text, onReply);
+    } finally {
+      turnActive = false;
+    }
+  });
+}
 
-    const streaming = !onReply;
-    const stopSpinner = startSpinner();
+async function sendAndPrintTurn(label, text, onReply) {
+  const separator = consumeTurnBoundary();
+  if (label) printAboveInput(separator + label);
+  else if (separator) printAboveInput(''); // separator alone - printAboveInput('') is exactly one blank line
 
-    if (streaming) {
-      let wroteMarker = false;
-      let anyChunk = false;
-      const streamer = createMarkdownStreamer();
+  const streaming = !onReply;
+  const stopSpinner = startSpinner();
 
-      // Writes one flushed piece of the reply above the box, then redraws
-      // the box fresh below it - each call is its own printAboveInput-style
-      // clear/print/redraw cycle, throttled by the streamer to real
-      // markdown block boundaries (not raw network chunks), so the box
-      // stays visibly pinned through a whole reply without flickering on
-      // every tiny piece. The turn marker (•) opens the very first piece;
-      // consecutive blocks are separated by a blank line, since each is
-      // rendered independently and trimmed at its own boundary - without
-      // this the paragraph spacing between them would be lost. In
-      // non-styled mode a piece is raw, possibly mid-word text - no marker,
-      // no separator, straight pass-through.
-      function writeReplyPiece(piece) {
-        if (!piece) return;
-        if (!stylingEnabled()) {
-          // Raw, possibly mid-word pass-through - no marker, no separator,
-          // and critically no newline added: a chunk boundary can fall
-          // anywhere, and injecting one here would corrupt piped output.
-          process.stdout.write(piece);
-          return;
-        }
-        stopSpinner();
-        clearBottomRows();
-        // Each piece always ends with its own trailing newline (added
-        // below, so the box's rule has a fresh line to start on) - that
-        // newline already accounts for the first half of a blank-line
-        // separator, so only one more newline (not two) is needed here to
-        // leave exactly one blank row before a second-or-later piece.
-        process.stdout.write(wroteMarker ? '\n' : turnMarker());
-        wroteMarker = true;
-        process.stdout.write(piece.endsWith('\n') ? piece : `${piece}\n`);
-        drawBox();
-      }
+  if (streaming) {
+    let wroteMarker = false;
+    let anyChunk = false;
+    const streamer = createMarkdownStreamer();
 
-      let reply;
-      try {
-        reply = await backend.sendMessage(text, {
-          onChunk: (chunk) => {
-            anyChunk = true;
-            writeReplyPiece(streamer.push(chunk));
-          },
-        });
-      } catch (err) {
-        stopSpinner();
-        clearBottomRows();
-        process.stdout.write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
-        drawBox();
-        turnBoundaryPending = true;
+    // Writes one flushed piece of the reply above the box, then redraws
+    // the box fresh below it - each call is its own printAboveInput-style
+    // clear/print/redraw cycle, throttled by the streamer to real
+    // markdown block boundaries (not raw network chunks), so the box
+    // stays visibly pinned through a whole reply without flickering on
+    // every tiny piece. The turn marker (•) opens the very first piece;
+    // consecutive blocks are separated by a blank line, since each is
+    // rendered independently and trimmed at its own boundary - without
+    // this the paragraph spacing between them would be lost. In
+    // non-styled mode a piece is raw, possibly mid-word text - no marker,
+    // no separator, straight pass-through.
+    function writeReplyPiece(piece) {
+      if (!piece) return;
+      if (!stylingEnabled()) {
+        // Raw, possibly mid-word pass-through - no marker, no separator,
+        // and critically no newline added: a chunk boundary can fall
+        // anywhere, and injecting one here would corrupt piped output.
+        process.stdout.write(piece);
         return;
       }
-
-      // Defense in depth: even if the backend resolves with an
-      // empty/whitespace-only reply without throwing, never let that render
-      // as total silence - indistinguishable from "the reply never arrived"
-      // (see LocalBackend.sendMessage's own empty-reply guard).
-      const isEmpty = !(typeof reply === 'string' && reply.trim());
-      // A backend/model that ignored the streaming request entirely (no
-      // onChunk call ever fired) still has a real reply to show - feed it
-      // to the streamer as one final push, exactly like a real chunk would
-      // be, so it renders instead of being lost.
-      if (!anyChunk && !isEmpty) writeReplyPiece(streamer.push(reply));
-      writeReplyPiece(streamer.finish());
-      if (isEmpty) {
-        stopSpinner();
-        clearBottomRows();
-        process.stdout.write(`${dim('companion: warning: backend returned an empty reply')}\n`);
-        drawBox();
-      }
-      turnBoundaryPending = true;
-      return;
+      stopSpinner();
+      clearBottomRows();
+      // Each piece always ends with its own trailing newline (added
+      // below, so the box's rule has a fresh line to start on) - that
+      // newline already accounts for the first half of a blank-line
+      // separator, so only one more newline (not two) is needed here to
+      // leave exactly one blank row before a second-or-later piece.
+      process.stdout.write(wroteMarker ? '\n' : turnMarker());
+      wroteMarker = true;
+      process.stdout.write(piece.endsWith('\n') ? piece : `${piece}\n`);
+      drawBox();
     }
 
-    // Non-streaming path (vault auto-summary's Submit turns): the whole
-    // transformed reply prints as one block once it's fully ready, same
-    // shape as before streaming existed.
     let reply;
     try {
-      reply = await backend.sendMessage(text);
+      reply = await backend.sendMessage(text, {
+        onChunk: (chunk) => {
+          anyChunk = true;
+          writeReplyPiece(streamer.push(chunk));
+        },
+      });
     } catch (err) {
       stopSpinner();
       clearBottomRows();
@@ -716,16 +703,51 @@ function sendAndPrint(label, text, { onReply } = {}) {
       turnBoundaryPending = true;
       return;
     }
+
+    // Defense in depth: even if the backend resolves with an
+    // empty/whitespace-only reply without throwing, never let that render
+    // as total silence - indistinguishable from "the reply never arrived"
+    // (see LocalBackend.sendMessage's own empty-reply guard).
+    const isEmpty = !(typeof reply === 'string' && reply.trim());
+    // A backend/model that ignored the streaming request entirely (no
+    // onChunk call ever fired) still has a real reply to show - feed it
+    // to the streamer as one final push, exactly like a real chunk would
+    // be, so it renders instead of being lost.
+    if (!anyChunk && !isEmpty) writeReplyPiece(streamer.push(reply));
+    writeReplyPiece(streamer.finish());
+    if (isEmpty) {
+      stopSpinner();
+      clearBottomRows();
+      process.stdout.write(`${dim('companion: warning: backend returned an empty reply')}\n`);
+      drawBox();
+    }
+    turnBoundaryPending = true;
+    return;
+  }
+
+  // Non-streaming path (vault auto-summary's Submit turns): the whole
+  // transformed reply prints as one block once it's fully ready, same
+  // shape as before streaming existed.
+  let reply;
+  try {
+    reply = await backend.sendMessage(text);
+  } catch (err) {
     stopSpinner();
     clearBottomRows();
-    const displayText = onReply(reply);
-    const isEmpty = !(typeof displayText === 'string' && displayText.trim());
-    const marker = stylingEnabled() && !isEmpty ? turnMarker() : '';
-    const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
-    process.stdout.write(`${marker}${body.endsWith('\n') ? body : `${body}\n`}`);
+    process.stdout.write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
     drawBox();
     turnBoundaryPending = true;
-  });
+    return;
+  }
+  stopSpinner();
+  clearBottomRows();
+  const displayText = onReply(reply);
+  const isEmpty = !(typeof displayText === 'string' && displayText.trim());
+  const marker = stylingEnabled() && !isEmpty ? turnMarker() : '';
+  const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
+  process.stdout.write(`${marker}${body.endsWith('\n') ? body : `${body}\n`}`);
+  drawBox();
+  turnBoundaryPending = true;
 }
 
 rl.on('line', (line) => {
@@ -952,6 +974,29 @@ console.log(
 console.log(dim('companion: type to chat directly; captures are injected automatically. /exit to quit.'));
 if (stylingEnabled()) drawBox();
 else rl.prompt();
+
+// Node updates process.stdout.columns/rows (from the terminal's SIGWINCH)
+// and emits 'resize' before this fires, so refreshWidth() below - which
+// just re-reads process.stdout.columns - already picks up the new size.
+// Always safe to do regardless of what's on screen right now. Redrawing
+// the box itself to *show* the new width immediately is only safe when
+// idle (turnActive false): mid-turn, bottomRowsShown might mean "a 1-row
+// spinner" rather than "a 2-row box" at any given moment, and forcing a
+// 2-row box there would corrupt whatever the turn's own writes are
+// tracking. Idle, the box's state is simple and known, so it can just be
+// redrawn on the spot; mid-turn, the new width still takes effect - just
+// only visibly once the turn's own next write happens, rather than
+// instantly. Registered only after the box above is first drawn, so there's
+// no window where a resize could fire before there's a box to redraw.
+if (process.stdout.isTTY) {
+  process.stdout.on('resize', () => {
+    refreshWidth();
+    if (!turnActive) {
+      clearBottomRows();
+      drawBox();
+    }
+  });
+}
 
 pollLoop().catch((err) => {
   console.error(dim(`companion: fatal: ${err.stack || err.message}`));

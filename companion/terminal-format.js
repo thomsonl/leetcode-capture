@@ -43,7 +43,12 @@ function contentWidth() {
   return Math.min(process.stdout.columns || 80, COMFORTABLE_WIDTH);
 }
 
-if (enabled) {
+// Registers marked-terminal's renderer with the current width. Callable
+// more than once - re-registering with a fresh width is exactly how a
+// terminal resize is picked up (see refreshWidth below), since marked's own
+// `use()` replaces the previously-registered renderer rather than stacking
+// on top of it.
+function configureMarkedTerminal() {
   marked.use(
     markedTerminal({
       width: contentWidth(),
@@ -55,6 +60,18 @@ if (enabled) {
       reflowText: true,
     })
   );
+}
+
+if (enabled) configureMarkedTerminal();
+
+// Re-registers marked-terminal's renderer against the terminal's *current*
+// width - call this after a resize (companion.js listens for
+// process.stdout's 'resize' event) so markdown rendered from here on wraps
+// to the new size instead of whatever was captured at import time. A no-op
+// when styling is off, matching every other helper in this module - nothing
+// uses marked-terminal's renderer over a pipe anyway.
+export function refreshWidth() {
+  if (enabled) configureMarkedTerminal();
 }
 
 // De-emphasizes companion's own status/system lines (startup banner, relay
