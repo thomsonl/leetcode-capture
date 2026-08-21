@@ -151,8 +151,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   marker opening a tutor reply turn (`turnMarker`, replacing an earlier "tutor" role-label/framing-rule
   design - no per-speaker labels any more), dimmed `companion: ...` status/error lines, and markdown
   rendering via `marked`/`marked-terminal` wrapped to a comfortable reading width (`COMFORTABLE_WIDTH`,
-  currently 80 cols, capped by a narrower real terminal) rather than the terminal's full width - a
-  separate module specifically so the styling decision (TTY or not, `NO_COLOR` or not) is computed
+  currently 80 cols, capped by a narrower real terminal) rather than the terminal's full width. That
+  width tracks a live terminal resize: `boxRule()` re-reads `process.stdout.columns` on every call, so
+  the box's own rule updates the instant it's next redrawn, but `marked-terminal`'s renderer is
+  registered once against a snapshot width via `marked.use(...)` - `refreshWidth()` re-registers it
+  with the current width, and `companion.js` calls it from a `process.stdout.on('resize', ...)`
+  listener so markdown rendered after a resize wraps to the new size rather than whatever was current
+  at import time. A separate module specifically so the styling decision (TTY or not, `NO_COLOR` or
+  not) is computed
   once at import time and every exported helper already no-ops correctly, rather than each call site
   in companion.js carrying its own branch. Gates on `process.stdout.isTTY` explicitly rather than
   trusting chalk's/marked-terminal's own ambient color-support detection - confirmed live that this
@@ -201,6 +207,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   exactly one blank line separate whole turns from each other too - set at the end of every turn,
   consumed by whichever prints first for the next one (a capture's local ack, or a typed reply's own
   first output), so it's correct regardless of which runs first.
+
+  `turnActive` is true for the duration of one `sendAndPrint` call, tracking whether it's safe to force
+  an immediate box redraw outside the normal print flow - used by the `process.stdout.on('resize', ...)`
+  listener (see `refreshWidth` above): idle, `bottomRowsShown` unambiguously means "a 2-row box," so a
+  resize can just clear and redraw it on the spot; mid-turn it might mean "a 1-row spinner" instead at
+  any given moment, and forcing a 2-row box there would corrupt whatever the turn's own writes are
+  tracking - so mid-turn a resize only updates the width for what gets drawn *next*, verified live by
+  resizing a `tmux` pane twice in the middle of a streaming reply and confirming no corruption, just the
+  final box landing at the terminal's width by the time the reply finished.
 
   `drawBox()` redraws via `rl.prompt(true)` alone - readline's own rendering already reflects the
   current line and cursor position correctly on its own, including mid-line edits, confirmed live via

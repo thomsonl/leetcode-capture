@@ -145,6 +145,62 @@ test('turnMarker is a bullet, boxRule is a plain rule, when styling is on', asyn
   assert.ok(!rule.includes('•'), 'boxRule should not repeat the turn marker');
 });
 
+test('boxRule reflects a live terminal resize immediately - it recomputes width on every call', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: [
+      "const { boxRule } = await import('./terminal-format.js');",
+      'process.stdout.columns = 40;',
+      "console.log('narrow', JSON.stringify(boxRule().replace(/\\x1b\\[[0-9;]*m/g, '').length));",
+      'process.stdout.columns = 200;', // still capped at the 80-col comfortable width
+      "console.log('wide', JSON.stringify(boxRule().replace(/\\x1b\\[[0-9;]*m/g, '').length));",
+    ].join('\n'),
+  });
+  const lines = Object.fromEntries(
+    out
+      .trim()
+      .split('\n')
+      .map((l) => l.split(' '))
+  );
+  assert.equal(Number(lines.narrow), 40); // narrower than the comfortable width - not capped
+  assert.equal(Number(lines.wide), 80); // wider than comfortable - stays capped at 80
+});
+
+test('refreshWidth re-registers marked-terminal so a resize changes where markdown wraps', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: [
+      "const { renderMarkdown, refreshWidth } = await import('./terminal-format.js');",
+      "const longParagraph = new Array(40).fill('word').join(' ');",
+      'process.stdout.columns = 40;',
+      'refreshWidth();',
+      "const narrow = renderMarkdown(longParagraph).replace(/\\x1b\\[[0-9;]*m/g, '');",
+      "const narrowLongest = Math.max(...narrow.split('\\n').map((l) => l.length));",
+      'process.stdout.columns = 200;', // still capped at 80 by COMFORTABLE_WIDTH
+      'refreshWidth();',
+      "const wide = renderMarkdown(longParagraph).replace(/\\x1b\\[[0-9;]*m/g, '');",
+      "const wideLongest = Math.max(...wide.split('\\n').map((l) => l.length));",
+      // Single string args, not separate console.log(label, number) calls -
+      // Node's own console.log colorizes a bare number when it thinks
+      // stdout is a TTY (which it does here, since isTTY was faked true for
+      // this test harness), embedding ANSI codes this test isn't stripping.
+      "console.log(`narrowLongest ${narrowLongest}`);",
+      "console.log(`wideLongest ${wideLongest}`);",
+    ].join('\n'),
+  });
+  const lines = Object.fromEntries(
+    out
+      .trim()
+      .split('\n')
+      .map((l) => l.split(' '))
+  );
+  const narrowLongest = Number(lines.narrowLongest);
+  const wideLongest = Number(lines.wideLongest);
+  assert.ok(narrowLongest <= 40, `expected the narrow render to wrap at <=40 cols, got ${narrowLongest}`);
+  assert.ok(wideLongest > narrowLongest, `expected the post-resize render to use more width than the narrow one (${wideLongest} vs ${narrowLongest})`);
+  assert.ok(wideLongest <= 80, `expected the wide render to still cap at the 80-col comfortable width, got ${wideLongest}`);
+});
+
 test('spinnerFrame cycles through distinct glyphs and stays plain text off a TTY', async () => {
   const out = await runInChild({
     isTTY: false,
