@@ -104,3 +104,113 @@ test('NO_COLOR disables styling even on a TTY', async () => {
   assert.match(out, /^false/);
   assert.ok(!out.includes(ESC), `expected no ANSI escape codes under NO_COLOR, got: ${JSON.stringify(out)}`);
 });
+
+// --- frameTop / frameBottom / spinnerFrame (phase 2: CLI look) -------------
+
+test('frameTop/frameBottom are empty when styling is off, same convention as roleLabel', async () => {
+  const out = await runInChild({
+    isTTY: false,
+    script: `
+      const { frameTop, frameBottom } = await import('./terminal-format.js');
+      console.log(JSON.stringify(frameTop('tutor')));
+      console.log(JSON.stringify(frameBottom()));
+    `,
+  });
+  assert.match(out, /^""/m);
+  assert.match(out, /^""/m);
+});
+
+test('frameTop embeds the role label in a rule, and frameBottom is a plain rule, when styling is on', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: `
+      const { frameTop, frameBottom } = await import('./terminal-format.js');
+      console.log(frameTop('tutor'));
+      console.log(frameBottom());
+    `,
+  });
+  const [top, bottom] = out.split('\n');
+  assert.ok(top.includes(ESC), 'expected frameTop to carry ANSI styling');
+  assert.match(top, /tutor/);
+  assert.ok(top.includes('─'), 'expected frameTop to include rule characters');
+  assert.ok(bottom.includes(ESC), 'expected frameBottom to carry ANSI styling');
+  assert.ok(!bottom.includes('tutor'), 'frameBottom should not repeat the role label');
+});
+
+test('spinnerFrame cycles through distinct glyphs and stays plain text off a TTY', async () => {
+  const out = await runInChild({
+    isTTY: false,
+    script: `
+      const { spinnerFrame, SPINNER_FRAME_COUNT } = await import('./terminal-format.js');
+      console.log(SPINNER_FRAME_COUNT);
+      console.log(spinnerFrame(0));
+      console.log(spinnerFrame(1));
+      console.log(JSON.stringify(spinnerFrame(0) === spinnerFrame(SPINNER_FRAME_COUNT)));
+    `,
+  });
+  const lines = out.trim().split('\n');
+  const count = Number(lines[0]);
+  assert.ok(count > 1, 'expected more than one spinner frame');
+  assert.match(lines[1], /thinking/);
+  assert.notEqual(lines[1], lines[2]); // frame 0 and frame 1 differ
+  assert.match(out, /true/); // frame index wraps around after SPINNER_FRAME_COUNT
+  assert.ok(!out.includes(ESC), 'expected no ANSI codes off a TTY');
+});
+
+// --- createMarkdownStreamer --------------------------------------------
+
+test('createMarkdownStreamer is a pure chunk pass-through when styling is off', async () => {
+  const out = await runInChild({
+    isTTY: false,
+    script: `
+      const { createMarkdownStreamer } = await import('./terminal-format.js');
+      const s = createMarkdownStreamer();
+      console.log(JSON.stringify(s.push('Hello wor')));
+      console.log(JSON.stringify(s.push('ld, this ')));
+      console.log(JSON.stringify(s.push('is streamed.')));
+      console.log(JSON.stringify(s.finish()));
+    `,
+  });
+  const lines = out.trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines, ['Hello wor', 'ld, this ', 'is streamed.', '']);
+});
+
+test('createMarkdownStreamer withholds an open fenced code block until it closes', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: `
+      const { createMarkdownStreamer } = await import('./terminal-format.js');
+      const s = createMarkdownStreamer();
+      // A blank line arrives, but it's *inside* the still-open fence - must
+      // not be treated as a safe split point (no blank line precedes the
+      // fence itself, so nothing is safe to flush at all yet).
+      console.log('push1', JSON.stringify(s.push('Here is code:\\n\`\`\`js\\nconst x = 1;\\n\\nconst y = 2;\\n')));
+      console.log('push2', JSON.stringify(s.push('\`\`\`\\nAfter the block.')));
+    `,
+  });
+  assert.match(out, /push1 ""/); // nothing complete yet - fence still open
+  const push2Line = out.split('\n').find((l) => l.startsWith('push2'));
+  assert.ok(!push2Line.includes('""'), 'expected the closed fence to flush once it completes');
+  assert.match(push2Line, /const x = 1/);
+  assert.match(push2Line, /const y = 2/); // the blank line inside the fence survived, not split on
+  assert.ok(!push2Line.includes('After the block'), 'text after the fence has no trailing blank line yet - must stay buffered');
+});
+
+test('createMarkdownStreamer flushes a completed block at a blank line, holding the next block back', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: `
+      const { createMarkdownStreamer } = await import('./terminal-format.js');
+      const s = createMarkdownStreamer();
+      const first = s.push('First paragraph.\\n\\nSecond paragraph is still ');
+      console.log('first', JSON.stringify(first));
+      const rest = s.finish();
+      console.log('rest', JSON.stringify(rest));
+    `,
+  });
+  const firstLine = out.split('\n').find((l) => l.startsWith('first'));
+  const restLine = out.split('\n').find((l) => l.startsWith('rest'));
+  assert.match(firstLine, /First paragraph/);
+  assert.ok(!firstLine.includes('Second paragraph'), 'the incomplete second block must not flush early');
+  assert.match(restLine, /Second paragraph/);
+});

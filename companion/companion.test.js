@@ -29,8 +29,15 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Starts a stub OpenAI-compatible chat-completions server. `replyFor` maps
-// each request to a response shape; defaults to a normal, non-empty content
-// reply if not overridden for a given call.
+// each request to a response shape (a `{ content, reasoning }`-ish chat
+// message); defaults to a normal, non-empty content reply if not overridden
+// for a given call. companion.js's LocalBackend always sends `stream: true`
+// for a streamable turn (see sendAndPrint), so this responds as a real SSE
+// stream in that case - split into a couple of chunks, not one, so it also
+// exercises the incremental onChunk path rather than just a single-event
+// stream. A request with `stream` false/absent (there currently isn't one in
+// this file, but the shape is cheap to keep) still gets the old plain JSON
+// response.
 function startStubBackend(replyFor) {
   let callCount = 0;
   const server = http.createServer((req, res) => {
@@ -38,9 +45,28 @@ function startStubBackend(replyFor) {
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
       callCount += 1;
-      const message = replyFor(callCount, JSON.parse(body));
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message, finish_reason: 'stop' }] }));
+      const parsedBody = JSON.parse(body);
+      const message = replyFor(callCount, parsedBody);
+      if (!parsedBody.stream) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message, finish_reason: 'stop' }] }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const content = message.content || '';
+      if (content) {
+        // Two chunks (split at the midpoint) rather than one, so a test can
+        // tell this apart from an accidental one-shot response.
+        const mid = Math.ceil(content.length / 2);
+        for (const piece of [content.slice(0, mid), content.slice(mid)]) {
+          if (piece) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: piece } }] })}\n\n`);
+        }
+      }
+      if (message.reasoning) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning: message.reasoning } }] })}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
     });
   });
   return new Promise((resolve) => {
@@ -166,4 +192,186 @@ test('a markdown reply stays as raw, unrendered text with no ANSI codes over a p
   assert.match(out, /```python/); // fence markers left literal, not stripped
   assert.match(out, /- one\n- two/); // list markers left as-is, no re-indentation
   assert.ok(!out.includes('\x1b['), `expected no ANSI escape codes in piped output, got: ${JSON.stringify(out)}`);
+});
+
+// The three tests above all use startStubBackend, which writes both of its
+// SSE chunks back to back with no delay - they prove the *content* streamed
+// through onChunk reassembles correctly, but backend.sendMessage's own
+// internal accumulation (see LocalBackend.streamReply's `content +=`) would
+// produce the exact same final text even if the onChunk callback itself
+// were silently never wired up to the terminal at all (sendAndPrint's
+// !anyChunk fallback would still catch it and print it as one block). This
+// test is the one that actually distinguishes "streamed live" from "flushed
+// once, late": the stub deliberately delays between its two chunks, so a
+// real regression to one-shot-at-the-end display would show up as both
+// chunks appearing at the same moment instead of ~1.5s apart.
+test('a streamed reply reaches the terminal incrementally, not only once the whole backend call resolves', async () => {
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      JSON.parse(body); // drain/validate the request like the other stubs do
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'FIRSTCHUNK-' } }] })}\n\n`);
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'SECONDCHUNK' } }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }, 1500);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: '18137',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    fs.appendFileSync(capturesPath, JSON.stringify(makeCapture({ trigger: 'run', attemptSeq: 1 })) + '\n');
+
+    const firstDeadline = Date.now() + 8000;
+    while (Date.now() < firstDeadline && !out.includes('FIRSTCHUNK-')) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(out.includes('FIRSTCHUNK-'), 'first chunk never arrived');
+    assert.ok(
+      !out.includes('SECONDCHUNK'),
+      'the second chunk must not already be present the moment the first one is seen'
+    );
+    const firstSeenAt = Date.now();
+
+    const secondDeadline = Date.now() + 8000;
+    while (Date.now() < secondDeadline && !out.includes('SECONDCHUNK')) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(out.includes('SECONDCHUNK'), 'second chunk never arrived');
+    const gapMs = Date.now() - firstSeenAt;
+    assert.ok(gapMs > 800, `expected a real delay between chunks (proving incremental delivery), got ${gapMs}ms`);
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// Vault auto-summary's Submit turns are the one case that must NOT stream
+// (see sendAndPrint): the model is asked to tack a machine-readable
+// <<<VAULT_JSON>>>...<<<END_VAULT_JSON>>> block onto the tail of the same
+// reply, and extractVaultBlock can only strip that block once the reply is
+// complete - streaming it live would risk the raw block (or a fragment of
+// it) reaching the terminal before it's known to be strippable. This test
+// deliberately delays the JSON block's chunk well after the visible reply
+// text, the same way the incremental-streaming test above proves real
+// streaming - here proving the opposite: nothing about this turn appears
+// until the whole thing, JSON block included, has arrived and been
+// stripped.
+test('a vault-auto-summary Submit turn never streams and the JSON block never reaches the terminal', async () => {
+  const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-vault-test-'));
+  fs.mkdirSync(path.join(vaultPath, 'Study', 'Algorithms'), { recursive: true });
+
+  const visibleReply = 'Nice work, this looks correct and runs in O(n) time.';
+  const vaultJson =
+    '{"problemRating":5,"topicProficiency":null,"summary":"solved cleanly","struggle":"none"}';
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const parsedBody = JSON.parse(body);
+      // sendAndPrint's non-streaming branch (see backend.sendMessage's
+      // onChunk contract) never passes onChunk for this turn, so
+      // LocalBackend requests `stream: false` here - a real regression back
+      // to streaming this turn would show up as this assertion failing
+      // outright (the response never being read as plain JSON at all).
+      assert.equal(parsedBody.stream, false, 'a vault auto-summary turn must request a non-streaming reply');
+      const jsonBlock = `\n\n<<<VAULT_JSON>>>${vaultJson}<<<END_VAULT_JSON>>>`;
+      // Delayed like the incremental-streaming test's chunks are, so the
+      // same "did the visible text appear before the full response was
+      // even ready" check below is meaningful here too.
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: visibleReply + jsonBlock }, finish_reason: 'stop' }] }));
+      }, 1500);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: '18138',
+      VAULT_AUTO_SUMMARY: '1',
+      VAULT_PATH: vaultPath,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const capture = makeCapture({ trigger: 'submit', attemptSeq: 1 });
+    fs.appendFileSync(capturesPath, JSON.stringify(capture) + '\n');
+
+    // Poll until *something* about the reply shows up, then immediately
+    // check the JSON block hasn't leaked - if streaming ever regressed here,
+    // the visible text would show up ~immediately (well under the 1500ms
+    // delay) with the JSON block absent at that moment but arriving soon
+    // after; catching the leak requires checking again post-delay too.
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline && !out.includes('Nice work')) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(out.includes('Nice work'), 'the visible reply never arrived');
+    // It only arrived because the whole backend call (including the delayed
+    // JSON chunk) already resolved - confirm at least ~1.5s really passed,
+    // i.e. this wasn't a fast, streamed partial print.
+    const elapsedMs = Date.now() - (deadline - 4000);
+    assert.ok(elapsedMs > 1300, `expected the reply to wait for the full (delayed) response, got ${elapsedMs}ms`);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.ok(!out.includes('VAULT_JSON'), `the vault JSON marker must never reach the terminal, got: ${JSON.stringify(out)}`);
+    assert.ok(!out.includes(vaultJson), `the vault JSON body must never reach the terminal, got: ${JSON.stringify(out)}`);
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+    fs.rmSync(vaultPath, { recursive: true, force: true });
+  }
 });
