@@ -47,9 +47,10 @@ node companion.js
 
 This starts the relay server automatically and drops you into a chat prompt.
 Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
-`/exit` or `/quit` (or Ctrl+C) ends the session.
+`/exit` or `/quit` (or Ctrl+C) ends the session and, in a real terminal, restores the screen to exactly what was on it before the companion started - nothing from the session stays in your scrollback.
 
-In a real terminal, the input box (a thin rule above a `>` prompt) stays pinned at the bottom of the screen, and the tutor's markdown (headers, bold, lists, fenced code blocks) renders - wrapped to a comfortable reading width rather than the terminal's full width - instead of showing raw syntax.
+In a real terminal, the companion runs in the terminal's alternate screen buffer (the same mechanism vim/less/htop use) - your shell's prior scrollback is hidden while it runs and comes back untouched when you quit, and pressing Enter on an empty line is ignored rather than adding a blank line.
+The input box (a thin rule above a `>` prompt) stays pinned at the bottom of the screen, and the tutor's markdown (headers, bold, lists, fenced code blocks) renders - wrapped to a comfortable reading width rather than the terminal's full width - instead of showing raw syntax.
 A short spinner shows while waiting on the backend; once a reply starts, it opens with a `•` marker, and exactly one blank line separates each turn from the next.
 Replies also stream in as the backend generates them rather than appearing all at once - except a Submit turn with vault auto-summary on (see below), which always waits for the complete reply before showing anything, since the machine-readable block it strips off the end can only be identified once the reply is whole.
 Colors are skipped automatically when output isn't a terminal (piped to a file or another program) or when `NO_COLOR` is set - output stays plain, undecorated text in both cases, and replies print as one block instead of streaming (a pipe has no use for incremental display).

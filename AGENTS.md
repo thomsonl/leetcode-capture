@@ -209,22 +209,44 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   not just *display* text, it *inserts* it into the buffer at the cursor position - calling it with
   the very text `rl.prompt(true)` had just re-rendered from that same `rl.line` duplicated every
   character on screen (and in the buffer) the moment a keystroke landed in the gap between two box
-  redraws, e.g. typing while a reply is streaming in. Also confirmed live: reset `bottomRowsShown = 0`
-  at the very top of `rl.on('line', ...)`, before anything else runs - pressing Enter is readline's
-  own native handling, and it already finalizes the prompt row as permanent scrollback and moves the
-  cursor to a fresh row *before* this listener ever fires, so `bottomRowsShown` from whenever the box
-  was last drawn is stale at that point; clearing "that many rows" without resetting first walks
-  straight up onto the line just typed and erases it.
+  redraws, e.g. typing while a reply is streaming in.
+
+  `rl.on('line', ...)` handles Enter specially depending on whether the submitted text is empty.
+  Pressing Enter is readline's own native handling, and it *always* finalizes the prompt row as
+  permanent scrollback and moves the cursor to a fresh row before this listener ever fires - for a
+  non-empty submission that's correct (Thomson's own message belongs in permanent history), so the
+  listener just resets the now-stale `bottomRowsShown` to 0 before the reply's own
+  printAboveInput/box calls run (clearing "that many rows" without resetting first would walk
+  straight up onto the line just typed and erase it). For an *empty* submission, that same committed
+  row is unwanted - naively calling `drawBox()` there draws a whole new rule+prompt under the
+  leftover blank row instead of reusing it, so every empty Enter permanently grew the screen by two
+  lines and duplicated the rule (meant to be the single, unique break between chat history and the
+  live input) once per press. Fixed by reclaiming that row instead (`moveCursor`/`clearLine` up one,
+  then `rl.prompt(true)`, no new rule) - the rule row above was never touched by readline's own
+  handling and is already correct, so the box ends up looking exactly as it did before Enter was
+  pressed, not just similar to it.
+
+  The whole program also runs inside the terminal's alternate screen buffer (`\x1b[?1049h` on
+  startup, `\x1b[?1049l` in a `process.on('exit', ...)` handler registered in the same breath, TTY
+  only) - the same mechanism vim/less/htop use, entered as early as possible (right after imports) so
+  even the relay-server-lifecycle console.log lines land inside it. Without this, the shell's prior
+  scrollback stayed visible above the box while the companion ran, and exiting left the whole
+  session's output sitting in the terminal's normal scrollback instead of returning to exactly what
+  was on screen before. The `rl.on('close')` handler's old "companion: goodbye" line was removed for
+  the same reason - it would never be seen (the alt-screen restore fires synchronously right after
+  `process.exit()`), so printing it only worked against "exiting restores exactly what was there
+  before."
 
   All of the above - the pinned box across a streaming reply, the turn separator, the `rl.write`
-  duplication bug and its fix, the `rl.on('line')` stale-row-count bug and its fix, wrapped markdown
-  and code-fence rendering, the error path, and readline's own arrow-key/backspace editing continuing
-  to work against the box - were verified live, not just by reading the code: a real pty (Python's
-  `pty` module, no `node-pty` dependency needed) for a quick first pass, then a real `tmux` pane
-  (`tmux capture-pane -p`, which renders ANSI cursor movement/clear sequences the way a real terminal
-  would rather than showing their raw escape codes in log order) once the `pty`-only approach turned
-  out to be actively misleading for reasoning about multi-step clear/redraw sequences - piped
-  `node --test` output never exercises any of this, since none of it runs off a real TTY.
+  duplication bug and its fix, the empty-Enter row-duplication bug and its fix, the alternate-screen
+  behavior, wrapped markdown and code-fence rendering, the error path, and readline's own
+  arrow-key/backspace editing continuing to work against the box - were verified live, not just by
+  reading the code: a real pty (Python's `pty` module, no `node-pty` dependency needed) for a quick
+  first pass, then a real `tmux` pane (`tmux capture-pane -p`, which renders ANSI cursor
+  movement/clear sequences the way a real terminal would rather than showing their raw escape codes
+  in log order) once the `pty`-only approach turned out to be actively misleading for reasoning about
+  multi-step clear/redraw sequences - piped `node --test` output never exercises any of this, since
+  none of it runs off a real TTY.
   `ClaudeBackend`'s streaming path itself still has no automated test (matches this file's existing
   backend-coverage gap: only `local` is exercised via subprocess tests) - reasoned about from the
   Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not independently

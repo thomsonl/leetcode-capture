@@ -49,6 +49,21 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
 
+// --- alternate screen buffer -------------------------------------------
+//
+// The same mechanism vim/less/htop use: swap to a separate screen buffer
+// for the whole session, so nothing companion.js prints ever mixes into
+// the terminal's normal scrollback, and exiting - any path: /exit, Ctrl+C,
+// a crash - restores the terminal to exactly what was on screen before
+// companion.js ever ran. TTY-only: makes no sense (and would corrupt
+// output) when piped. Entered and the matching cleanup registered
+// together, synchronously, so there's never a window where the terminal
+// could be left stuck in the alternate buffer with nothing to restore it.
+if (process.stdout.isTTY) {
+  process.stdout.write('\x1b[?1049h');
+  process.on('exit', () => process.stdout.write('\x1b[?1049l'));
+}
+
 // --- config ---------------------------------------------------------------
 
 const BACKEND = process.env.COMPANION_BACKEND || 'claude';
@@ -714,22 +729,39 @@ function sendAndPrint(label, text, { onReply } = {}) {
 }
 
 rl.on('line', (line) => {
-  // Pressing Enter is readline's own native handling, not ours - it
-  // finalizes the prompt row it was editing as permanent scrollback and
-  // moves the cursor to a genuinely fresh row, all before this listener
-  // ever runs. bottomRowsShown still says "2" from whenever the box was
-  // last drawn, and that's now stale: what it counted (the rule above the
-  // prompt, and the prompt row itself) has already left our hands, so
-  // clearing "bottomRowsShown rows" here would walk straight up onto the
-  // line Thomson just typed and erase it. Reset to 0 - nothing left for us
-  // to clear - before the reply's own printAboveInput/box calls run.
-  bottomRowsShown = 0;
   const text = line.trim();
   if (!text) {
-    if (stylingEnabled()) drawBox();
-    else rl.prompt();
+    // Ignore an empty submission entirely. Pressing Enter is readline's
+    // own native handling, not ours - it already committed the (empty)
+    // prompt row as permanent scrollback and moved the cursor to a fresh
+    // row before this listener ever ran. A naive drawBox() here would draw
+    // a whole new rule+prompt under that leftover row instead of reusing
+    // it - meaning every empty Enter would permanently grow the screen by
+    // two lines, and the rule (meant to be the single, unique break
+    // between chat history and the live input) would duplicate itself
+    // once per press. Reclaim that row instead (move up, clear) and redraw
+    // only the prompt, still empty - the rule row above it was never
+    // touched by readline's own handling and is already correct, so the
+    // box ends up looking exactly as it did before Enter was pressed, not
+    // just similar to it.
+    if (stylingEnabled()) {
+      readline.moveCursor(process.stdout, 0, -1);
+      readline.clearLine(process.stdout, 0);
+      readline.cursorTo(process.stdout, 0);
+      rl.prompt(true);
+    } else {
+      rl.prompt();
+    }
     return;
   }
+  // A non-empty submission, in contrast, must keep the row readline just
+  // committed - that's Thomson's own message, and it's meant to become
+  // part of permanent chat history. bottomRowsShown still says "2" from
+  // whenever the box was last drawn, and that's now stale: what it counted
+  // (the rule above the prompt, and the prompt row itself) has already
+  // left our hands the same way. Reset to 0 - nothing left for us to clear
+  // - before the reply's own printAboveInput/box calls run.
+  bottomRowsShown = 0;
   if (text === '/exit' || text === '/quit') {
     rl.close();
     return;
@@ -739,7 +771,11 @@ rl.on('line', (line) => {
 
 rl.on('close', () => {
   stopping = true;
-  process.stdout.write(`\n${dim('companion: goodbye')}\n`);
+  // No "goodbye" line here - the alternate-screen restore (see the top of
+  // this file) fires immediately after process.exit() below and erases
+  // whatever's on screen anyway, so printing one would only ever flash
+  // briefly, if it rendered at all, working against "exiting restores
+  // exactly what was there before" rather than serving any purpose.
   process.exit(0);
 });
 
