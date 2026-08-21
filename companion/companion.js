@@ -35,7 +35,16 @@ import {
   resolveVaultConfig,
   validateVaultPath,
 } from './vault-summary.js';
-import { stylingEnabled, dim, roleLabel, promptString, renderMarkdown } from './terminal-format.js';
+import {
+  stylingEnabled,
+  dim,
+  promptString,
+  renderMarkdown,
+  frameTop,
+  frameBottom,
+  spinnerFrame,
+  createMarkdownStreamer,
+} from './terminal-format.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -141,7 +150,7 @@ class ClaudeBackend {
     this.queryFn = mod.query;
   }
 
-  async sendMessage(text) {
+  async sendMessage(text, { onChunk } = {}) {
     await this.ensureLoaded();
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 
@@ -156,11 +165,26 @@ class ClaudeBackend {
     const options = { cwd: SCRATCH_DIR, systemPrompt: TUTOR_SYSTEM_PROMPT };
     if (this.model) options.model = this.model;
     if (this.sessionId) options.resume = this.sessionId;
+    // Only opt into partial-message events when a caller actually wants
+    // them - onReply's vault-block-stripping path (see sendAndPrint) calls
+    // this with no onChunk at all, and this stays a plain, unchanged
+    // request in that case.
+    if (onChunk) options.includePartialMessages = true;
 
     let resultText = null;
     let errorNote = null;
     for await (const message of this.queryFn({ prompt: text, options })) {
       if (message.session_id) this.sessionId = message.session_id;
+      // A `stream_event` message wraps a raw Anthropic API stream event
+      // (see SDKPartialAssistantMessage in sdk.d.ts); only its text deltas
+      // are relevant here - tool-use/thinking/citation deltas never appear
+      // for this backend, since it's configured with no tools.
+      if (onChunk && message.type === 'stream_event') {
+        const event = message.event;
+        if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+          onChunk(event.delta.text);
+        }
+      }
       if (message.type === 'result') {
         if (message.subtype === 'success') {
           resultText = message.result;
@@ -195,7 +219,7 @@ class LocalBackend {
     this.history = [{ role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${LOCAL_STYLE_ADDENDUM}` }];
   }
 
-  async sendMessage(text) {
+  async sendMessage(text, { onChunk } = {}) {
     this.history.push({ role: 'user', content: text });
 
     let response;
@@ -206,7 +230,7 @@ class LocalBackend {
           'Content-Type': 'application/json',
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
-        body: JSON.stringify({ model: this.model, messages: this.history }),
+        body: JSON.stringify({ model: this.model, messages: this.history, stream: Boolean(onChunk) }),
       });
     } catch (err) {
       this.history.pop(); // don't leave a dangling user turn with no reply
@@ -219,8 +243,6 @@ class LocalBackend {
       throw new Error(`local backend request failed: ${response.status} ${response.statusText} ${bodyText}`);
     }
 
-    const data = await response.json();
-    const message = data?.choices?.[0]?.message;
     // Some locally-hosted "thinking" models (e.g. Ollama's gemma-family
     // thinking variants) put their whole answer in a separate `reasoning`
     // field and leave `content` empty, especially on the longer responses a
@@ -228,14 +250,65 @@ class LocalBackend {
     // silently hand sendAndPrint an empty string, which prints nothing but
     // the capture's label, looking exactly like "the reply never arrived"
     // even though the backend technically succeeded. Fall back to
-    // `reasoning` before giving up.
-    const replyText = (message?.content && message.content.trim()) || (message?.reasoning && message.reasoning.trim()) || '';
+    // `reasoning` before giving up - in both the streamed and non-streamed
+    // shapes below.
+    let replyText;
+    if (onChunk) {
+      replyText = await this.streamReply(response, onChunk);
+    } else {
+      const data = await response.json();
+      const message = data?.choices?.[0]?.message;
+      replyText = (message?.content && message.content.trim()) || (message?.reasoning && message.reasoning.trim()) || '';
+    }
+
     if (!replyText) {
       this.history.pop();
       throw new Error('local backend returned an empty reply (no content or reasoning in the response)');
     }
     this.history.push({ role: 'assistant', content: replyText });
     return replyText;
+  }
+
+  // Reads an OpenAI-compatible chat-completions SSE stream (one `data:
+  // {...}` event per chunk, terminated by `data: [DONE]`), calling onChunk
+  // for each piece of visible `delta.content` as it arrives. `delta.reasoning`
+  // is accumulated the same way but never handed to onChunk - a "thinking"
+  // model's internal trace isn't what streaming is meant to surface live; it
+  // only matters as the same empty-content fallback used by the
+  // non-streaming path above.
+  async streamReply(response, onChunk) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    let reasoning = '';
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let event;
+        try {
+          event = JSON.parse(payload);
+        } catch {
+          continue; // a malformed/partial SSE line - ignore rather than crash the stream
+        }
+        const delta = event?.choices?.[0]?.delta;
+        if (delta?.content) {
+          content += delta.content;
+          onChunk(delta.content);
+        }
+        if (delta?.reasoning) reasoning += delta.reasoning;
+      }
+    }
+    return (content && content.trim()) || (reasoning && reasoning.trim()) || '';
   }
 }
 
@@ -445,36 +518,199 @@ function enqueue(task) {
   return result;
 }
 
+// --- reply turn presentation -------------------------------------------
+//
+// A single reply turn (a typed message's answer, or a capture's tutoring
+// reply) can involve several writes in quick succession - a spinner, a
+// framing rule, one or many streamed chunks, a closing rule - and none of
+// them can afford printAboveInput's full save/clear/redraw-the-prompt
+// dance on every single write; done that often it would flicker constantly.
+// Instead a turn claims the terminal for its own duration: beginTurn()
+// saves and clears the in-progress input line once and pauses readline (so
+// a keystroke can't echo into the middle of a reply - it's simply buffered
+// and replayed once the turn ends), and the returned endTurn() reverses
+// both. writeTurn() is a raw, newline-agnostic write for use inside that
+// window - unlike printAboveInput, it never appends a newline of its own,
+// since a streamed chunk (or the raw, unrendered passthrough used when
+// styling is off) can end mid-word and must reach the terminal exactly as
+// received.
+function beginTurn() {
+  const savedLine = rl.line;
+  const savedCursor = rl.cursor;
+  rl.pause();
+  if (process.stdout.isTTY) {
+    readline.clearLine(process.stdout, 0);
+    readline.cursorTo(process.stdout, 0);
+  }
+  return function endTurn() {
+    rl.resume();
+    if (process.stdout.isTTY) {
+      rl.prompt(true);
+      if (savedLine) {
+        rl.write(savedLine);
+        if (savedCursor < savedLine.length) {
+          readline.moveCursor(process.stdout, -(savedLine.length - savedCursor), 0);
+        }
+      }
+    }
+  };
+}
+
+function writeTurn(text) {
+  if (text) process.stdout.write(text);
+}
+
+// The "waiting for the backend" indicator: redrawn in place on the turn's
+// current line until the first content is ready to replace it. A plain
+// no-op (no frames, no cursor movement) whenever styling is off, so a
+// piped/non-TTY invocation is never touched by it - see terminal-format.js's
+// stylingEnabled.
+function startSpinner() {
+  if (!stylingEnabled()) return () => {};
+  let i = 0;
+  let stopped = false;
+  writeTurn(spinnerFrame(i));
+  const timer = setInterval(() => {
+    i += 1;
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+    writeTurn(spinnerFrame(i));
+  }, 120);
+  return function stopSpinner() {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+  };
+}
+
 // onReply, when given, runs on the raw reply before it's printed and may
 // return a transformed string - used by handleCaptureLine to peel the vault
 // auto-summary's JSON block back off a Submit reply (see extractVaultBlock)
-// before it ever reaches the terminal.
+// before it ever reaches the terminal. That stripping can only happen once
+// the reply is complete, so a turn with onReply set never streams - see the
+// non-streaming branch below.
 function sendAndPrint(label, text, { onReply } = {}) {
   return enqueue(async () => {
+    if (label) printAboveInput(label);
+
+    const streaming = !onReply;
+    const endTurn = beginTurn();
+    const stopSpinner = startSpinner();
+
+    // Tracks whether the turn's own most recent write ended in a newline,
+    // so the turn can be closed with exactly one trailing newline
+    // regardless of which branch below produced its last piece - streamed
+    // raw chunks (no newline of their own) and rendered blocks (always
+    // ended with one) both pass through here.
+    let endsWithNewline = true;
+    function write(text) {
+      if (!text) return;
+      writeTurn(text);
+      endsWithNewline = text.endsWith('\n');
+    }
+    function ensureNewline() {
+      if (!endsWithNewline) write('\n');
+    }
+
+    if (streaming) {
+      let frameOpen = false;
+      let anyChunk = false;
+      let wroteBlock = false;
+      const streamer = createMarkdownStreamer();
+
+      function openFrame() {
+        if (frameOpen) return;
+        frameOpen = true;
+        stopSpinner();
+        const top = frameTop('tutor');
+        if (top) write(`${top}\n`);
+      }
+
+      // Writes one flushed piece of the reply. In styled/TTY mode, each
+      // piece is a complete rendered markdown block that renderMarkdown
+      // already trimEnd()'d at its own boundary - blocks are separated with
+      // a blank line here so consecutive streamer.push()/finish() calls
+      // (each trimmed independently, unlike a single one-shot render) don't
+      // lose the paragraph spacing a non-streaming reply would have kept.
+      // In non-styled mode a piece is a raw, possibly mid-word text chunk -
+      // no separator, no modification at all, straight pass-through.
+      function writeReplyPiece(piece) {
+        if (!piece) return;
+        if (stylingEnabled()) {
+          if (wroteBlock) write('\n\n');
+          wroteBlock = true;
+        }
+        write(piece);
+      }
+
+      let reply;
+      try {
+        reply = await backend.sendMessage(text, {
+          onChunk: (chunk) => {
+            anyChunk = true;
+            openFrame();
+            writeReplyPiece(streamer.push(chunk));
+          },
+        });
+      } catch (err) {
+        stopSpinner();
+        if (frameOpen) {
+          const bottom = frameBottom();
+          if (bottom) write(`${bottom}\n`);
+        }
+        write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
+        endTurn();
+        return;
+      }
+
+      // Defense in depth: even if the backend resolves with an
+      // empty/whitespace-only reply without throwing, never let that render
+      // as total silence - indistinguishable from "the reply never arrived"
+      // (see LocalBackend.sendMessage's own empty-reply guard).
+      const isEmpty = !(typeof reply === 'string' && reply.trim());
+      // A backend/model that ignored the streaming request entirely (no
+      // onChunk call ever fired) still has a real reply to show - feed it
+      // to the streamer as one final push, exactly like a real chunk would
+      // be, so it renders instead of being lost.
+      if (!anyChunk && !isEmpty) {
+        openFrame();
+        writeReplyPiece(streamer.push(reply));
+      }
+      stopSpinner();
+      writeReplyPiece(streamer.finish());
+      ensureNewline();
+      if (frameOpen) {
+        const bottom = frameBottom();
+        if (bottom) write(`${bottom}\n`);
+      }
+      if (isEmpty) write(`${dim('companion: warning: backend returned an empty reply')}\n`);
+      endTurn();
+      return;
+    }
+
+    // Non-streaming path (vault auto-summary's Submit turns): the whole
+    // transformed reply prints as one block once it's fully ready, same
+    // shape as before streaming existed.
     let reply;
     try {
       reply = await backend.sendMessage(text);
     } catch (err) {
-      printAboveInput(
-        dim(`${label ? `${label}\n` : ''}companion: error talking to backend (${BACKEND}): ${err.message}`)
-      );
+      stopSpinner();
+      write(`${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`);
+      endTurn();
       return;
     }
-    const displayText = onReply ? onReply(reply) : reply;
-    // Defense in depth: even if a backend or onReply transform ever hands
-    // back an empty/whitespace-only string without throwing, never let that
-    // render as total silence after the label - that's indistinguishable
-    // from "the reply never arrived" (see LocalBackend.sendMessage's own
-    // empty-reply guard for the concrete case this was written for).
+    stopSpinner();
+    const displayText = onReply(reply);
     const isEmpty = !(typeof displayText === 'string' && displayText.trim());
-    // A "tutor" role label distinguishes an actual reply from the capture's
-    // own status label above it and from de-emphasized system lines - but
-    // only when styling is on; adding a line here unconditionally would
-    // change what non-TTY output looks like, which must stay exactly as it
-    // was before this feature existed (see terminal-format.js).
-    const header = [label, stylingEnabled() && !isEmpty ? roleLabel('tutor') : null].filter(Boolean).join('\n');
+    const header = !isEmpty ? frameTop('tutor') : null;
     const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
-    printAboveInput(`${header ? `${header}\n` : ''}${body}`);
+    const footer = !isEmpty ? frameBottom() : null;
+    write([header, body, footer].filter(Boolean).join('\n'));
+    ensureNewline();
+    endTurn();
   });
 }
 

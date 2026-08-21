@@ -162,6 +162,45 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   the working pattern. `companion/companion.test.js` spawns companion.js with piped stdio, so it
   doubles as the non-TTY/no-ANSI regression path end-to-end.
 
+- Phase 2 of the CLI look (streaming replies + boxed/framed turns, on top of phase 1 above):
+  `terminal-format.js` adds `frameTop`/`frameBottom` (a role-labeled rule opening/closing a reply
+  turn), `spinnerFrame` (one frame of a "waiting on the backend" spinner - the timing/redraw is
+  `companion.js`'s job, since only it has the readline instance), and `createMarkdownStreamer`
+  (feeds a reply in incrementally, only rendering a block once it reaches a safe boundary - a blank
+  line outside a fenced code block, or a fence's own close - so a still-open fence or mid-block
+  chunk is never handed to `marked`/`marked-terminal`, which renders those as broken/uncoloured
+  text; disabled/non-TTY mode is a pure per-chunk pass-through, matching how a non-streaming reply
+  already looked over a pipe). Both backends' `sendMessage(text, { onChunk })` now take an optional
+  `onChunk` and call it with each visible text delta: `ClaudeBackend` sets
+  `includePartialMessages: true` and reads `stream_event` messages' `content_block_delta`/`text_delta`
+  events; `LocalBackend` requests `stream: Boolean(onChunk)` and parses the OpenAI-compatible SSE
+  response itself (`response.body.getReader()`), still falling back to `reasoning` if `content`
+  stays empty end to end, same as the non-streaming path.
+  In `companion.js`, `sendAndPrint` only streams when there's no `onReply` transform - a vault
+  auto-summary Submit turn (`onReply` set) always waits for the whole reply, since `extractVaultBlock`
+  can only identify and strip the trailing `<<<VAULT_JSON>>>` block once the reply is complete, and
+  streaming it live would risk that block (or a fragment of it) reaching the terminal before it's
+  known to be strippable - `companion.test.js` has a test asserting a real gap between the delayed
+  JSON chunk and the visible reply's arrival, and that `VAULT_JSON` never appears in the output,
+  distinct from a separate test proving genuine incremental delivery on the streaming path (both
+  matter: a stub that always answers instantly can't tell a real stream from a fast one-shot flush).
+  A whole reply "turn" (spinner, frame, one or many streamed pieces) is written through
+  `beginTurn()`/`writeTurn()`/`endTurn()`, not `printAboveInput` - pausing readline for the turn's
+  duration (a keystroke mid-reply is simply buffered and replayed once the turn ends, rather than
+  echoing into the middle of it) instead of paying for a full clear/redraw of the prompt on every
+  streamed piece, which was flickery. Consecutive rendered blocks from separate
+  `streamer.push()`/`finish()` calls are joined with an explicit blank line in `sendAndPrint`
+  (`writeReplyPiece`) - each call's `renderMarkdown` independently `trimEnd()`s its own boundary, so
+  without this the paragraph spacing between them silently disappears; confirmed live under a real
+  pty (`python3 -c 'import pty; ...'`, no `node-pty` dependency needed) driving a stub SSE backend,
+  which is also how the spinner-then-frame sequencing, streamed markdown/code-fence rendering, the
+  error path, and the prompt correctly restoring after a turn were all eyeballed end to end - real
+  ANSI escape codes over a piped `node --test` run don't show this class of bug, only a live
+  terminal does. `ClaudeBackend`'s streaming path itself has no automated test (matches this file's
+  existing backend-coverage gap: only `local` is exercised via subprocess tests) - reasoned about
+  from the Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not
+  independently live-verified against a real Claude account.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

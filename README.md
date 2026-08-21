@@ -50,7 +50,9 @@ Run/Submit clicks on a LeetCode problem page are injected into the chat as they 
 `/exit` or `/quit` (or Ctrl+C) ends the session.
 
 In a real terminal, the prompt and the tutor's replies are colored and labeled, status/error lines are dimmed, and the tutor's markdown (headers, bold, lists, fenced code blocks) renders instead of showing raw syntax.
-Colors are skipped automatically when output isn't a terminal (piped to a file or another program) or when `NO_COLOR` is set - output stays plain text in both cases.
+A short spinner shows while waiting on the backend, and each tutor reply is framed between a `── tutor ──` rule and a closing rule so consecutive turns don't run together.
+Replies also stream in as the backend generates them rather than appearing all at once - except a Submit turn with vault auto-summary on (see below), which always waits for the complete reply before showing anything, since the machine-readable block it strips off the end can only be identified once the reply is whole.
+Colors are skipped automatically when output isn't a terminal (piped to a file or another program) or when `NO_COLOR` is set - output stays plain text in both cases, and replies print as one block instead of streaming (a pipe has no use for incremental display).
 
 ### 3. (optional) Install the `leetcode` launcher
 
