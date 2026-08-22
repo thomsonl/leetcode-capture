@@ -47,10 +47,9 @@ node companion.js
 
 This starts the relay server automatically and drops you into a chat prompt.
 Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
-`/exit` or `/quit` (or Ctrl+C) ends the session and, in a real terminal, restores the screen to exactly what was on it before the companion started - nothing from the session stays in your scrollback.
+`/exit` or `/quit` (or Ctrl+C) ends the session.
 
-In a real terminal, the companion runs in the terminal's alternate screen buffer (the same mechanism vim/less/htop use) - your shell's prior scrollback is hidden while it runs and comes back untouched when you quit, and pressing Enter on an empty line is ignored rather than adding a blank line.
-The alternate screen buffer means most terminals' own mouse-wheel scrollback doesn't reach past what's currently on screen - press **Page Up** at any time to open the full conversation (everything said on either side, not just what currently fits) in `less`, with normal `less` navigation (arrows, Page Up/Down, `/` to search, `q` to return).
+In a real terminal, the whole conversation prints into your normal terminal scrollback - scroll up with the mouse wheel or your terminal's own scrollback keys to read back through it, exactly like any other command's output. Pressing Enter on an empty line is ignored rather than adding a blank line.
 The input box (a thin rule above a `>` prompt) stays pinned at the bottom of the screen, and the tutor's markdown (headers, bold, lists, fenced code blocks) renders - wrapped to a comfortable reading width rather than the terminal's full width - instead of showing raw syntax.
 Resizing the terminal window is picked up live - the box's rule and any markdown rendered afterward immediately track the new size (still capped at the comfortable width on a wide terminal).
 A short spinner shows while waiting on the backend; once a reply starts, it opens with a `•` marker, and exactly one blank line separates each turn from the next.

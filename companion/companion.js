@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   prepareVaultContext,
@@ -49,42 +49,6 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
-
-// --- alternate screen buffer -------------------------------------------
-//
-// The same mechanism vim/less/htop use: swap to a separate screen buffer
-// for the whole session, so nothing companion.js prints ever mixes into
-// the terminal's normal scrollback, and exiting - any path: /exit, Ctrl+C,
-// a crash - restores the terminal to exactly what was on screen before
-// companion.js ever ran. TTY-only: makes no sense (and would corrupt
-// output) when piped. Entered and the matching cleanup registered
-// together, synchronously, so there's never a window where the terminal
-// could be left stuck in the alternate buffer with nothing to restore it.
-//
-// Most terminals (xterm and its many descendants, including kitty)
-// automatically turn on "alternate scroll mode" (DECSET 1007) the moment
-// the alternate screen buffer is active: with no native scrollback to show
-// while in the alternate buffer, a mouse wheel notch gets translated into
-// an Up/Down arrow keypress instead, on the theory that a full-screen
-// alt-screen app (a pager, an editor) will handle its own scrolling with
-// the arrow keys it already reads. Readline has no idea any of this is
-// happening - it just sees an arrow key, which is *also* its own built-in
-// binding for cycling through previously-typed input lines. The result:
-// scrolling the wheel to read back through the conversation instead
-// silently replaces whatever's in the prompt with an old typed message.
-// Explicitly disabling 1007 stops the wheel-to-arrow-key translation, so
-// scrolling no longer collides with readline's input history - though
-// what the wheel does *instead* (the terminal's own alt-screen scrollback,
-// if it has one, or nothing at all) is then up to the terminal, not
-// something this program can fully control from here. Not restored on
-// exit: 1007 only has any effect while also inside the alternate screen
-// buffer (1049), so once that's left, this can't affect normal terminal
-// use afterward either way.
-if (process.stdout.isTTY) {
-  process.stdout.write('\x1b[?1049h');
-  process.stdout.write('\x1b[?1007l');
-  process.on('exit', () => process.stdout.write('\x1b[?1049l'));
-}
 
 // --- config ---------------------------------------------------------------
 
@@ -534,41 +498,15 @@ let stopping = false;
 let bottomRowsShown = 0;
 
 // True for the duration of one sendAndPrint call (a typed message's reply,
-// or a capture's whole exchange) - two independent things check this before
-// touching the screen outside the normal print flow: the resize handler
-// (near the bottom of this file), and Page Up/showHistory (below). Mid-turn,
-// bottomRowsShown might mean "a 1-row spinner" rather than "a 2-row box" at
-// any given moment, so forcing a redraw or spawning a pager there would
-// corrupt whatever's actually on screen - the resize handler falls back to
-// only updating the width for future draws, and Page Up is simply ignored,
-// until the turn's own writes catch up naturally. Idle (turnActive false),
-// the box's state is simple and known, so both are safe to act on
-// immediately.
+// or a capture's whole exchange) - the resize handler (near the bottom of
+// this file) checks this before forcing an immediate box redraw outside the
+// normal print flow. Mid-turn, bottomRowsShown might mean "a 1-row spinner"
+// rather than "a 2-row box" at any given moment, so forcing a redraw there
+// would corrupt whatever's actually on screen - the resize handler falls
+// back to only updating the width for future draws until the turn's own
+// writes catch up naturally. Idle (turnActive false), the box's state is
+// simple and known, so a resize can redraw it immediately.
 let turnActive = false;
-
-// Every line of actual conversation content (captures, replies, warnings,
-// errors - not the box's own rule/prompt, not the transient spinner) is
-// also recorded here, verbatim, ANSI codes included, in addition to being
-// printed live - this is the only durable record of anything that's
-// scrolled off screen, since the alternate screen buffer this program runs
-// in (see the top of this file) has no native scrollback of its own in
-// most terminals once content exceeds one screen's height. Page Up opens
-// it in a real pager (`less`) rather than a hand-rolled scroll view -
-// less already gets wrapping, search, and its own Page Up/Down exactly
-// right. Capped by character count, not line count, so one enormous
-// unbroken piece of content can't make the trim loop below do
-// disproportionate work for how much it actually frees.
-const HISTORY_MAX_CHARS = 2_000_000;
-let historyChars = 0;
-const historyBuffer = [];
-function recordHistory(text) {
-  if (!text) return;
-  historyBuffer.push(text);
-  historyChars += text.length;
-  while (historyChars > HISTORY_MAX_CHARS && historyBuffer.length > 1) {
-    historyChars -= historyBuffer.shift().length;
-  }
-}
 
 function clearBottomRows() {
   if (!stylingEnabled()) return;
@@ -605,7 +543,6 @@ function printAboveInput(text) {
     process.stdout.write(body);
     return;
   }
-  recordHistory(body);
   clearBottomRows();
   process.stdout.write(body);
   drawBox();
@@ -730,7 +667,6 @@ async function sendAndPrintTurn(label, text, onReply) {
       // leave exactly one blank row before a second-or-later piece.
       const separatorOrMarker = wroteMarker ? '\n' : turnMarker();
       const fullPiece = piece.endsWith('\n') ? piece : `${piece}\n`;
-      recordHistory(separatorOrMarker + fullPiece);
       process.stdout.write(separatorOrMarker);
       wroteMarker = true;
       process.stdout.write(fullPiece);
@@ -749,7 +685,6 @@ async function sendAndPrintTurn(label, text, onReply) {
       stopSpinner();
       clearBottomRows();
       const errorLine = `${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`;
-      recordHistory(errorLine);
       process.stdout.write(errorLine);
       drawBox();
       turnBoundaryPending = true;
@@ -771,7 +706,6 @@ async function sendAndPrintTurn(label, text, onReply) {
       stopSpinner();
       clearBottomRows();
       const warningLine = `${dim('companion: warning: backend returned an empty reply')}\n`;
-      recordHistory(warningLine);
       process.stdout.write(warningLine);
       drawBox();
     }
@@ -789,7 +723,6 @@ async function sendAndPrintTurn(label, text, onReply) {
     stopSpinner();
     clearBottomRows();
     const errorLine = `${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`;
-    recordHistory(errorLine);
     process.stdout.write(errorLine);
     drawBox();
     turnBoundaryPending = true;
@@ -802,7 +735,6 @@ async function sendAndPrintTurn(label, text, onReply) {
   const marker = stylingEnabled() && !isEmpty ? turnMarker() : '';
   const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
   const fullBody = `${marker}${body.endsWith('\n') ? body : `${body}\n`}`;
-  recordHistory(fullBody);
   process.stdout.write(fullBody);
   drawBox();
   turnBoundaryPending = true;
@@ -846,21 +778,12 @@ rl.on('line', (line) => {
     rl.close();
     return;
   }
-  // Readline's own echo already put this line on screen (that's what was
-  // just committed to permanent scrollback, above) - this is purely for
-  // history/showHistory's benefit, since readline's echo never goes
-  // through printAboveInput or anything else that records it.
-  if (process.stdout.isTTY) recordHistory(`${promptString()}${text}\n`);
   sendAndPrint(null, text);
 });
 
 rl.on('close', () => {
   stopping = true;
-  // No "goodbye" line here - the alternate-screen restore (see the top of
-  // this file) fires immediately after process.exit() below and erases
-  // whatever's on screen anyway, so printing one would only ever flash
-  // briefly, if it rendered at all, working against "exiting restores
-  // exactly what was there before" rather than serving any purpose.
+  process.stdout.write(`\n${dim('companion: goodbye')}\n`);
   process.exit(0);
 });
 
@@ -1023,58 +946,6 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => rl.close());
 }
 
-// Redraws the screen with whatever's most recently in history, sized to
-// the terminal's current height, then the box - used to return to a normal
-// live view after the pager (see showHistory) closes.
-function redrawLiveTail() {
-  const rows = process.stdout.rows || 24;
-  const visibleRows = Math.max(1, rows - 2); // leave room for the box's 2 rows
-  const allLines = historyBuffer.join('').split('\n');
-  const tail = allLines.slice(-visibleRows).join('\n');
-  process.stdout.write('\x1b[2J\x1b[H'); // clear screen, cursor to top-left
-  if (tail) process.stdout.write(tail.endsWith('\n') ? tail : `${tail}\n`);
-  bottomRowsShown = 0;
-  drawBox();
-}
-
-// Page Up opens the full conversation history in `less` rather than a
-// hand-rolled scroll view - a real pager already gets wrapping, search,
-// and its own Page Up/Down exactly right, which a from-scratch
-// implementation would have to earn the hard way. `-X` specifically
-// disables less's own terminal init/deinit (its own alternate-screen
-// enter/exit) - without it, less entering *its own* alternate screen while
-// this program is already in one, then leaving it, would drop the
-// terminal straight back to the normal buffer under it instead of back to
-// this program's own alternate screen, since 1049 isn't a stack (see the
-// comment at the top of this file on why 1049 is used at all). With -X,
-// less paints directly into the screen this program already owns, and
-// handing it real terminal-attached stdio (not a pipe) is what makes its
-// own scrolling/search interactive rather than just dumping the content.
-// Ignored while a turn is active (a spinner or a streamed piece is still
-// mid-write to the same terminal - spawning a pager on top of that would
-// corrupt both) and while there's nothing to show yet.
-function showHistory() {
-  if (!process.stdout.isTTY || turnActive || historyBuffer.length === 0) return;
-  const content = historyBuffer.join('');
-  rl.pause();
-  // spawnSync doesn't throw for a missing binary (ENOENT) or any other
-  // spawn-time failure - it returns normally with .error set instead, so
-  // that's what needs checking here, not a try/catch.
-  const result = spawnSync('less', ['-RX'], { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
-  rl.resume();
-  if (result.error) {
-    printAboveInput(dim(`companion: warning: could not open history in "less" (${result.error.message})`));
-    return;
-  }
-  redrawLiveTail();
-}
-
-if (process.stdout.isTTY) {
-  process.stdin.on('keypress', (str, key) => {
-    if (key && key.name === 'pageup') showHistory();
-  });
-}
-
 await ensureRelayServer();
 
 console.log(dim(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`));
@@ -1086,9 +957,7 @@ console.log(
       : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
   )
 );
-console.log(
-  dim('companion: type to chat directly; captures are injected automatically. Page Up for history, /exit to quit.')
-);
+console.log(dim('companion: type to chat directly; captures are injected automatically. /exit to quit.'));
 if (stylingEnabled()) drawBox();
 else rl.prompt();
 

@@ -241,64 +241,35 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   handling and is already correct, so the box ends up looking exactly as it did before Enter was
   pressed, not just similar to it.
 
-  The whole program also runs inside the terminal's alternate screen buffer (`\x1b[?1049h` on
-  startup, `\x1b[?1049l` in a `process.on('exit', ...)` handler registered in the same breath, TTY
-  only) - the same mechanism vim/less/htop use, entered as early as possible (right after imports) so
-  even the relay-server-lifecycle console.log lines land inside it. Without this, the shell's prior
-  scrollback stayed visible above the box while the companion ran, and exiting left the whole
-  session's output sitting in the terminal's normal scrollback instead of returning to exactly what
-  was on screen before. The `rl.on('close')` handler's old "companion: goodbye" line was removed for
-  the same reason - it would never be seen (the alt-screen restore fires synchronously right after
-  `process.exit()`), so printing it only worked against "exiting restores exactly what was there
-  before."
+  The program deliberately does *not* run in the terminal's alternate screen buffer. That was tried
+  (entering it on startup, `\x1b[?1049h`/`\x1b[?1049l`, so the shell's prior scrollback stayed hidden
+  while running and exiting restored exactly what was on screen before) and then reverted a day later:
+  most terminals (confirmed for kitty - `TERM=xterm-kitty` - which is what's in use here) automatically
+  translate a mouse wheel notch into an Up/Down arrow keypress while the alternate screen is active
+  (DECSET "alternate scroll mode"), which readline reads as "browse my typed-message history," so
+  scrolling the wheel silently replaced whatever was in the prompt with an old typed message. Disabling
+  that translation (`\x1b[?1007l`) stopped the collision but didn't restore real scrolling, since
+  alternate-screen buffers generally have no native scrollback of their own past the current screen's
+  height regardless - a `historyBuffer` + Page Up-opens-`less` mechanism was built to compensate for
+  that, complete with its own `turnActive`-gated `spawnSync('less', ['-RX'], ...)` call. All of it -
+  the buffer, the pager, the `-X` flag needed to keep `less`'s own alternate-screen use from stacking
+  incorrectly on top of this program's - was removed once Thomson made clear he wanted the mouse wheel
+  itself to work normally, not a keyboard-driven substitute: with the alternate screen gone, the
+  terminal's own default scrollback behavior needs zero code to just work. Before ripping any of this
+  back out, look for it in this file's own git history (`git log -p -- companion/companion.js` around
+  the commits that reference `1049`) rather than reinventing it - the diagnosis (kitty's automatic
+  wheel-to-arrow-key translation) and the two failed mitigation attempts are exactly the trap to avoid
+  repeating.
 
-  A real consequence of the alternate screen buffer: most terminals (confirmed for kitty, the one in
-  use here - `TERM=xterm-kitty`) automatically enable "alternate scroll mode" (DECSET 1007) the moment
-  it's active, translating a mouse wheel notch into an Up/Down arrow keypress instead of native
-  scrollback, on the theory that a full-screen app will handle its own scrolling with the arrow keys
-  it already reads. Readline has no idea this is happening - it just sees an arrow key, which is also
-  its own binding for cycling through previously-typed input lines, so scrolling the wheel to read
-  back through the conversation instead silently replaced whatever was in the prompt with an old
-  typed message. Fixed by explicitly disabling 1007 (`\x1b[?1007l`, sent once alongside entering
-  1049h) - though what the wheel does *instead* (native alt-screen scrollback, if the terminal has
-  one, or nothing at all) is then up to the terminal, not something controllable from here, and most
-  terminals' alt-screen buffers don't retain scrollback past the current screen's height regardless,
-  which is *why* Page Up (below) exists rather than relying on 1007 alone to fully solve this.
-
-  Every line of actual conversation content - captures, replies, warnings, errors, and (recorded
-  directly in `rl.on('line', ...)`, since readline's own echo never goes through any of these) typed
-  messages - is also appended, verbatim with ANSI codes intact, to a capped-by-character-count
-  `historyBuffer`, in addition to being printed live. This is the durable record of anything that's
-  scrolled off screen, since (as above) the alternate screen buffer has no native scrollback of its
-  own past one screen in most terminals. Page Up opens it in a real pager (`spawnSync('less', ['-RX'],
-  { input: historyBuffer.join(''), stdio: ['pipe', 'inherit', 'inherit'] })`) rather than a hand-rolled
-  scroll view - `less` already gets wrapping, search, and its own Page Up/Down exactly right, which a
-  from-scratch implementation would have to earn the hard way. `-X` specifically disables `less`'s own
-  terminal init/deinit (its own alternate-screen enter/exit) - without it, `less` entering *its own*
-  alternate screen while this program is already in one, then leaving it, would drop the terminal
-  straight back to the *normal* buffer instead of back to this program's own alternate screen, since
-  1049 isn't a stack. With `-X`, `less` paints directly into the screen this program already owns, and
-  `stdio: ['pipe', 'inherit', 'inherit']` (piped stdin carrying the content, but real terminal-attached
-  stdout/stderr) is what makes its scrolling/search interactive rather than just dumping the content.
-  `spawnSync` does not throw for a missing `less` binary - it returns normally with `.error` set, which
-  is what's actually checked, not a `try`/`catch`. Ignored (via the `turnActive` flag above) while a
-  turn is active, since spawning a pager on top of an in-progress spinner or streamed piece would
-  corrupt both.
-
-  All of the above - the pinned box across a streaming reply, the turn separator, the `rl.write`
-  duplication bug and its fix, the empty-Enter row-duplication bug and its fix, the alternate-screen
-  behavior, Page Up opening `less` with the full conversation (including confirming real overflow
-  scrolling within `less` itself with a conversation deliberately longer than the terminal, that it's
-  correctly ignored mid-turn, and that returning from it leaves readline's own arrow-key input-history
-  navigation - a *different* key from Page Up/Down, confirmed by directly probing Node's keypress
-  parser - working exactly as before), wrapped markdown and code-fence rendering, the error path, and
-  readline's own arrow-key/backspace editing continuing to work against the box - were verified live,
-  not just by reading the code: a real pty (Python's `pty` module, no `node-pty` dependency needed) for
-  a quick first pass, then a real `tmux` pane (`tmux capture-pane -p`, which renders ANSI cursor
-  movement/clear sequences the way a real terminal would rather than showing their raw escape codes
-  in log order) once the `pty`-only approach turned out to be actively misleading for reasoning about
-  multi-step clear/redraw sequences - piped `node --test` output never exercises any of this, since
-  none of it runs off a real TTY.
+  All of the pinned box across a streaming reply, the turn separator, the `rl.write` duplication bug
+  and its fix, the empty-Enter row-duplication bug and its fix, wrapped markdown and code-fence
+  rendering, the error path, and readline's own arrow-key/backspace editing continuing to work against
+  the box - were verified live, not just by reading the code: a real pty (Python's `pty` module, no
+  `node-pty` dependency needed) for a quick first pass, then a real `tmux` pane (`tmux capture-pane
+  -p`, which renders ANSI cursor movement/clear sequences the way a real terminal would rather than
+  showing their raw escape codes in log order) once the `pty`-only approach turned out to be actively
+  misleading for reasoning about multi-step clear/redraw sequences - piped `node --test` output never
+  exercises any of this, since none of it runs off a real TTY.
   `ClaudeBackend`'s streaming path itself still has no automated test (matches this file's existing
   backend-coverage gap: only `local` is exercised via subprocess tests) - reasoned about from the
   Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not independently
