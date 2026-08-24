@@ -7,7 +7,7 @@
   "main": "companion.js",
   "scripts": {
     "start": "node companion.js",
-    "test": "node --test vault-summary.test.js companion.test.js terminal-format.test.js mouse-input.test.js"
+    "test": "node --test vault-summary.test.js companion.test.js terminal-format.test.js mouse-input.test.js box-padding.test.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.233",

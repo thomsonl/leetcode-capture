@@ -360,6 +360,40 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   unrelated Escape keypress (see the file's own header) is reasoned about rather than covered by a
   deterministic test, to avoid a timing-flaky one.
 
+- The box is pinned to the terminal window's actual last row, not to the bottom of whatever's been
+  printed so far - the distinction only shows up when content hasn't yet filled the screen (right at
+  startup is the easiest repro): before the fix, `drawBox()` just wrote at the cursor's current
+  position, which floated mid-screen with blank space left *underneath* the box instead of above it.
+  `padToBottomIfNeeded()` (called from `drawBox()`) pads with blank lines, once, based on
+  `historyLines()` (a line count derived from `historyBuffer` - now also fed by the startup/relay-
+  server banner lines via `printBanner()`, not just conversation content, so the very first `drawBox()`
+  call counts correctly). Latched via `screenFilledToBox`: once the screen has genuinely filled (or
+  been padded flush to the boundary) once, natural terminal scrolling keeps the box pinned on its own
+  for every subsequent *incremental* draw (`clearBottomRows` + print + `drawBox`), so a long
+  conversation never rescans the (up to 2MB) history buffer on every redraw. The gotcha this latch
+  doesn't cover on its own: `redrawViewport()` (resize/wheel-scroll/Page-Up-return) does a full
+  `\x1b[2J\x1b[H` clear before repainting, which wipes out whatever padding made a *previous* draw
+  correct - so it must always recompute and re-emit its own padding directly (never trust
+  `screenFilledToBox`'s prior value), only setting the latch `true` afterward for later incremental
+  draws to trust. Confirmed live: skipping this and relying on the shared latch left a real bug - a
+  wheel-scroll tick on a short (screen-not-yet-full) conversation dropped the box straight back to
+  floating under the content, reproducing the original bug on every scroll. The resize handler also
+  now always calls `redrawViewport()` when idle (previously it took a cheaper box-only-redraw shortcut
+  when not scrolled, which didn't reflow row count on a taller/shorter resize - a second instance of
+  the same underlying bug) and resets `screenFilledToBox` unconditionally (which matters for the
+  turn-active branch, where `redrawViewport` doesn't run immediately - see the resize handler's own
+  comment). Verified live via a sized `tmux` pane (`new-session -x -y`, `capture-pane -p`, `send-keys
+  -H` for raw SGR wheel bytes) across: startup on a window much taller than the banner, a streaming
+  reply, a resize both shorter and taller (including mid-turn), a wheel-scroll tick on short content
+  specifically (the case that exposed the latch gotcha above), scroll-back-to-live, Page Up/`less`
+  open and return, and `/exit` restoring the shell's own scrollback untouched - not just read.
+  `companion/box-padding.test.js` covers the startup case with a real companion.js subprocess (a tiny
+  wrapper fakes `process.stdout.isTTY`/`rows`/`columns` before dynamically importing companion.js,
+  matching `terminal-format.test.js`'s existing trick for exercising TTY-only code paths without a
+  real terminal) - it can't verify real-terminal rendering (see the pty/tmux note above for that), but
+  since the padding itself is just literal `'\n'` writes rather than cursor-positioning escapes, a
+  plain line-count check on the raw captured output already proves the padding math directly.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

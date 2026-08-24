@@ -453,7 +453,7 @@ async function ensureRelayServer() {
   });
   child.unref();
   relayServerChild = child;
-  console.log(dim('companion: relay server not detected, starting it now'));
+  printBanner(dim('companion: relay server not detected, starting it now'));
 
   // Wait (bounded) for it to actually come up, so the very first capture
   // isn't lost to a race between spawning it and its listen() callback.
@@ -464,10 +464,11 @@ async function ensureRelayServer() {
     // eslint-disable-next-line no-await-in-loop
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
-  console.error(
+  printBanner(
     dim(
       `companion: warning: started the relay server but it hasn't answered on http://${RELAY_HOST}:${RELAY_PORT} yet - continuing anyway`
-    )
+    ),
+    console.error
   );
 }
 
@@ -698,6 +699,72 @@ function recordHistory(text) {
   }
 }
 
+// Startup/relay-server-lifecycle notices (below and near ensureRelayServer)
+// print via this instead of a bare console.log/console.error - they're real
+// on-screen rows just like anything else, so they need to be recorded (for
+// Page Up, and so padToBottomIfNeeded below counts them) the same as every
+// other line this program ever prints. logFn defaults to console.log;
+// ensureRelayServer's own warning passes console.error to keep that line's
+// existing stream, since both still land on the same physical terminal
+// either way.
+function printBanner(text, logFn = console.log) {
+  logFn(text);
+  if (process.stdout.isTTY) recordHistory(`${text}\n`);
+}
+
+// historyBuffer's own chunks are always newline-terminated (every caller of
+// recordHistory ends its text with exactly one trailing '\n' - see each call
+// site) - so joining and naively splitting on '\n' leaves one trailing empty
+// string that isn't a real displayed row. Dropping it keeps this an exact
+// count of on-screen lines, not off by one - which matters below, since an
+// off-by-one here would just reproduce a smaller version of the bug this is
+// fixing.
+function historyLines() {
+  const joined = historyBuffer.join('');
+  if (!joined) return [];
+  const lines = joined.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+// True once the box has been pinned flush to the terminal's actual last row
+// at least once since the last point the screen is known to have been
+// genuinely empty (program start, or redrawViewport's own full clear) -
+// see padToBottomIfNeeded, which this gates.
+let screenFilledToBox = false;
+
+// The actual fix: the box (drawn via drawBox, below) is otherwise placed
+// wherever the cursor already happens to be after whatever content has been
+// printed so far - correct once real content has scrolled the screen full at
+// least once (the terminal's own scrolling then keeps the box glued to the
+// last row for free), but wrong before that point: with only a little
+// content on screen, the box floats just below it, with empty space
+// (uncovered by anything this program has written) below the box instead of
+// above it. Pads with blank lines, once, so the box's very first draw (and
+// any draw before the screen has genuinely filled) lands on the terminal's
+// actual last row instead - after which natural scrolling takes over
+// exactly as it already correctly did in the "screen already full" case.
+//
+// historyBuffer's line count is a safe stand-in for "rows of real content
+// currently on screen" specifically because of when this runs relative to
+// the latch: while the screen genuinely hasn't filled yet (screenFilledToBox
+// still false), nothing has scrolled off the top, so everything ever
+// recorded is still fully visible - the two counts are identical. The
+// instant they'd diverge (real content finally reaches/exceeds visibleRows)
+// is exactly the instant this stops padding and latches for good, so a long
+// conversation never pays for rescanning the full (up to 2MB) buffer on
+// every single box redraw - only on the handful of draws before the screen
+// first fills.
+function padToBottomIfNeeded() {
+  if (screenFilledToBox) return;
+  const visibleRows = currentVisibleRows();
+  const contentRows = historyLines().length;
+  if (contentRows < visibleRows) {
+    process.stdout.write('\n'.repeat(visibleRows - contentRows));
+  }
+  screenFilledToBox = true;
+}
+
 function clearBottomRows() {
   if (!stylingEnabled()) return;
   for (let i = 0; i < bottomRowsShown; i += 1) {
@@ -710,7 +777,10 @@ function clearBottomRows() {
 
 // Draws the box (rule + "> " prompt) at the cursor's current position - the
 // caller is responsible for having cleared whatever was there first (see
-// clearBottomRows). rl.prompt(true) alone already renders readline's own
+// clearBottomRows). padToBottomIfNeeded (above) runs first so "the cursor's
+// current position" is always at least the terminal's actual last two rows,
+// not wherever a short amount of prior content happened to leave it.
+// rl.prompt(true) alone already renders readline's own
 // current line and cursor position correctly (verified live: it reflects
 // whatever was typed, including mid-line edits, with no help needed) - no
 // manual re-insertion of a "saved" line. That matters here specifically
@@ -722,6 +792,7 @@ function clearBottomRows() {
 // undecorated, and never needs a rule or an explicit redraw of its own.
 function drawBox() {
   if (!stylingEnabled()) return;
+  padToBottomIfNeeded();
   process.stdout.write(`${boxRule()}\n`);
   rl.prompt(true);
   bottomRowsShown = 2;
@@ -1212,16 +1283,39 @@ function currentVisibleRows() {
 // never point past either end of the buffer regardless of how it got
 // there - a shrunk terminal window, or history that's grown shorter than
 // a previously-valid offset (e.g. after the capture log's own trim).
+//
+// Pads short content itself, directly, rather than leaning on drawBox's own
+// padToBottomIfNeeded/screenFilledToBox latch: that latch is only meaningful
+// for the *incremental* draw path (clearBottomRows + print + drawBox),
+// where nothing already on screen above the box is ever erased. This
+// function's own `\x1b[2J\x1b[H` clear, in contrast, wipes any padding a
+// previous draw already put there - so whether or not the screen was
+// latched "full" before this call says nothing about whether the *slice
+// this call is about to (re)write* fills it too (a plain wheel-scroll tick
+// on a short conversation is exactly this case: the latch was already true
+// from the first draw, but every redraw after a full clear starts blank
+// again). Confirmed live: without this, a wheel event on a short
+// conversation dropped the box back to floating right under the content,
+// silently reproducing the original bug on every scroll tick.
 function redrawViewport() {
   const visibleRows = currentVisibleRows();
-  const allLines = historyBuffer.join('').split('\n');
+  const allLines = historyLines();
   const total = allLines.length;
   scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, total - visibleRows)));
   const end = total - scrollOffset;
   const start = Math.max(0, end - visibleRows);
-  const slice = allLines.slice(start, end).join('\n');
+  const slice = allLines.slice(start, end);
   process.stdout.write('\x1b[2J\x1b[H'); // clear screen, cursor to top-left
-  if (slice) process.stdout.write(slice.endsWith('\n') ? slice : `${slice}\n`);
+  if (slice.length) process.stdout.write(`${slice.join('\n')}\n`);
+  if (slice.length < visibleRows) {
+    process.stdout.write('\n'.repeat(visibleRows - slice.length));
+  }
+  // The screen is now flush with the box's position either way (real
+  // content plus padding, or real content alone when it already filled) -
+  // exactly the invariant padToBottomIfNeeded's own latch promises, so
+  // later *incremental* drawBox calls (a new capture, a typed reply) can
+  // trust it and skip re-padding, same as after any other first fill.
+  screenFilledToBox = true;
   bottomRowsShown = 0;
   drawBox();
 }
@@ -1316,23 +1410,23 @@ if (process.stdout.isTTY) {
 
 await ensureRelayServer();
 
-console.log(dim(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`));
-console.log(dim(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`));
-console.log(
+printBanner(dim(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`));
+printBanner(dim(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`));
+printBanner(
   dim(
     VAULT_AUTO_SUMMARY
       ? `companion: vault auto-summary ON - writing to ${VAULT_PATH}`
       : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
   )
 );
-console.log(
+printBanner(
   dim(
     AUTO_CLEAR_CONTEXT
       ? 'companion: auto-clear-context ON - a capture for a different problem resets the tutor session (set COMPANION_AUTO_CLEAR_CONTEXT=0 to disable)'
       : 'companion: auto-clear-context off (COMPANION_AUTO_CLEAR_CONTEXT=0)'
   )
 );
-console.log(
+printBanner(
   dim('companion: type to chat directly; captures are injected automatically. Page Up for history, /exit to quit.')
 );
 if (stylingEnabled()) drawBox();
@@ -1354,19 +1448,31 @@ else rl.prompt();
 if (process.stdout.isTTY) {
   process.stdout.on('resize', () => {
     refreshWidth();
+    // Rows may have changed too, not just columns. redrawViewport (below)
+    // already recomputes its own padding fresh on every call regardless of
+    // this latch's prior value, so this reset only actually matters for the
+    // turnActive branch: mid-turn, redrawViewport doesn't run yet (see
+    // below), so drop the latch now so the turn's own next incremental
+    // drawBox call - once it does run - re-evaluates against the new size
+    // instead of trusting a conclusion reached at the old one.
+    screenFilledToBox = false;
     if (!turnActive) {
-      // A resize changes visibleRows too, not just the box's own width -
-      // if the user is mid-scroll, reflow the whole windowed view against
-      // the new terminal size rather than just redrawing the box, so the
-      // visible slice of history stays consistent with what scrollOffset
-      // actually means (lines up from the live bottom) at the new height.
-      if (scrollOffset > 0) {
-        redrawViewport();
-      } else {
-        clearBottomRows();
-        drawBox();
-      }
+      // Always a full repaint (not just the box's own row), whether idle at
+      // the live tail or scrolled - redrawViewport already handles both
+      // (scrollOffset 0 is simply "show the live tail"), and it's what
+      // makes the box actually move to the new last row rather than only
+      // updating in place where it already was. It replays already-
+      // rendered content from historyBuffer rather than re-wrapping it to
+      // the new width (only markdown rendered *after* this point picks up
+      // the new width - see refreshWidth's own comment), so this is safe
+      // for a plain column-only resize too; the cost is a full-screen
+      // clear on every resize rather than only when scrolled, which is an
+      // acceptable trade for a resize actually pinning correctly.
+      redrawViewport();
     }
+    // Mid-turn, the new size still takes effect - just only visibly once
+    // the turn's own next write calls drawBox again (screenFilledToBox was
+    // just cleared above, so that draw will pad correctly too).
   });
 }
 
