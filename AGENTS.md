@@ -315,6 +315,50 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   continuity (`sessionId`/`history`) is persisted across a restart either, so persisting
   just the tracked problem id would add bookkeeping without changing any actual behavior -
   a restart already starts both backends from a clean slate regardless.
+- Real mouse-wheel scrolling inside the alternate screen: `companion/mouse-input.js` enables xterm's
+  SGR mouse-reporting mode (`\x1b[?1000h\x1b[?1006h`, disabled on exit alongside `1049l`) and parses the
+  `\x1b[<Cb;Cx;Cy;M`/`m` reports it produces, calling back with `'up'`/`'down'` for a wheel notch (bit 6
+  of `Cb`, value 64, distinguishes a wheel report from an ordinary click regardless of modifier bits; bit
+  0 then picks the direction) and swallowing every other mouse report (clicks, releases - motion tracking
+  is never enabled, so those are the only kinds that can arrive). This has to happen *before* readline
+  ever sees the bytes: readline's own keypress decoder has no notion of the SGR protocol and, confirmed
+  live, shreds a mouse report into a run of single-character keypresses that its own line editor then
+  inserts into whatever's being typed. `companion.js` wires this up by giving readline a filtered
+  `PassThrough` (`filteredStdin`) instead of `process.stdin` directly, in real-terminal mode only - every
+  byte that isn't part of a wheel report passes through unchanged, so readline's line editing, arrow-key
+  history, Ctrl+C, and Page Up detection are all unaffected; the Page Up keypress listener has to attach
+  to `filteredStdin`, not `process.stdin`, since that's where readline's decoder (and therefore
+  `'keypress'` events) actually live once this wiring is in place. Since `filteredStdin` isn't a TTY,
+  readline never auto-manages raw mode for it the way it did for `process.stdin` directly - `companion.js`
+  now calls `process.stdin.setRawMode(true)`/`(false)` itself, paired with entering/leaving the alternate
+  screen. `historyBuffer` (already recorded for Page Up/`less`, see above) now also backs a real
+  application-level scrollback: `scrollOffset` (lines up from the live bottom) plus `redrawViewport()`
+  paint a windowed slice of it, replacing the old `redrawLiveTail`. Wheel events are ignored outright
+  while a turn is active (mid-turn, `bottomRowsShown` can mean a 1-row spinner rather than a settled
+  2-row box, and a full-screen redraw there would corrupt it) - not suppressed and reconciled later, simply
+  ignored, same as Page Up already was. The complementary rule (`resetScrollIfNeeded`, called first thing
+  by both `handleCaptureLine` and `sendAndPrint`) is what keeps that safe: any new activity - a capture or
+  a typed message - always snaps the view back to the live bottom before it writes anything, which is what
+  lets every existing rendering function (`printAboveInput`, the streaming writer, the spinner) stay
+  completely unmodified and unaware scrolling exists at all. Page Up/`less` was kept, not removed, now
+  reasoned about as "open the same history in a real pager" (search, unbounded scroll speed, and it works
+  on a terminal without SGR mouse support) rather than the wheel's only fallback; mouse tracking is
+  disabled for the duration of the `less` call and re-enabled after (`showHistory` in `companion.js`) since
+  it's a terminal-wide mode, not scoped to a file descriptor, and `less` reads its own keyboard input
+  directly from `/dev/tty`, bypassing this process's stdin entirely. Verified live over a real pty (mouse
+  enable/disable framing on startup/`/exit`) and `tmux` (`send-keys -H` to inject raw SGR bytes exactly as
+  a real terminal would, `capture-pane -p` to read back the rendered screen): wheel-up/down scrolling
+  through several turns and clamping at both ends, a resize while scrolled reflowing the viewport, a
+  capture/typed-message snapping the view back to live mid-scroll with no corruption, wheel events during
+  an active turn being silently ignored (spinner keeps animating undisturbed) and scrolling resuming once
+  the turn ends including via its error path, Page Up/`less` still opening and returning cleanly with mouse
+  tracking correctly restored, empty-Enter and normal typing unaffected, and `/exit` leaving the shell
+  exactly as before - its prior scrollback intact, no raw-mode/mouse-mode bleed - confirmed by a plain
+  shell command executing normally immediately after exit. `companion/mouse-input.test.js` covers the
+  byte-level parser in isolation (split-chunk sequences, UTF-8 byte-fidelity round-tripping, the
+  never-buffer-forever fallback) without needing a TTY; the short idle-flush timer that unblocks a lone,
+  unrelated Escape keypress (see the file's own header) is reasoned about rather than covered by a
+  deterministic test, to avoid a timing-flaky one.
 
 ## Maintaining this file
 

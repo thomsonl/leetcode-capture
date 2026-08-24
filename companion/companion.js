@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { PassThrough } from 'node:stream';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
@@ -46,6 +47,7 @@ import {
   createMarkdownStreamer,
   refreshWidth,
 } from './terminal-format.js';
+import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -80,10 +82,26 @@ const REPO_ROOT = path.join(__dirname, '..');
 // exit: 1007 only has any effect while also inside the alternate screen
 // buffer (1049), so once that's left, this can't affect normal terminal
 // use afterward either way.
+// Mouse-wheel scrolling *inside* the alternate screen (see mouse-input.js
+// and the "scrollback viewport" section further down) needs the terminal's
+// own SGR mouse-reporting mode (1000+1006) turned on for the duration too -
+// entered/exited in the same breath as the alternate screen itself, for
+// the same reason: never leave the shell in a mode it didn't ask for once
+// this program exits. process.stdin.setRawMode(true) is required for
+// this - normally readline manages that on its own for a TTY input, but
+// stdin here gets wired through a filtering PassThrough instead (see
+// "raw input / mouse-wheel scrollback" below), which isn't a TTY, so readline
+// would never touch stdin's raw mode at all left to its own devices.
 if (process.stdout.isTTY) {
   process.stdout.write('\x1b[?1049h');
   process.stdout.write('\x1b[?1007l');
-  process.on('exit', () => process.stdout.write('\x1b[?1049l'));
+  process.stdout.write(ENABLE_MOUSE_TRACKING);
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
+  process.on('exit', () => {
+    process.stdout.write(DISABLE_MOUSE_TRACKING);
+    process.stdout.write('\x1b[?1049l');
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  });
 }
 
 // --- config ---------------------------------------------------------------
@@ -601,7 +619,39 @@ function maybeResetContextForCapture(capture) {
 // at the bottom) throughout a reply rather than only reappearing once it's
 // fully done.
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: promptString() });
+// --- raw input / mouse-wheel scrollback -------------------------------
+//
+// In a real terminal, readline reads from `readlineInput` - a filtered
+// copy of stdin - rather than process.stdin directly. Mouse-wheel SGR
+// reports (enabled above, alongside the alternate screen) arrive on stdin
+// interleaved with ordinary keystrokes, and readline's own keypress
+// decoder has no understanding of that protocol at all: fed one directly,
+// it doesn't ignore it, it shreds it into a run of spurious single-
+// character keypresses that get inserted straight into whatever's being
+// typed (confirmed live - see mouse-input.js's header). createMouseFilter
+// sits in front of readline instead: every byte that isn't part of a
+// wheel report passes through to `filteredStdin` unchanged and in order,
+// so readline's own line editing, arrow-key history, Ctrl+C handling, and
+// Page Up detection all keep working exactly as before against a stream
+// that's identical to stdin minus wheel reports. handleWheel (defined
+// further down, alongside the scrollback viewport it drives) is only ever
+// invoked once a real wheel event arrives, well after the rest of this
+// file's top-level code has finished running, so referencing it here
+// ahead of its own definition is safe. Non-TTY mode is untouched -
+// readline reads process.stdin directly there, same as before this
+// feature existed, and none of this wiring runs.
+const filteredStdin = process.stdout.isTTY ? new PassThrough() : null;
+if (filteredStdin) {
+  const mouseFilter = createMouseFilter({ output: filteredStdin, onWheel: handleWheel });
+  process.stdin.on('data', (chunk) => mouseFilter.push(chunk));
+  process.stdin.on('end', () => filteredStdin.end());
+}
+
+const rl = readline.createInterface({
+  input: filteredStdin || process.stdin,
+  output: process.stdout,
+  prompt: promptString(),
+});
 let stopping = false;
 
 // How many terminal rows, ending at the cursor's current row and extending
@@ -756,6 +806,10 @@ function startSpinner() {
 // the reply is complete, so a turn with onReply set never streams - see the
 // non-streaming branch below.
 function sendAndPrint(label, text, { onReply } = {}) {
+  // Same reasoning as handleCaptureLine's own call to this: a typed
+  // message is new activity too, so it always returns the view to the
+  // live bottom first if the user was scrolled up reading history.
+  resetScrollIfNeeded();
   return enqueue(async () => {
     turnActive = true;
     try {
@@ -972,6 +1026,14 @@ function saveOffset(offset) {
 let offset = loadOffset();
 
 async function handleCaptureLine(line) {
+  // A capture is new activity, not something the user asked for - if
+  // they're mid-scroll reading back through history (see the scrollback
+  // viewport section below), snap back to the live view first so every
+  // write this function and the turn it triggers make below lands where
+  // the existing rendering code has always assumed it would: at the live
+  // bottom. Keeps that rendering code (printAboveInput, the streaming
+  // writer, the spinner) entirely unaware scrolling exists at all.
+  resetScrollIfNeeded();
   const trimmed = line.trim();
   if (!trimmed) return;
   let capture;
@@ -1113,18 +1175,82 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => rl.close());
 }
 
-// Redraws the screen with whatever's most recently in history, sized to
-// the terminal's current height, then the box - used to return to a normal
-// live view after the pager (see showHistory) closes.
-function redrawLiveTail() {
+// --- mouse-wheel scrollback viewport ------------------------------------
+//
+// The alternate screen buffer has no native scrollback (see the top of
+// this file), so this program keeps its own: historyBuffer already records
+// every line of real conversation content verbatim (for Page Up/less
+// below); scrollOffset is how many lines up from the live bottom the
+// visible window currently sits, and redrawViewport paints exactly that
+// window - a real, application-level scrollback, not reliance on anything
+// the terminal provides. 0 means "the live tail" - the normal, default
+// view, following new content exactly like before this feature existed.
+// Only ever changed while idle (turnActive false) - see handleWheel and
+// resetScrollIfNeeded below for why a turn in progress and a nonzero
+// scrollOffset can never coincide, which is what lets the rest of this
+// file's rendering code (printAboveInput, the streaming writer, the
+// spinner) stay entirely unaware scrolling exists at all.
+let scrollOffset = 0;
+
+// How many lines a single wheel notch moves the viewport - most terminals
+// send one SGR wheel report per physical notch (not per pixel), so this is
+// "lines per notch," matching the common OS-level default of a few lines
+// per click rather than a full screen.
+const WHEEL_SCROLL_LINES = 3;
+
+function currentVisibleRows() {
   const rows = process.stdout.rows || 24;
-  const visibleRows = Math.max(1, rows - 2); // leave room for the box's 2 rows
+  return Math.max(1, rows - 2); // leave room for the box's 2 rows
+}
+
+// Repaints the screen from historyBuffer at the current scrollOffset, sized
+// to the terminal's current height, then the box - the one place that
+// actually turns "recorded history + an offset" into pixels. Used to
+// return to the live view after the pager (see showHistory) closes, to
+// respond to a wheel event, and to reflow the current window after a
+// resize. scrollOffset is clamped here (not at the call sites) so it can
+// never point past either end of the buffer regardless of how it got
+// there - a shrunk terminal window, or history that's grown shorter than
+// a previously-valid offset (e.g. after the capture log's own trim).
+function redrawViewport() {
+  const visibleRows = currentVisibleRows();
   const allLines = historyBuffer.join('').split('\n');
-  const tail = allLines.slice(-visibleRows).join('\n');
+  const total = allLines.length;
+  scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, total - visibleRows)));
+  const end = total - scrollOffset;
+  const start = Math.max(0, end - visibleRows);
+  const slice = allLines.slice(start, end).join('\n');
   process.stdout.write('\x1b[2J\x1b[H'); // clear screen, cursor to top-left
-  if (tail) process.stdout.write(tail.endsWith('\n') ? tail : `${tail}\n`);
+  if (slice) process.stdout.write(slice.endsWith('\n') ? slice : `${slice}\n`);
   bottomRowsShown = 0;
   drawBox();
+}
+
+// Called by anything that represents new activity (a capture, a typed
+// message) before it writes a single byte - if the user was scrolled up
+// reading history, this always returns them to the live view first, so
+// nothing else in this file ever has to reason about "what if we're
+// mid-scroll right now." A no-op when already at the live bottom.
+function resetScrollIfNeeded() {
+  if (scrollOffset === 0) return;
+  scrollOffset = 0;
+  redrawViewport();
+}
+
+// The mouse-filter's onWheel callback (wired up where readlineInput is
+// built, near the top of this file) - ignored entirely while a turn is
+// active, same as Page Up already is below: mid-turn, bottomRowsShown
+// might mean "a 1-row spinner" or a still-streaming piece rather than a
+// settled 2-row box, and redrawViewport's full-screen clear would corrupt
+// whatever that turn's own writes are tracking. Idle, scrolling is always
+// safe: resetScrollIfNeeded (above) guarantees scrollOffset is already 0
+// by the time any turn begins, so there's no state to reconcile once one
+// does.
+function handleWheel(direction) {
+  if (!process.stdout.isTTY || turnActive) return;
+  scrollOffset += direction === 'up' ? WHEEL_SCROLL_LINES : -WHEEL_SCROLL_LINES;
+  scrollOffset = Math.max(0, scrollOffset);
+  redrawViewport();
 }
 
 // Page Up opens the full conversation history in `less` rather than a
@@ -1140,6 +1266,13 @@ function redrawLiveTail() {
 // less paints directly into the screen this program already owns, and
 // handing it real terminal-attached stdio (not a pipe) is what makes its
 // own scrolling/search interactive rather than just dumping the content.
+// Still worth keeping now that the wheel scrolls the box's own viewport
+// natively: `less` adds real search (`/`), unbounded scroll speed, and
+// works even on a terminal that doesn't support SGR mouse reporting at
+// all, none of which the lightweight windowed viewport above attempts to
+// replace - both draw from the same historyBuffer regardless, so Page Up
+// is now best thought of as "open the exact same history in a real pager"
+// rather than the wheel's only fallback.
 // Ignored while a turn is active (a spinner or a streamed piece is still
 // mid-write to the same terminal - spawning a pager on top of that would
 // corrupt both) and while there's nothing to show yet.
@@ -1147,20 +1280,36 @@ function showHistory() {
   if (!process.stdout.isTTY || turnActive || historyBuffer.length === 0) return;
   const content = historyBuffer.join('');
   rl.pause();
+  // Mouse tracking is a terminal-wide mode, not scoped to any one file
+  // descriptor - `less` reads its own keyboard input directly from
+  // /dev/tty (the standard pager trick for staying interactive even when
+  // its content comes in over a pipe, as it does here), completely
+  // bypassing this process's stdin. Left enabled, a wheel scroll while
+  // `less` is open would still generate SGR reports, just delivered to
+  // `less` instead - which doesn't understand them any better than
+  // readline does - so they're turned off for the duration and restored
+  // once `less` returns.
+  process.stdout.write(DISABLE_MOUSE_TRACKING);
   // spawnSync doesn't throw for a missing binary (ENOENT) or any other
   // spawn-time failure - it returns normally with .error set instead, so
   // that's what needs checking here, not a try/catch.
   const result = spawnSync('less', ['-RX'], { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
+  process.stdout.write(ENABLE_MOUSE_TRACKING);
   rl.resume();
   if (result.error) {
     printAboveInput(dim(`companion: warning: could not open history in "less" (${result.error.message})`));
     return;
   }
-  redrawLiveTail();
+  scrollOffset = 0;
+  redrawViewport();
 }
 
 if (process.stdout.isTTY) {
-  process.stdin.on('keypress', (str, key) => {
+  // Attached to filteredStdin, not process.stdin directly - see the "raw
+  // input / mouse-wheel scrollback" section near the top of this file for
+  // why: readline's own keypress decoder (and this listener, sharing the
+  // same decoder) only ever sees the filtered stream in a real terminal.
+  filteredStdin.on('keypress', (str, key) => {
     if (key && key.name === 'pageup') showHistory();
   });
 }
@@ -1206,8 +1355,17 @@ if (process.stdout.isTTY) {
   process.stdout.on('resize', () => {
     refreshWidth();
     if (!turnActive) {
-      clearBottomRows();
-      drawBox();
+      // A resize changes visibleRows too, not just the box's own width -
+      // if the user is mid-scroll, reflow the whole windowed view against
+      // the new terminal size rather than just redrawing the box, so the
+      // visible slice of history stays consistent with what scrollOffset
+      // actually means (lines up from the live bottom) at the new height.
+      if (scrollOffset > 0) {
+        redrawViewport();
+      } else {
+        clearBottomRows();
+        drawBox();
+      }
     }
   });
 }
