@@ -375,3 +375,163 @@ test('a vault-auto-summary Submit turn never streams and the JSON block never re
     fs.rmSync(vaultPath, { recursive: true, force: true });
   }
 });
+
+// --- automatic context reset on problem switch (COMPANION_AUTO_CLEAR_CONTEXT) ----
+//
+// LocalBackend resends its full `history` array on every call (see
+// companion.js), so a stub server that records `messages` for each request
+// it receives is a direct window into whether resetContext() actually ran:
+// an unbroken conversation keeps growing (system + every past turn), while a
+// reset call truncates it straight back down to just the leading system
+// message plus the new turn. Always responds over SSE, since a capture
+// always streams (see sendAndPrint) - LocalBackend requests `stream: true`
+// for every capture turn regardless of backend config.
+
+function startTrackingStubBackend() {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const parsedBody = JSON.parse(body);
+      requests.push(parsedBody.messages);
+      const content = `Reply number ${requests.length}`;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, requests }));
+  });
+}
+
+function makeIdCapture({ slug, title, attemptSeq, trigger = 'run' }) {
+  return {
+    receivedAt: new Date().toISOString(),
+    problemSlug: slug,
+    problemTitle: title,
+    problemDescription: 'a problem description',
+    problemTags: [],
+    language: 'python3',
+    trigger,
+    timestamp: new Date().toISOString(),
+    url: 'https://leetcode.com/problems/x/',
+    code: 'pass',
+    attemptSeq,
+  };
+}
+
+// Spawns companion.js against a tracking stub backend, feeds it two captures
+// one at a time (waiting for each one's reply before sending the next, so
+// the two backend calls can never race each other through the queue), and
+// returns both the raw terminal output and the `messages` array the stub saw
+// on each of its two calls.
+async function runContextResetScenario({ firstCapture, secondCapture, capturePort, env = {} }) {
+  const { server, requests } = await startTrackingStubBackend();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-ctx-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(capturePort),
+      ...env,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    fs.appendFileSync(capturesPath, JSON.stringify(firstCapture) + '\n');
+
+    let deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !out.includes('Reply number 1')) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(out.includes('Reply number 1'), 'first reply never arrived');
+    await new Promise((resolve) => setTimeout(resolve, 300)); // let the queue fully settle
+
+    fs.appendFileSync(capturesPath, JSON.stringify(secondCapture) + '\n');
+    deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !out.includes('Reply number 2')) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(out.includes('Reply number 2'), 'second reply never arrived');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    return { out, requests };
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+test('consecutive captures for the same problem do not clear context', async () => {
+  const { out, requests } = await runContextResetScenario({
+    firstCapture: makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: 1 }),
+    secondCapture: makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: 2, trigger: 'submit' }),
+    capturePort: 18139,
+  });
+
+  assert.equal(requests[0].length, 2, 'first call: system + this turn\'s user message');
+  // Full continuity: system, first user turn, first assistant reply, second
+  // user turn - nothing truncated.
+  assert.equal(requests[1].length, 4, 'second call should still carry the first turn as history');
+  assert.ok(!out.includes('new problem detected'), 'no reset notice should print for the same problem');
+});
+
+test('a capture for a different problemSlug clears context (auto-clear on by default)', async () => {
+  const { out, requests } = await runContextResetScenario({
+    firstCapture: makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: 1 }),
+    secondCapture: makeIdCapture({ slug: 'house-robber', title: 'House Robber', attemptSeq: 2 }),
+    capturePort: 18140,
+  });
+
+  assert.equal(requests[0].length, 2);
+  // Reset: truncated back to just the leading system message plus this
+  // turn's own user message - the first problem's turn is gone.
+  assert.equal(requests[1].length, 2, 'context should have been cleared before the second call');
+  assert.match(out, /new problem detected \(house-robber\) - clearing tutor context/);
+});
+
+test('COMPANION_AUTO_CLEAR_CONTEXT=0 disables the reset even across a problem switch', async () => {
+  const { out, requests } = await runContextResetScenario({
+    firstCapture: makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: 1 }),
+    secondCapture: makeIdCapture({ slug: 'house-robber', title: 'House Robber', attemptSeq: 2 }),
+    capturePort: 18141,
+    env: { COMPANION_AUTO_CLEAR_CONTEXT: '0' },
+  });
+
+  assert.equal(requests[0].length, 2);
+  assert.equal(requests[1].length, 4, 'context must not be cleared when the toggle is off');
+  assert.ok(!out.includes('new problem detected'), 'no reset notice should print when the toggle is off');
+});
+
+test('a problem switch is still detected via the problemTitle fallback when problemSlug is absent', async () => {
+  const { out, requests } = await runContextResetScenario({
+    firstCapture: makeIdCapture({ slug: undefined, title: 'Two Sum', attemptSeq: 1 }),
+    secondCapture: makeIdCapture({ slug: undefined, title: 'House Robber', attemptSeq: 2 }),
+    capturePort: 18142,
+  });
+
+  assert.equal(requests[0].length, 2);
+  assert.equal(requests[1].length, 2, 'title-fallback identifier switch should still clear context');
+  assert.match(out, /new problem detected \(House Robber\) - clearing tutor context/);
+});

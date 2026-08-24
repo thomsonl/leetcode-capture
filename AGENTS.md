@@ -304,6 +304,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not independently
   live-verified against a real Claude account.
 
+- Automatic context reset on a problem switch (`COMPANION_AUTO_CLEAR_CONTEXT`, on by
+  default - see `companion.js`'s "automatic context reset on problem switch" section):
+  tracks `capture.problemSlug` (falling back to `problemTitle`) across captures and calls
+  each backend's own `resetContext()` - dropping `ClaudeBackend.sessionId` so the SDK
+  starts a fresh session, or truncating `LocalBackend.history` back to just its leading
+  system message - the instant a capture for a different problem arrives, rather than
+  relying on `TUTOR_SYSTEM_PROMPT`'s own soft "first capture for this problem" wording.
+  Deliberately in-memory only, not added to `.companion-state.json`: neither backend's own
+  continuity (`sessionId`/`history`) is persisted across a restart either, so persisting
+  just the tracked problem id would add bookkeeping without changing any actual behavior -
+  a restart already starts both backends from a clean slate regardless.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

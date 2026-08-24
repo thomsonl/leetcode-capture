@@ -56,6 +56,7 @@ Resizing the terminal window is picked up live - the box's rule and any markdown
 A short spinner shows while waiting on the backend; once a reply starts, it opens with a `•` marker, and exactly one blank line separates each turn from the next.
 Replies also stream in as the backend generates them rather than appearing all at once - except a Submit turn with vault auto-summary on (see below), which always waits for the complete reply before showing anything, since the machine-readable block it strips off the end can only be identified once the reply is whole.
 Colors are skipped automatically when output isn't a terminal (piped to a file or another program) or when `NO_COLOR` is set - output stays plain, undecorated text in both cases, and replies print as one block instead of streaming (a pipe has no use for incremental display).
+When a capture arrives for a different problem than the one you were just discussing, the companion automatically clears its own context (a fresh Claude session, or a truncated history for the local backend) before processing it, so an old problem's code and discussion don't keep getting resent as context forever - a dim `companion: new problem detected ... clearing tutor context` line prints when this happens. On by default; set `COMPANION_AUTO_CLEAR_CONTEXT=0` (or `false`/`no`) to turn it off if you'd rather the tutor keep full cross-problem context itself.
 
 ### 3. (optional) Install the `leetcode` launcher
 

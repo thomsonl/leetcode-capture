@@ -98,6 +98,16 @@ const API_KEY = process.env.COMPANION_API_KEY || null;
 // Obsidian. Thomson turns this on in his own untracked environment. See the
 // "Vault auto-summary" section below and README.md for what it does.
 const VAULT_AUTO_SUMMARY = /^(1|true|yes)$/i.test(process.env.VAULT_AUTO_SUMMARY || '');
+
+// On by default (opposite of VAULT_AUTO_SUMMARY above) - see the
+// "automatic context reset on problem switch" section below for what this
+// does and why leaving it on is the safer default: without it, a stale
+// problem's full code/discussion keeps getting resent as context on every
+// turn even long after the conversation has moved on to something else, with
+// only the system prompt's own soft wording asking the model to notice.
+// Explicit "0"/"false"/"no" (case-insensitive) turns it off; anything else,
+// including unset, leaves it on.
+const AUTO_CLEAR_CONTEXT = !/^(0|false|no)$/i.test(process.env.COMPANION_AUTO_CLEAR_CONTEXT || '');
 const { vaultPath: VAULT_PATH, algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER } = resolveVaultConfig();
 // Fail loudly at startup, not on the first Submit - a wrong or unset vault
 // path should never silently fabricate a new folder tree (see
@@ -238,6 +248,13 @@ class ClaudeBackend {
     }
     throw new Error(errorNote || 'no result message received from the Agent SDK');
   }
+
+  // Drops the resumed session id so the next sendMessage starts a fresh SDK
+  // session (options.resume is only set at all when this.sessionId is
+  // truthy - see sendMessage above) rather than continuing the old one.
+  resetContext() {
+    this.sessionId = undefined;
+  }
 }
 
 class LocalBackend {
@@ -253,7 +270,10 @@ class LocalBackend {
     // Standard OpenAI chat-completions shape: a leading `role: 'system'`
     // message, resent in full on every turn along with the rest of history.
     // Local-backend-only: append the style addendum (see LOCAL_STYLE_ADDENDUM).
-    this.history = [{ role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${LOCAL_STYLE_ADDENDUM}` }];
+    // Kept on its own so resetContext (below) can restore exactly this,
+    // rather than re-deriving it or leaving stale history entries behind.
+    this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${LOCAL_STYLE_ADDENDUM}` };
+    this.history = [this.systemMessage];
   }
 
   async sendMessage(text, { onChunk } = {}) {
@@ -346,6 +366,12 @@ class LocalBackend {
       }
     }
     return (content && content.trim()) || (reasoning && reasoning.trim()) || '';
+  }
+
+  // Truncates history back to just the leading system message, so the next
+  // sendMessage resends none of the prior conversation.
+  resetContext() {
+    this.history = [this.systemMessage];
   }
 }
 
@@ -497,6 +523,58 @@ function formatCaptureMessage(capture) {
   lines.push('', `${fence}${languageFenceHint(language)}`, code, fence);
   const addendum = capture.trigger === 'submit' ? SUBMIT_ADDENDUM : RUN_ADDENDUM;
   return lines.join('\n') + addendum;
+}
+
+// --- automatic context reset on problem switch (AUTO_CLEAR_CONTEXT) --------
+//
+// TUTOR_SYSTEM_PROMPT's own "if this is the first capture you've seen for
+// this specific problem" wording is a soft, prompt-level ask - the model is
+// trusted to notice a switch and treat it as a fresh introduction, but
+// nothing actually stops the old problem's full code/discussion from being
+// resent as context on every turn (ClaudeBackend's resumed session,
+// LocalBackend's resent history array) forever, even long after the
+// conversation has moved on. This tracks the identifier of the problem
+// currently being discussed and hard-resets the backend's own continuity
+// mechanism (see each backend's resetContext, above) the instant a capture
+// for a different one arrives, rather than leaving it to the model's
+// judgment alone.
+//
+// Identifier: capture.problemSlug, falling back to capture.problemTitle when
+// slug is absent - slug preferred as the more stable/canonical identifier
+// (matches formatCaptureMessage's own title/slug fallback, just in the
+// opposite preference order, since that one is choosing what to *display*).
+//
+// In-memory only, not persisted to .companion-state.json (unlike the
+// capture-log tail offset): a restart already gives both backends a
+// completely fresh session/history regardless of what problem they're later
+// told about - ClaudeBackend's sessionId and LocalBackend's history are
+// themselves never persisted - so tracking this across a restart wouldn't
+// change the backend's actual behavior, only whether the first capture
+// after a restart happens to print a reset notice. The "previousId === null"
+// case below (this process's very first capture) already skips the notice
+// and the resetContext call for exactly that reason, so a restart already
+// behaves correctly without persistence. Persisting it would add
+// bookkeeping to reproduce behavior that already falls out for free.
+let currentProblemId = null;
+
+function captureProblemId(capture) {
+  return capture.problemSlug || capture.problemTitle || null;
+}
+
+// Updates the tracked problem and, if this capture is for a different one
+// than last seen, resets the backend's context. Returns a notice line to
+// print via printAboveInput (so it takes part in the same
+// turn-boundary/history recording as everything else), or null if nothing
+// happened - same problem, the very first capture this process has seen (no
+// prior context to reset), or the toggle is off.
+function maybeResetContextForCapture(capture) {
+  const problemId = captureProblemId(capture);
+  const previousId = currentProblemId;
+  currentProblemId = problemId;
+  if (previousId === null || problemId === previousId) return null;
+  if (!AUTO_CLEAR_CONTEXT) return null;
+  backend.resetContext();
+  return dim(`companion: new problem detected (${problemId || 'unknown'}) - clearing tutor context`);
 }
 
 // --- vault auto-summary (VAULT_AUTO_SUMMARY) --------------------------------
@@ -907,16 +985,28 @@ async function handleCaptureLine(line) {
     `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`
   );
 
+  // Detected and (if AUTO_CLEAR_CONTEXT is on) acted on before anything else
+  // for this capture, so a reset - if one happens - is this turn's true
+  // first output rather than something that shows up after the ack line
+  // below. See "automatic context reset on problem switch" above.
+  const resetNotice = maybeResetContextForCapture(capture);
+  let turnPrefix = consumeTurnBoundary();
+  if (resetNotice) {
+    printAboveInput(turnPrefix + resetNotice);
+    turnPrefix = '';
+  }
+
   // Print an instant, local, non-LLM acknowledgement before the backend call
   // below even starts - the tutor persona's own step 1 (acknowledging receipt
   // in its own words) still happens too, but that's baked into the real reply
   // and can lag several seconds behind, longer for Submit. This line is just
-  // a deterministic confirmation that the capture arrived, and is this
-  // capture-driven turn's true first output, so it's what consumes the
-  // pending turn-boundary blank line (see consumeTurnBoundary) - sendAndPrint
-  // itself won't add a second one before the label that follows.
+  // a deterministic confirmation that the capture arrived, and (absent a
+  // reset notice above) is this capture-driven turn's true first output, so
+  // it's what consumes the pending turn-boundary blank line (see
+  // consumeTurnBoundary) - sendAndPrint itself won't add a second one before
+  // the label that follows.
   printAboveInput(
-    consumeTurnBoundary() +
+    turnPrefix +
       dim(
         `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`
       ),
@@ -1084,6 +1174,13 @@ console.log(
     VAULT_AUTO_SUMMARY
       ? `companion: vault auto-summary ON - writing to ${VAULT_PATH}`
       : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
+  )
+);
+console.log(
+  dim(
+    AUTO_CLEAR_CONTEXT
+      ? 'companion: auto-clear-context ON - a capture for a different problem resets the tutor session (set COMPANION_AUTO_CLEAR_CONTEXT=0 to disable)'
+      : 'companion: auto-clear-context off (COMPANION_AUTO_CLEAR_CONTEXT=0)'
   )
 );
 console.log(
