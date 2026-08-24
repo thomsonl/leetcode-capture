@@ -275,6 +275,53 @@ class ClaudeBackend {
   }
 }
 
+// Picks the actual reply text out of an OpenAI-compatible chat-completion
+// response (or accumulated stream), used by both LocalBackend.sendMessage
+// (non-streaming) and streamReply (streaming) so the two paths can't drift.
+//
+// The `reasoning`-when-`content`-is-empty fallback (see sendMessage's own
+// comment) was built for a model that puts its whole, *finished* answer in
+// `reasoning` and leaves `content` empty on an otherwise normal turn
+// (finish_reason "stop"). It does NOT hold when the response was cut off
+// before the model ever got past its own internal thinking
+// (finish_reason "length"): in that case `reasoning` isn't a finished
+// answer at all, just a raw, mid-thought scratchpad - handing it to
+// sendAndPrint would print the model's own thinking process as if it were
+// the tutor's actual reply, indistinguishable from a real one since it's
+// still just text in the terminal.
+//
+// Confirmed live against the real Ollama gemma4:26b model this companion is
+// actually configured for: a normal-length capture completes fine (content
+// non-empty, or a complete reasoning-only answer on finish_reason "stop"),
+// but a big Submit capture - a long solution, a long problem description,
+// and/or several turns of resent history piling up in one session - eats
+// most of Ollama's default 4096-token context window for this model (no
+// num_ctx override; confirmed neither a top-level nor a nested `options`
+// num_ctx field is honored by this Ollama version's /v1/chat/completions
+// endpoint - only its native /api/chat does), leaving too little of the
+// window for a real answer. The model then gets cut off mid-`reasoning`
+// (finish_reason "length", content still empty), and the existing fallback
+// printed that raw, truncated internal monologue as the "reply" - matching
+// what grows more frequent as a session's conversation (and therefore its
+// resent history) grows, not a rare fluke. Rather than ever surface that
+// text, this throws a distinct, clearly-worded error instead - surfaced via
+// the same "companion: error talking to backend" path as any other backend
+// failure - so the failure is visible instead of silently masquerading as a
+// real tutoring reply.
+function resolveReplyText({ content, reasoning, finishReason }) {
+  const trimmedContent = content && content.trim();
+  if (trimmedContent) return trimmedContent;
+  const trimmedReasoning = reasoning && reasoning.trim();
+  if (trimmedReasoning && finishReason === 'length') {
+    throw new Error(
+      'local backend reply was cut off before finishing (likely ran out of context while still ' +
+        '"thinking") - discarding it rather than showing incomplete internal reasoning as the reply; ' +
+        'try a shorter capture, clearing context, or a model/server configuration with more context'
+    );
+  }
+  return trimmedReasoning || '';
+}
+
 class LocalBackend {
   constructor({ baseUrl, model, apiKey }) {
     if (!model) {
@@ -326,14 +373,28 @@ class LocalBackend {
     // the capture's label, looking exactly like "the reply never arrived"
     // even though the backend technically succeeded. Fall back to
     // `reasoning` before giving up - in both the streamed and non-streamed
-    // shapes below.
+    // shapes below, via resolveReplyText.
+    // resolveReplyText (and streamReply, which also calls it) can throw -
+    // e.g. the cut-off-mid-thought case above - so this is wrapped the same
+    // way the response.ok/fetch-failure cases above already are: pop the
+    // dangling user turn before letting the error propagate, rather than
+    // leaving history with a user message that was never actually answered.
     let replyText;
-    if (onChunk) {
-      replyText = await this.streamReply(response, onChunk);
-    } else {
-      const data = await response.json();
-      const message = data?.choices?.[0]?.message;
-      replyText = (message?.content && message.content.trim()) || (message?.reasoning && message.reasoning.trim()) || '';
+    try {
+      if (onChunk) {
+        replyText = await this.streamReply(response, onChunk);
+      } else {
+        const data = await response.json();
+        const choice = data?.choices?.[0];
+        replyText = resolveReplyText({
+          content: choice?.message?.content,
+          reasoning: choice?.message?.reasoning,
+          finishReason: choice?.finish_reason,
+        });
+      }
+    } catch (err) {
+      this.history.pop();
+      throw err;
     }
 
     if (!replyText) {
@@ -350,13 +411,14 @@ class LocalBackend {
   // is accumulated the same way but never handed to onChunk - a "thinking"
   // model's internal trace isn't what streaming is meant to surface live; it
   // only matters as the same empty-content fallback used by the
-  // non-streaming path above.
+  // non-streaming path above, via resolveReplyText.
   async streamReply(response, onChunk) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let content = '';
     let reasoning = '';
+    let finishReason = null;
     for (;;) {
       // eslint-disable-next-line no-await-in-loop
       const { done, value } = await reader.read();
@@ -375,15 +437,17 @@ class LocalBackend {
         } catch {
           continue; // a malformed/partial SSE line - ignore rather than crash the stream
         }
-        const delta = event?.choices?.[0]?.delta;
+        const choice = event?.choices?.[0];
+        const delta = choice?.delta;
         if (delta?.content) {
           content += delta.content;
           onChunk(delta.content);
         }
         if (delta?.reasoning) reasoning += delta.reasoning;
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
       }
     }
-    return (content && content.trim()) || (reasoning && reasoning.trim()) || '';
+    return resolveReplyText({ content, reasoning, finishReason });
   }
 
   // Truncates history back to just the leading system message, so the next

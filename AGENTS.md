@@ -468,6 +468,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   content keeps its old wrap width baked in as literal text, a known, unchanged characteristic - see
   `redrawViewport`'s own doc comment).
 
+- `LocalBackend`'s empty-`content`-falls-back-to-`reasoning` logic (see the bullet above) had a second,
+  worse failure mode until `resolveReplyText` (shared by `sendMessage` and `streamReply`) fixed it: that
+  fallback was built for a model that puts its whole *finished* answer in `reasoning` on a normal turn
+  (`finish_reason: "stop"`) - it did not distinguish that from a response cut off *before* the model
+  ever finished thinking (`finish_reason: "length"`), where `reasoning` is a raw, incomplete scratchpad,
+  not an answer. Printing that verbatim is exactly "the LLM's own thinking process shown as if it were
+  the tutor's actual reply" - confirmed live against the real Ollama `gemma4:26b` model this companion
+  is configured for: a big-enough Submit capture (long code, long problem description, and/or several
+  turns of resent history piling up - `LocalBackend.history` is resent in full every turn with no
+  trimming) eats most of Ollama's default 4096-token context window for this model, and the model gets
+  cut off mid-`<think>` with `content` still empty. Also confirmed live: neither a top-level `num_ctx`
+  field nor a nested `options.num_ctx` field is honored by this Ollama version's (`0.32.9`)
+  `/v1/chat/completions` endpoint - only its native `/api/chat` endpoint honors `options.num_ctx` - so
+  raising the context window isn't available through the OpenAI-compat endpoint `LocalBackend` uses.
+  `resolveReplyText` now only takes the `reasoning`-fallback path when `finishReason !== 'length'`;
+  on a truncated, content-empty response it throws a distinct, clearly-worded error instead (surfaced
+  via the existing `companion: error talking to backend` line), and `sendMessage` pops the dangling user
+  turn on that throw the same way it already did for its other error paths. `companion.test.js` covers
+  this with a stub `finish_reason: "length"` response, verified live to actually fail (not just pass
+  coincidentally) when the `finishReason` gate is disabled - a real end-to-end run against the actual
+  Ollama backend with an oversized capture reproduces the original leak and confirms the fix, and a
+  normal-sized capture's clean reply is unaffected.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
