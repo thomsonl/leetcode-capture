@@ -201,6 +201,33 @@ test('refreshWidth re-registers marked-terminal so a resize changes where markdo
   assert.ok(wideLongest <= 80, `expected the wide render to still cap at the 80-col comfortable width, got ${wideLongest}`);
 });
 
+// An unbroken long token (a URL, a long identifier) has no whitespace for
+// marked-terminal's reflowText to break on - checks whether it's left to
+// overflow past the comfortable width, or hard-wrapped like everything
+// else. Confirmed live (see companion/AGENTS.md) that marked-terminal
+// already hard-wraps it - this locks that in as a regression test, since a
+// future marked/marked-terminal upgrade changing that behavior would be
+// exactly the kind of silent breakage this file's own convention (test the
+// actual rendered width, not just assume wrapping happened) is meant to
+// catch.
+test('renderMarkdown hard-wraps an unbroken long token (no whitespace to break on) instead of letting it overflow', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: [
+      "const { renderMarkdown } = await import('./terminal-format.js');",
+      'process.stdout.columns = 100;', // wider than the 80-col comfortable width
+      "const longToken = 'https://example.com/' + 'a'.repeat(200);",
+      "console.log(renderMarkdown(`Here is a reference: ${longToken} and more text after it.`));",
+    ].join('\n'),
+  });
+  const stripped = out.replace(/\x1b\[[0-9;]*m/g, '');
+  const longestLine = Math.max(...stripped.split('\n').map((l) => l.length));
+  assert.ok(
+    longestLine <= 80,
+    `expected the unbroken token to be hard-wrapped to the 80-col comfortable width, longest line was ${longestLine} chars: ${JSON.stringify(stripped)}`
+  );
+});
+
 test('spinnerFrame cycles through distinct glyphs and stays plain text off a TTY', async () => {
   const out = await runInChild({
     isTTY: false,

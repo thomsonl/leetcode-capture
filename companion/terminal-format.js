@@ -82,11 +82,13 @@ export function dim(text) {
 }
 
 // The readline prompt marker. Plain '> ' when styling is off, matching the
-// prompt this program has always used; just the ">" colored when styling is
-// on - no "you"/role text (see turnMarker below for the tutor-reply side of
-// the same convention).
+// prompt this program has always used; a one-space left margin plus the
+// colored ">" when styling is on, so the prompt lines up under boxRule's own
+// matching one-space margin below rather than starting flush at column 0 -
+// no "you"/role text (see turnMarker below for the tutor-reply side of the
+// same convention).
 export function promptString() {
-  return enabled ? `${c.cyanBright.bold('>')} ` : '> ';
+  return enabled ? ` ${c.cyanBright.bold('>')} ` : '> ';
 }
 
 // The marker opening a tutor reply turn - a single bullet, replacing the
@@ -100,11 +102,17 @@ export function turnMarker() {
 }
 
 // A thin rule marking off the pinned input box from the conversation above
-// it, at the same comfortable width prose wraps to. '' when styling is off
-// - there is no persistent input box over a pipe.
+// it, at the same comfortable width prose wraps to (minus the one-space left
+// margin below, so the rule's right edge still lands at the comfortable
+// width rather than running one column past it). A one-space left margin -
+// matching promptString's own - gives the box a consistent inset rather than
+// starting flush at column 0; companion.js's drawBoxRaw also prints a blank
+// line above this rule for breathing room from whatever chat content
+// precedes it. '' when styling is off - there is no persistent input box
+// over a pipe.
 export function boxRule() {
   if (!enabled) return '';
-  return c.dim('─'.repeat(contentWidth()));
+  return ` ${c.dim('─'.repeat(contentWidth() - 1))}`;
 }
 
 // Renders markdown (headers, bold/emphasis, lists, fenced code blocks with
@@ -140,7 +148,11 @@ export const SPINNER_FRAME_COUNT = SPINNER_GLYPHS.length;
 export function spinnerFrame(i) {
   const glyph = SPINNER_GLYPHS[((i % SPINNER_GLYPHS.length) + SPINNER_GLYPHS.length) % SPINNER_GLYPHS.length];
   const text = `${glyph} thinking`;
-  return enabled ? c.dim(text) : text;
+  // A one-space left margin, matching boxRule/promptString's own - the
+  // spinner temporarily occupies the same column position the box's prompt
+  // normally does, so it should line up with it rather than sitting one
+  // column further left.
+  return enabled ? ` ${c.dim(text)}` : text;
 }
 
 // Feeds a reply in incrementally, rendering complete markdown as soon as a

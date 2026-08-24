@@ -656,11 +656,44 @@ const rl = readline.createInterface({
 let stopping = false;
 
 // How many terminal rows, ending at the cursor's current row and extending
-// upward, are occupied by the box (or, mid-spinner, its temporary
-// replacement) - i.e. how many rows the next print needs to clear before
-// writing new content. 0 until the box is first drawn. Only meaningful in
-// styled/TTY mode; non-TTY output never reserves any rows at all.
+// upward, are occupied by whatever's reserved at the bottom right now that
+// *isn't* the box itself - i.e. the 1-row spinner, or 0 when nothing's
+// reserved (mid content-write, or right after readline's own native Enter
+// handling already claimed the row). 0 until anything is first drawn. See
+// boxShown below for why the box's own row count is never stored here.
+// Only meaningful in styled/TTY mode; non-TTY output never reserves any
+// rows at all.
 let bottomRowsShown = 0;
+
+// True exactly when the box (the blank breathing-room line, the rule, and
+// the prompt - see drawBoxRaw) is currently the thing occupying the bottom
+// reserved rows, as opposed to the spinner or nothing. Unlike
+// bottomRowsShown, the box's own row count is never cached in a variable -
+// it's always computed fresh, on demand, via promptRowCount() (see
+// reservedBottomRows below). That distinction matters: readline redraws its
+// own prompt - correctly reflecting how many physical rows a long typed/
+// pasted line currently wraps to - on every keystroke, entirely on its own,
+// with no call into any of this file's own drawing code. A row count cached
+// at the box's last *drawBoxRaw* call goes stale the instant the user types
+// past (or back under) a wrap boundary afterward; confirmed live: typing a
+// line long enough to wrap to a second terminal row, then triggering an
+// ordinary redraw (a capture arriving), cleared only the row count cached
+// from before typing started, leaving part of the actual on-screen wrapped
+// prompt behind as leftover garbage that the new content got written on top
+// of - corrupting everything drawn afterward, including the box's own next
+// redraw. Computing promptRowCount() fresh every time avoids this entirely,
+// since rl.line (and the terminal's actual on-screen rendering of it) is
+// always already current by the time anything here runs.
+let boxShown = false;
+
+// The number of rows clearBottomRows needs to clear right now: the box's
+// own current height (2 fixed rows - the blank line and the rule - plus
+// however many rows its prompt currently wraps to, computed fresh; see
+// boxShown above) when the box is what's on screen, or bottomRowsShown
+// (the spinner's fixed 1 row, or 0) otherwise.
+function reservedBottomRows() {
+  return boxShown ? 2 + promptRowCount() : bottomRowsShown;
+}
 
 // True for the duration of one sendAndPrint call (a typed message's reply,
 // or a capture's whole exchange) - two independent things check this before
@@ -702,8 +735,9 @@ function recordHistory(text) {
 // Startup/relay-server-lifecycle notices (below and near ensureRelayServer)
 // print via this instead of a bare console.log/console.error - they're real
 // on-screen rows just like anything else, so they need to be recorded (for
-// Page Up, and so padToBottomIfNeeded below counts them) the same as every
-// other line this program ever prints. logFn defaults to console.log;
+// Page Up, and so redrawViewport's own padding math below counts them) the
+// same as every other line this program ever prints. logFn defaults to
+// console.log;
 // ensureRelayServer's own warning passes console.error to keep that line's
 // existing stream, since both still land on the same physical terminal
 // either way.
@@ -728,74 +762,152 @@ function historyLines() {
 }
 
 // True once the box has been pinned flush to the terminal's actual last row
-// at least once since the last point the screen is known to have been
-// genuinely empty (program start, or redrawViewport's own full clear) -
-// see padToBottomIfNeeded, which this gates.
+// with the screen genuinely full of real content behind it (contentRows >=
+// visibleRows) - see drawBox/redrawViewport, both of which set this only
+// under that real condition now, not merely "a draw happened."
 let screenFilledToBox = false;
 
-// The actual fix: the box (drawn via drawBox, below) is otherwise placed
-// wherever the cursor already happens to be after whatever content has been
-// printed so far - correct once real content has scrolled the screen full at
-// least once (the terminal's own scrolling then keeps the box glued to the
-// last row for free), but wrong before that point: with only a little
-// content on screen, the box floats just below it, with empty space
-// (uncovered by anything this program has written) below the box instead of
-// above it. Pads with blank lines, once, so the box's very first draw (and
-// any draw before the screen has genuinely filled) lands on the terminal's
-// actual last row instead - after which natural scrolling takes over
-// exactly as it already correctly did in the "screen already full" case.
-//
-// historyBuffer's line count is a safe stand-in for "rows of real content
-// currently on screen" specifically because of when this runs relative to
-// the latch: while the screen genuinely hasn't filled yet (screenFilledToBox
-// still false), nothing has scrolled off the top, so everything ever
-// recorded is still fully visible - the two counts are identical. The
-// instant they'd diverge (real content finally reaches/exceeds visibleRows)
-// is exactly the instant this stops padding and latches for good, so a long
-// conversation never pays for rescanning the full (up to 2MB) buffer on
-// every single box redraw - only on the handful of draws before the screen
-// first fills.
-function padToBottomIfNeeded() {
-  if (screenFilledToBox) return;
-  const visibleRows = currentVisibleRows();
-  const contentRows = historyLines().length;
-  if (contentRows < visibleRows) {
-    process.stdout.write('\n'.repeat(visibleRows - contentRows));
-  }
-  screenFilledToBox = true;
-}
-
+// clearBottomRows clears exactly whatever's currently reserved at the
+// bottom right now (reservedBottomRows - the box, freshly measured, or the
+// spinner) and nothing more - it does not know or care whether the screen
+// has genuinely filled with real content yet. That distinction belongs
+// entirely to drawBox, right below.
 function clearBottomRows() {
   if (!stylingEnabled()) return;
-  for (let i = 0; i < bottomRowsShown; i += 1) {
+  const total = reservedBottomRows();
+  for (let i = 0; i < total; i += 1) {
     readline.clearLine(process.stdout, 0);
     readline.cursorTo(process.stdout, 0);
-    if (i < bottomRowsShown - 1) readline.moveCursor(process.stdout, 0, -1);
+    if (i < total - 1) readline.moveCursor(process.stdout, 0, -1);
   }
   bottomRowsShown = 0;
+  boxShown = false;
 }
 
-// Draws the box (rule + "> " prompt) at the cursor's current position - the
-// caller is responsible for having cleared whatever was there first (see
-// clearBottomRows). padToBottomIfNeeded (above) runs first so "the cursor's
-// current position" is always at least the terminal's actual last two rows,
-// not wherever a short amount of prior content happened to leave it.
-// rl.prompt(true) alone already renders readline's own
-// current line and cursor position correctly (verified live: it reflects
-// whatever was typed, including mid-line edits, with no help needed) - no
-// manual re-insertion of a "saved" line. That matters here specifically
+// How many physical terminal rows readline's own current prompt line
+// (promptString() plus whatever's typed so far) actually occupies once the
+// terminal's own soft-wrap kicks in - normally 1, but more once a
+// typed/pasted line is long enough to wrap on its own. Every piece of this
+// file's box-pinning math (bottomRowsShown, clearBottomRows, drawBoxRaw,
+// currentVisibleRows) used to assume this was always exactly 1 - confirmed
+// live: pasting a line longer than one terminal row, then triggering a
+// redraw (a capture arriving, or the reply to a normal typed message),
+// cleared only the single row the old code assumed the prompt occupied,
+// leaving the wrapped-over remainder of the old prompt line sitting as
+// leftover garbage above the freshly redrawn box. Node's readline has no
+// public API for this, so it's derived the same way readline derives it
+// internally: total character count (the plain prompt marker - ANSI codes
+// in it don't occupy a column, so they're stripped first - plus the raw
+// typed text) divided by the terminal's current column count. An
+// approximation, not a byte-exact match for every terminal's own wrapping
+// quirks (e.g. deferred/"pending" wrap at an exact multiple of the column
+// count), but Math.ceil errs on the side of clearing one row too many
+// rather than too few, which self-corrects on the very next redraw rather
+// than leaving stray content behind.
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+function promptRowCount() {
+  const cols = process.stdout.columns || 80;
+  const plainPromptLength = promptString().replace(ANSI_RE, '').length;
+  const totalLength = plainPromptLength + rl.line.length;
+  return Math.max(1, Math.ceil(totalLength / cols));
+}
+
+// Draws just the box itself (a blank breathing-room line, the rule, then the
+// prompt - see promptRowCount above for why the prompt can be more than one
+// physical row) at the cursor's current position, with no
+// padding logic of its own - callers are responsible for the cursor already
+// being at the correct row. Both of drawBox's two branches below end here:
+// the fast incremental path (cursor left wherever clearBottomRows +
+// newly-written content put it) and redrawViewport's full repaint (cursor at
+// the end of its freshly-painted history slice). rl.prompt(true) alone
+// already renders readline's own current line and cursor position correctly
+// on its own (verified live: it reflects whatever was typed, including
+// mid-line edits and a wrapped multi-row line, with no help needed) - no
+// manual re-insertion of a "saved" line, which matters here specifically
 // because a turn no longer pauses readline for its duration (see
 // sendAndPrint): a keystroke can land between two box redraws, and manually
 // re-inserting a previously-saved line back into a buffer readline's own
 // keypress handling has since updated would duplicate it. A no-op in
 // non-styled mode: the plain '> ' prompt there is just readline's own,
 // undecorated, and never needs a rule or an explicit redraw of its own.
+function drawBoxRaw() {
+  if (!stylingEnabled()) return;
+  process.stdout.write(`\n${boxRule()}\n`);
+  // Reset readline's own internal "how many rows did my last render take"
+  // bookkeeping (rl.prevRows - an undocumented but stable, directly-
+  // readable property; see node's lib/internal/readline/interface.js
+  // _refreshLine) before letting it redraw. rl.prompt(true) doesn't just
+  // paint at the cursor's current position - internally it moves the
+  // cursor *up* by rl.prevRows first (to reach what it believes was the
+  // start of its own previous multi-row render), then clearScreenDown()s
+  // from there before writing the new prompt. That's fine as long as
+  // readline is the only thing that's touched the screen since its last
+  // render - but it isn't: clearBottomRows just repositioned the cursor
+  // using this file's own row math, to the correct spot for a *fresh*
+  // render. If rl.prevRows is left stale from readline's last render of
+  // this same long/wrapped line (e.g. 2, for a cursor sitting on the third
+  // row of a 3-row wrapped prompt), rl.prompt(true) moves up 2 *more* rows
+  // than it should - straight into content clearBottomRows never touched
+  // (the ack/label lines this turn already printed above the box) - and
+  // then clearScreenDown() erases all of it before redrawing the box 2 rows
+  // too high. Confirmed live: this is the actual mechanism behind "a
+  // capture arriving while a long typed line sits in the prompt corrupts
+  // everything above the box," not a row-*counting* bug (promptRowCount
+  // above was already correct throughout) - forcing rl.prevRows to 0 here
+  // makes _refreshLine's own upward move a no-op, so it just clears
+  // (harmlessly - the box's own rows are already blank) from the cursor's
+  // actual current position downward and draws fresh there, matching what
+  // clearBottomRows already prepared.
+  rl.prevRows = 0;
+  rl.prompt(true);
+  boxShown = true;
+}
+
+// The box is pinned to the terminal's actual last row(s) - not wherever the
+// cursor happens to be after whatever's been printed so far. Two phases:
+//
+// While the screen hasn't genuinely filled with real content yet
+// (screenFilledToBox false), every redraw goes through a full repaint
+// (redrawViewport) instead of the incremental clear/write path below. This
+// is the real fix for "chat ends up clustered at the bottom with the box
+// instead of starting from the top and growing down, with padding sitting
+// between it and the box": the incremental path only ever cleared the box's
+// own rows (clearBottomRows) and then wrote new content immediately adjacent
+// to wherever the box already was - which, since the box is pinned to the
+// terminal's actual last row, always means writing right at that last row.
+// Doing that forces the *terminal itself* to scroll on every single
+// redraw (there's nowhere left to print a trailing newline without
+// overflowing the last row) - which silently drops exactly one row off the
+// *top* of the screen each time, even while genuine blank padding still sits
+// untouched in the middle, never being consumed by it. The old
+// padToBottomIfNeeded compounded this by only ever padding once (an
+// unconditional `screenFilledToBox = true` after its very first call,
+// regardless of whether the screen had actually filled) - confirmed live:
+// a short conversation in a tall window showed new content clustered
+// directly above the box while the padding above stayed frozen at whatever
+// it was after the very first startup draw, and the window's original
+// startup banner silently scrolled off the top within the first couple of
+// capture exchanges. redrawViewport, in contrast, was already correct - it
+// repaints the whole visible window fresh from historyBuffer (the true,
+// never-lost record of everything printed) on every call, which is exactly
+// why Thomson's own live testing found that a single wheel-scroll tick
+// "snapped" a broken-looking screen to the correct layout: it was the first
+// full repaint since the bug's incremental drawBox calls had been silently
+// scrolling real content away. Using that same full-repaint path for every
+// redraw during the fill phase costs a full-screen clear per redraw, but
+// that phase is inherently bounded (at most visibleRows lines of content),
+// unlike the conversation itself - once the screen has genuinely filled
+// (contentRows >= visibleRows), natural terminal scrolling is exactly the
+// desired behavior forever after, so the cheap incremental path (clear only
+// the box's own rows, write, redraw in place) takes back over, unchanged
+// from before this fix and already verified correct for that case.
 function drawBox() {
   if (!stylingEnabled()) return;
-  padToBottomIfNeeded();
-  process.stdout.write(`${boxRule()}\n`);
-  rl.prompt(true);
-  bottomRowsShown = 2;
+  if (!screenFilledToBox) {
+    redrawViewport();
+    return;
+  }
+  drawBoxRaw();
 }
 
 function printAboveInput(text) {
@@ -1023,28 +1135,44 @@ rl.on('line', (line) => {
     // two lines, and the rule (meant to be the single, unique break
     // between chat history and the live input) would duplicate itself
     // once per press. Reclaim that row instead (move up, clear) and redraw
-    // only the prompt, still empty - the rule row above it was never
-    // touched by readline's own handling and is already correct, so the
-    // box ends up looking exactly as it did before Enter was pressed, not
-    // just similar to it.
+    // only the prompt, still empty - the rule and blank-breathing-room
+    // rows above it were never touched by readline's own handling and are
+    // already correct, so the box ends up looking exactly as it did before
+    // Enter was pressed, not just similar to it.
+    //
+    // While the screen hasn't genuinely filled yet, though, that reclaim
+    // isn't enough on its own: readline's own commit-and-move-to-a-fresh-row
+    // handling for Enter still emits a raw newline at whatever the terminal's
+    // current last row is (the prompt's own row, since the box is always
+    // pinned there) - the exact same last-row-overflow mechanism drawBox's
+    // own fill-phase branch above exists to work around, so it forces a real
+    // terminal scroll here too, silently dropping a row off the top, even
+    // though an empty submission adds nothing to historyBuffer to justify
+    // it. A full repaint recovers correctly, the same as drawBox's own
+    // fill-phase branch - there's no typed content to preserve either way,
+    // since the submission was empty.
     if (stylingEnabled()) {
-      readline.moveCursor(process.stdout, 0, -1);
-      readline.clearLine(process.stdout, 0);
-      readline.cursorTo(process.stdout, 0);
-      rl.prompt(true);
+      if (!screenFilledToBox) {
+        redrawViewport();
+      } else {
+        readline.moveCursor(process.stdout, 0, -1);
+        readline.clearLine(process.stdout, 0);
+        readline.cursorTo(process.stdout, 0);
+        rl.prompt(true);
+      }
     } else {
       rl.prompt();
     }
     return;
   }
-  // A non-empty submission, in contrast, must keep the row readline just
-  // committed - that's Thomson's own message, and it's meant to become
-  // part of permanent chat history. bottomRowsShown still says "2" from
-  // whenever the box was last drawn, and that's now stale: what it counted
-  // (the rule above the prompt, and the prompt row itself) has already
-  // left our hands the same way. Reset to 0 - nothing left for us to clear
-  // - before the reply's own printAboveInput/box calls run.
+  // A non-empty submission, in contrast, must keep the row(s) readline just
+  // committed - that's Thomson's own message, and it's meant to become part
+  // of permanent chat history. Whatever the box was (boxShown/
+  // reservedBottomRows) is now stale: readline's own native Enter handling
+  // already committed and cleared all of it on its own. Reset both to
+  // "nothing reserved" before the reply's own printAboveInput/box calls run.
   bottomRowsShown = 0;
+  boxShown = false;
   if (text === '/exit' || text === '/quit') {
     rl.close();
     return;
@@ -1269,34 +1397,35 @@ let scrollOffset = 0;
 // per click rather than a full screen.
 const WHEEL_SCROLL_LINES = 3;
 
+// Leaves room for the box's own rows: a blank breathing-room line, the
+// rule, and however many physical rows the prompt itself currently needs
+// (see promptRowCount - normally 1, more once a long typed/pasted line has
+// wrapped). Recomputed on every call rather than assumed fixed, so a long
+// typed line correctly shrinks the space left for chat content instead of
+// the box's extra wrapped row silently overlapping it.
 function currentVisibleRows() {
   const rows = process.stdout.rows || 24;
-  return Math.max(1, rows - 2); // leave room for the box's 2 rows
+  return Math.max(1, rows - 2 - promptRowCount());
 }
 
 // Repaints the screen from historyBuffer at the current scrollOffset, sized
 // to the terminal's current height, then the box - the one place that
 // actually turns "recorded history + an offset" into pixels. Used to
 // return to the live view after the pager (see showHistory) closes, to
-// respond to a wheel event, and to reflow the current window after a
-// resize. scrollOffset is clamped here (not at the call sites) so it can
-// never point past either end of the buffer regardless of how it got
-// there - a shrunk terminal window, or history that's grown shorter than
-// a previously-valid offset (e.g. after the capture log's own trim).
-//
-// Pads short content itself, directly, rather than leaning on drawBox's own
-// padToBottomIfNeeded/screenFilledToBox latch: that latch is only meaningful
-// for the *incremental* draw path (clearBottomRows + print + drawBox),
-// where nothing already on screen above the box is ever erased. This
-// function's own `\x1b[2J\x1b[H` clear, in contrast, wipes any padding a
-// previous draw already put there - so whether or not the screen was
-// latched "full" before this call says nothing about whether the *slice
-// this call is about to (re)write* fills it too (a plain wheel-scroll tick
-// on a short conversation is exactly this case: the latch was already true
-// from the first draw, but every redraw after a full clear starts blank
-// again). Confirmed live: without this, a wheel event on a short
-// conversation dropped the box back to floating right under the content,
-// silently reproducing the original bug on every scroll tick.
+// respond to a wheel event, to reflow the current window after a resize,
+// and (see drawBox above) as the fill-phase repaint for every ordinary
+// redraw until the screen has genuinely filled with real content. Because
+// it always repaints the *entire* visible window fresh from historyBuffer -
+// the true, never-lost record of everything ever printed - rather than
+// incrementally editing whatever the physical terminal screen currently
+// shows, it can't inherit whatever an unrelated stray scroll (this
+// program's own, or readline's own newline-at-the-last-row on a plain
+// Enter) already did to the physical screen; it always recomputes the
+// correct layout from scratch. scrollOffset is clamped here (not at the
+// call sites) so it can never point past either end of the buffer
+// regardless of how it got there - a shrunk terminal window, or history
+// that's grown shorter than a previously-valid offset (e.g. after the
+// capture log's own trim).
 function redrawViewport() {
   const visibleRows = currentVisibleRows();
   const allLines = historyLines();
@@ -1310,14 +1439,26 @@ function redrawViewport() {
   if (slice.length < visibleRows) {
     process.stdout.write('\n'.repeat(visibleRows - slice.length));
   }
-  // The screen is now flush with the box's position either way (real
-  // content plus padding, or real content alone when it already filled) -
-  // exactly the invariant padToBottomIfNeeded's own latch promises, so
-  // later *incremental* drawBox calls (a new capture, a typed reply) can
-  // trust it and skip re-padding, same as after any other first fill.
-  screenFilledToBox = true;
+  // Only latch "the screen has genuinely filled" when the *real* content
+  // (not padding) actually reaches visibleRows - unlike the old code, which
+  // set this unconditionally after any repaint. Latching unconditionally is
+  // exactly what made drawBox's old incremental path silently corrupt a
+  // short conversation: after the very first draw, drawBox would never pad
+  // again regardless of how little real content there actually was, so
+  // every later redraw's own newline-at-the-last-row forced a real terminal
+  // scroll that dropped a row off the top instead. total >= visibleRows is
+  // the one condition under which that natural scrolling is actually
+  // correct and desired (see drawBox's own comment) - so that's the only
+  // condition allowed to turn the incremental path back on.
+  screenFilledToBox = total >= visibleRows;
   bottomRowsShown = 0;
-  drawBox();
+  // drawBoxRaw directly, not drawBox - this *is* the fill-phase repaint
+  // drawBox would otherwise delegate back to, so calling drawBox here would
+  // either recurse into this same function again (screenFilledToBox still
+  // false) or silently skip a row of padding this call already accounted
+  // for (screenFilledToBox just turned true) by drawing the box a second,
+  // redundant time.
+  drawBoxRaw();
 }
 
 // Called by anything that represents new activity (a capture, a typed

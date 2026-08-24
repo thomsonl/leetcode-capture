@@ -191,12 +191,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   distinct from a separate test proving genuine incremental delivery on the streaming path (both
   matter: a stub that always answers instantly can't tell a real stream from a fast one-shot flush).
 
-- The input area is a small pinned box (a thin rule, then the `>` prompt) that stays the last thing
-  on screen, styled/TTY mode only. `bottomRowsShown` tracks how many terminal rows, ending at the
-  cursor's current row, the box (or, mid-spinner, its temporary one-line replacement) currently
-  occupies; `clearBottomRows()` clears exactly that many before new content is written, and
-  `drawBox()` redraws the box fresh afterward, setting it back to 2. `printAboveInput` and every
-  streamed reply piece (`sendAndPrint`'s `writeReplyPiece`) go through this same clear/print/redraw
+- The input area is a small pinned box (a blank breathing-room line, a thin rule, then the `>` prompt -
+  see the box-height/margin bullets further down for both) that stays the last thing on screen,
+  styled/TTY mode only. `reservedBottomRows()` computes how many terminal rows, ending at the cursor's
+  current row, are currently occupied by whatever's reserved at the bottom (the box - its own row count
+  computed fresh via `promptRowCount()`, not cached, since a long typed line can wrap it to more than one
+  row - or the 1-row spinner, tracked via `boxShown`/`bottomRowsShown`; see below for why); `clearBottomRows()`
+  clears exactly that many before new content is written, and `drawBox()`/`drawBoxRaw()` redraw the box
+  fresh afterward. `printAboveInput` and every streamed reply piece (`sendAndPrint`'s `writeReplyPiece`)
+  go through this same clear/print/redraw
   cycle - throttled to real markdown block boundaries by `createMarkdownStreamer`, not raw network
   chunks, so the box stays visibly pinned through a whole streaming reply without flickering on every
   tiny piece. Consecutive rendered blocks are separated by exactly one blank line in `writeReplyPiece`
@@ -210,12 +213,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
   `turnActive` is true for the duration of one `sendAndPrint` call, tracking whether it's safe to force
   an immediate box redraw outside the normal print flow - used by the `process.stdout.on('resize', ...)`
-  listener (see `refreshWidth` above): idle, `bottomRowsShown` unambiguously means "a 2-row box," so a
-  resize can just clear and redraw it on the spot; mid-turn it might mean "a 1-row spinner" instead at
-  any given moment, and forcing a 2-row box there would corrupt whatever the turn's own writes are
-  tracking - so mid-turn a resize only updates the width for what gets drawn *next*, verified live by
-  resizing a `tmux` pane twice in the middle of a streaming reply and confirming no corruption, just the
-  final box landing at the terminal's width by the time the reply finished.
+  listener (see `refreshWidth` above): idle, `boxShown` unambiguously means "the box" (its own current
+  height computed fresh via `promptRowCount()` - see below, no longer a fixed row count), so a resize can
+  just clear and redraw it on the spot; mid-turn it might mean "a 1-row spinner" instead at any given
+  moment, and forcing a box redraw there would corrupt whatever the turn's own writes are tracking - so
+  mid-turn a resize only updates the width for what gets drawn *next*, verified live by resizing a `tmux`
+  pane twice in the middle of a streaming reply and confirming no corruption, just the final box landing
+  at the terminal's width by the time the reply finished.
 
   `drawBox()` redraws via `rl.prompt(true)` alone - readline's own rendering already reflects the
   current line and cursor position correctly on its own, including mid-line edits, confirmed live via
@@ -334,8 +338,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   screen. `historyBuffer` (already recorded for Page Up/`less`, see above) now also backs a real
   application-level scrollback: `scrollOffset` (lines up from the live bottom) plus `redrawViewport()`
   paint a windowed slice of it, replacing the old `redrawLiveTail`. Wheel events are ignored outright
-  while a turn is active (mid-turn, `bottomRowsShown` can mean a 1-row spinner rather than a settled
-  2-row box, and a full-screen redraw there would corrupt it) - not suppressed and reconciled later, simply
+  while a turn is active (mid-turn, `boxShown` is false and `bottomRowsShown` can mean a 1-row spinner
+  rather than a settled box, and a full-screen redraw there would corrupt it) - not suppressed and reconciled later, simply
   ignored, same as Page Up already was. The complementary rule (`resetScrollIfNeeded`, called first thing
   by both `handleCaptureLine` and `sendAndPrint`) is what keeps that safe: any new activity - a capture or
   a typed message - always snaps the view back to the live bottom before it writes anything, which is what
@@ -360,39 +364,109 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   unrelated Escape keypress (see the file's own header) is reasoned about rather than covered by a
   deterministic test, to avoid a timing-flaky one.
 
-- The box is pinned to the terminal window's actual last row, not to the bottom of whatever's been
+- The box is pinned to the terminal window's actual last row(s), not to the bottom of whatever's been
   printed so far - the distinction only shows up when content hasn't yet filled the screen (right at
   startup is the easiest repro): before the fix, `drawBox()` just wrote at the cursor's current
   position, which floated mid-screen with blank space left *underneath* the box instead of above it.
-  `padToBottomIfNeeded()` (called from `drawBox()`) pads with blank lines, once, based on
-  `historyLines()` (a line count derived from `historyBuffer` - now also fed by the startup/relay-
-  server banner lines via `printBanner()`, not just conversation content, so the very first `drawBox()`
-  call counts correctly). Latched via `screenFilledToBox`: once the screen has genuinely filled (or
-  been padded flush to the boundary) once, natural terminal scrolling keeps the box pinned on its own
-  for every subsequent *incremental* draw (`clearBottomRows` + print + `drawBox`), so a long
-  conversation never rescans the (up to 2MB) history buffer on every redraw. The gotcha this latch
-  doesn't cover on its own: `redrawViewport()` (resize/wheel-scroll/Page-Up-return) does a full
-  `\x1b[2J\x1b[H` clear before repainting, which wipes out whatever padding made a *previous* draw
-  correct - so it must always recompute and re-emit its own padding directly (never trust
-  `screenFilledToBox`'s prior value), only setting the latch `true` afterward for later incremental
-  draws to trust. Confirmed live: skipping this and relying on the shared latch left a real bug - a
-  wheel-scroll tick on a short (screen-not-yet-full) conversation dropped the box straight back to
-  floating under the content, reproducing the original bug on every scroll. The resize handler also
-  now always calls `redrawViewport()` when idle (previously it took a cheaper box-only-redraw shortcut
-  when not scrolled, which didn't reflow row count on a taller/shorter resize - a second instance of
-  the same underlying bug) and resets `screenFilledToBox` unconditionally (which matters for the
-  turn-active branch, where `redrawViewport` doesn't run immediately - see the resize handler's own
-  comment). Verified live via a sized `tmux` pane (`new-session -x -y`, `capture-pane -p`, `send-keys
-  -H` for raw SGR wheel bytes) across: startup on a window much taller than the banner, a streaming
-  reply, a resize both shorter and taller (including mid-turn), a wheel-scroll tick on short content
-  specifically (the case that exposed the latch gotcha above), scroll-back-to-live, Page Up/`less`
-  open and return, and `/exit` restoring the shell's own scrollback untouched - not just read.
-  `companion/box-padding.test.js` covers the startup case with a real companion.js subprocess (a tiny
-  wrapper fakes `process.stdout.isTTY`/`rows`/`columns` before dynamically importing companion.js,
-  matching `terminal-format.test.js`'s existing trick for exercising TTY-only code paths without a
-  real terminal) - it can't verify real-terminal rendering (see the pty/tmux note above for that), but
-  since the padding itself is just literal `'\n'` writes rather than cursor-positioning escapes, a
-  plain line-count check on the raw captured output already proves the padding math directly.
+  Originally fixed with a one-shot `padToBottomIfNeeded()` padding call, latched via `screenFilledToBox`
+  after its very first draw - which turned out to be a second, worse bug (see the next bullet), so that
+  function no longer exists; `redrawViewport()` (below) is now the only thing that ever pads.
+  Verified live via a sized `tmux` pane (`new-session -x -y`, `capture-pane -p`, `send-keys -H` for raw
+  SGR wheel bytes) across: startup on a window much taller than the banner, a streaming reply, a resize
+  both shorter and taller (including mid-turn), scroll-back-to-live, Page Up/`less` open and return, and
+  `/exit` restoring the shell's own scrollback untouched.
+
+- Chat content must grow from the *top* of the screen like ordinary scrollback, with the box's own
+  padding shrinking to make room - not chat clustering next to the box at the bottom while real content
+  (even the startup banner) silently disappears off the top. This was `padToBottomIfNeeded`'s one-shot
+  latch (above) compounding into a second bug: after its first call, `screenFilledToBox` was set `true`
+  *unconditionally*, so every later incremental redraw (`clearBottomRows` + print + `drawBox`) skipped
+  padding entirely and wrote new content immediately adjacent to the box - which, since the box is
+  pinned to the terminal's actual last row, always meant writing right at that row. That forces a real
+  terminal scroll on *every single redraw* (there's nowhere left to print a trailing newline without
+  overflowing the last row), silently dropping exactly one row off the *top* of the screen each time,
+  even while genuine blank padding sat untouched elsewhere. Confirmed live: a short conversation in a
+  tall window showed the startup banner (and even earlier captures' own replies) scrolled away within a
+  couple of exchanges, despite acres of unused blank space still on screen - and a single wheel-scroll
+  tick "snapped" the broken layout to correct, because `redrawViewport()` (used for resize/wheel-
+  scroll/Page-Up-return) was already doing a full repaint from `historyBuffer` - the true, never-lost
+  record of everything printed - independent of whatever the physical screen had been scrolled into.
+  Fixed by making `drawBox()` a phase-aware dispatcher: while the screen hasn't genuinely filled with
+  real content yet (`screenFilledToBox` false), *every* redraw goes through `redrawViewport()`'s full
+  `\x1b[2J\x1b[H` repaint (bounded cost - at most `visibleRows` lines, not the whole conversation) rather
+  than the fast incremental path; `screenFilledToBox` now only latches `true` once `historyLines().length
+  >= currentVisibleRows()` genuinely, in both `redrawViewport()` and the (now-unreachable-until-filled)
+  fast path, never unconditionally. `drawBoxRaw()` is the shared "just paint the box at the current
+  cursor position" primitive both branches end on. Verified live over the same sized-`tmux`-pane
+  technique as the previous bullet, specifically: several real captures in a tall window with the banner
+  and every earlier turn staying visible and in top-to-bottom order, wheel-scroll and resize no longer
+  needed to "fix" a short conversation's layout, and natural scrolling correctly taking back over once
+  the screen genuinely fills. `companion/box-padding.test.js` covers both bugs with a real companion.js
+  subprocess (a tiny wrapper fakes `process.stdout.isTTY`/`rows`/`columns` before dynamically importing
+  companion.js, matching `terminal-format.test.js`'s existing trick) - it can't verify real-terminal
+  *rendering* of cursor-positioning escapes (see the pty/tmux note above for that gap), but a
+  `\x1b[2J\x1b[H`-delimited "only look at the most recent full repaint" helper (`finalScreenLines`) lets
+  it prove line ordering/survival and padding math directly from the raw captured output, without a
+  terminal.
+
+- The box always has one guaranteed blank breathing-room line directly above its rule, and both the
+  rule and the prompt share a consistent one-space left margin (`drawBoxRaw`'s own leading `\n`;
+  `boxRule`/`promptString`/`spinnerFrame` in `terminal-format.js`) - a deliberate visual-spacing pass
+  distinct from the padding bugs above: that blank line is now *structural*, part of the box itself
+  (`currentVisibleRows()` reserves space for it unconditionally), not something that happened to be left
+  over from padding and would vanish once the screen genuinely filled and natural scrolling took over.
+
+- `bottomRowsShown` (how many rows `clearBottomRows` clears before a redraw) is not simply "the box is
+  always 2 rows" any more - a typed/pasted line long enough to soft-wrap changes how many physical rows
+  the prompt itself occupies, and that can change from one redraw to the next independent of anything
+  this file's own drawing code does (readline updates its own on-screen prompt on every keystroke, with
+  no call into any of `drawBox`/`clearBottomRows`). `promptRowCount()` derives the prompt's current row
+  count fresh, on demand (`Math.ceil((plain prompt length + rl.line.length) / columns)`, min 1) rather
+  than caching it; a `boxShown` boolean (as opposed to a bare row count) tracks whether the *box itself*
+  - as opposed to the 1-row spinner, or nothing - is what's currently occupying the reserved bottom
+  rows, since only the box's height is dynamic this way. `currentVisibleRows()` also reserves space for
+  the current `promptRowCount()`, so a long typed line correctly shrinks how much of the screen is left
+  for chat content rather than the box's extra wrapped row silently overlapping it.
+
+- A capture (or a typed reply) arriving while a long typed line wraps the prompt to 2+ rows used to
+  corrupt everything printed earlier in that turn - and even earlier turns - once `promptRowCount()`
+  (above) existed and was correct: the row-*counting* math wasn't the bug. The actual root cause is
+  node's `readline` Interface tracking its own internal `prevRows` (an undocumented but stable,
+  directly-readable property - confirmed empirically by dumping `readline.Interface.prototype
+  [kRefreshLine].toString()`, not just inferred): `rl.prompt(true)` internally moves the cursor *up* by
+  `rl.prevRows` first (to reach what it believes was the start of its own last multi-row render), then
+  `clearScreenDown()`s from there before redrawing. That's only correct if readline is the *only* thing
+  that's touched the terminal since its own last render - but it isn't: `clearBottomRows` already
+  repositions the cursor independently, using this file's own row math, before every redraw. Once the
+  prompt wraps to more than one row, readline's stale `prevRows` (left over from the *previous* render
+  of that same long line) makes `rl.prompt(true)` move the cursor further up than it should - straight
+  into content `clearBottomRows` never touched (an earlier turn's own ack/label lines) - and erases it
+  with `clearScreenDown()` before redrawing the box there instead. Invisible before `promptRowCount()`
+  existed, because a single-row prompt never needs `_refreshLine`'s upward move at all (`prevRows` was
+  always effectively 0). Fixed by resetting `rl.prevRows = 0` immediately before every `rl.prompt(true)`
+  call in `drawBoxRaw()`, so that upward move is always a no-op and readline just clears from the
+  cursor's actual current position (already correctly placed by `clearBottomRows`) downward. Confirmed
+  live in a real `tmux` pane: filled the screen with several captures (forcing the fast incremental
+  path, not `redrawViewport`'s full repaint), typed/settled a line long enough to wrap to 3-4 rows, then
+  sent another capture - before the fix, that capture's own ack/label vanished and the box's blank+rule
+  disappeared too; after the fix, everything survives in order. `companion/box-corruption.test.js`
+  covers this with `companion/virtual-terminal.js`, a small ANSI escape interpreter scoped to exactly
+  what companion.js/readline emit (`moveCursor`/`cursorTo`/`clearLine`/`clearScreenDown`/full-clear;
+  private-mode toggles and SGR ignored) - this specific bug can't be caught by a plain text/line search
+  over the raw output (`box-padding.test.js`'s technique, sufficient for the padding-math bugs above):
+  the erased text's bytes are still sitting earlier in the raw stream, just followed by escape codes
+  that would make a real terminal stop showing them, so only replaying those escapes against a real
+  cursor/grid - the same ground truth `tmux capture-pane -p` already established live - can tell "still
+  on screen" apart from "already erased." Verified the test itself actually detects the bug (not just
+  passes coincidentally) by reverting the `rl.prevRows = 0` fix and confirming it fails.
+
+- An unbroken long token (a URL, a long identifier) in a reply has no whitespace for marked-terminal's
+  `reflowText` to break on - confirmed live and via `terminal-format.test.js` that marked-terminal
+  already hard-wraps it to the comfortable width rather than letting it overflow, so no fix was needed
+  there; `refreshWidth()`'s live-resize re-registration was independently confirmed live to pick up a
+  narrower/wider terminal correctly for replies rendered *after* the resize (already-rendered older
+  content keeps its old wrap width baked in as literal text, a known, unchanged characteristic - see
+  `redrawViewport`'s own doc comment).
 
 ## Maintaining this file
 
