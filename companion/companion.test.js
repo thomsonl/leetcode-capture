@@ -29,14 +29,15 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Starts a stub OpenAI-compatible chat-completions server. `replyFor` maps
-// each request to a response shape (a `{ content, reasoning }`-ish chat
-// message); defaults to a normal, non-empty content reply if not overridden
-// for a given call. companion.js's LocalBackend always sends `stream: true`
-// for a streamable turn (see sendAndPrint), so this responds as a real SSE
-// stream in that case - split into a couple of chunks, not one, so it also
-// exercises the incremental onChunk path rather than just a single-event
-// stream. A request with `stream` false/absent (there currently isn't one in
-// this file, but the shape is cheap to keep) still gets the old plain JSON
+// each request to a response shape (a `{ content, reasoning, finishReason }`-ish
+// chat message; finishReason defaults to 'stop' if omitted); defaults to a
+// normal, non-empty content reply if not overridden for a given call.
+// companion.js's LocalBackend always sends `stream: true` for a streamable
+// turn (see sendAndPrint), so this responds as a real SSE stream in that
+// case - split into a couple of chunks, not one, so it also exercises the
+// incremental onChunk path rather than just a single-event stream. A
+// request with `stream` false/absent (there currently isn't one in this
+// file, but the shape is cheap to keep) still gets the old plain JSON
 // response.
 function startStubBackend(replyFor) {
   let callCount = 0;
@@ -47,9 +48,10 @@ function startStubBackend(replyFor) {
       callCount += 1;
       const parsedBody = JSON.parse(body);
       const message = replyFor(callCount, parsedBody);
+      const finishReason = message.finishReason || 'stop';
       if (!parsedBody.stream) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ choices: [{ message, finish_reason: 'stop' }] }));
+        res.end(JSON.stringify({ choices: [{ message, finish_reason: finishReason }] }));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -65,6 +67,7 @@ function startStubBackend(replyFor) {
       if (message.reasoning) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning: message.reasoning } }] })}\n\n`);
       }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
     });
@@ -160,6 +163,41 @@ test('a capture reply that comes back with only `reasoning` (empty `content`) is
   // failing that, an explicit warning - anything but silence.
   const afterLabel = out.slice(out.indexOf('attempt 1'));
   assert.match(afterLabel, /long internal reasoning trace|empty reply/);
+});
+
+// Regression test for the model's own raw thinking process getting printed
+// as if it were the tutor's actual reply. This is a *different* bug from
+// the one above: there, `content` is empty because a model puts its whole
+// finished answer in `reasoning` instead (finish_reason "stop") - a
+// legitimate quirk the fallback above is meant to catch. Here, `content` is
+// empty because generation was cut off *before* the model finished thinking
+// (finish_reason "length", confirmed live against the real Ollama
+// gemma4:26b model this companion is configured for - a big-enough Submit
+// capture eats most of Ollama's small default context window and gets cut
+// off mid-`reasoning`) - `reasoning` in that case is a raw, incomplete
+// scratchpad, not an answer, and must never reach the terminal as if it
+// were one (see companion.js's resolveReplyText for the actual fix).
+test('a reply cut off mid-thought (finish_reason "length", empty content) is discarded, not shown as the reply', async () => {
+  const rawThinking =
+    'Task: Provide a full breakdown. Input Code Analysis: the user provided a hash-map lookup approach. Let me trace';
+  const out = await runCompanion({
+    stubReplyFor: () => ({
+      role: 'assistant',
+      content: '',
+      reasoning: rawThinking,
+      finishReason: 'length',
+    }),
+    capture: makeCapture({ trigger: 'submit', attemptSeq: 1 }),
+  });
+
+  assert.match(out, /got your Submit for Two Sum - taking a look/);
+  assert.match(out, /attempt 1/);
+  // The raw internal reasoning must never reach the terminal as the reply -
+  // only the existing "companion: error talking to backend" path may say
+  // anything about it.
+  assert.ok(!out.includes(rawThinking), `raw thinking leaked into output: ${JSON.stringify(out)}`);
+  assert.match(out, /error talking to backend/);
+  assert.match(out, /cut off before finishing/);
 });
 
 test('a normal reply with populated `content` still prints as before', async () => {
