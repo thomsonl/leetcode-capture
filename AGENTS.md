@@ -539,6 +539,61 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     the fill-phase full repaint too (not just the steady-state incremental path), which a naive line
     split can't interpret correctly.
 
+- `LocalBackend.history` used to grow without bound (see the older bullets above on
+  `resolveReplyText`) - a long single-problem conversation (several Run/Submit captures on the same
+  problem, so `COMPANION_AUTO_CLEAR_CONTEXT`'s full reset never fires) kept resending every prior
+  turn until it exhausted a small local model's context window, confirmed live to actually happen -
+  not just theorized - against the real Ollama gemma4:26b model on a real machine (also
+  re-confirmed there, live, that this Ollama version's `/v1/chat/completions` endpoint still
+  doesn't honor `num_ctx` - loaded context stayed pinned at 4096 regardless of what was passed -
+  while its native `/api/chat` does, confirmed via `ollama ps`'s own CONTEXT column jumping to
+  match a passed `options.num_ctx`). Switching `LocalBackend` to `/api/chat` wasn't taken even
+  though it would fix this too: it's Ollama-specific (breaks the "any OpenAI-compatible server"
+  portability `COMPANION_BASE_URL` is documented for), uses a different streaming wire format
+  (newline-delimited JSON, not this file's SSE parsing), and only moves the ceiling rather than
+  removing the unbounded-growth root cause. Fixed instead with `LocalBackend.trimHistory()`
+  (`COMPANION_LOCAL_MAX_HISTORY_TURNS`, default 6, 0 disables it): drops the oldest complete
+  user+assistant pairs once history holds more than that many, called only right after
+  `sendMessage` pushes a successful assistant reply - never mid-turn, and never on an error path
+  (which already pop the dangling user message first) - so history is always in well-formed
+  `[system, user, assistant, ...]` shape when it runs and a trim can never cut a turn in half.
+  `companion/companion.test.js`'s `startExhaustionStubBackend`/`runManyTurnsScenario` reproduce the
+  real failure deterministically (a stub that starts responding with a truncated
+  `finish_reason: "length"` reply once a request's total message content crosses a size threshold,
+  the same shape `resolveReplyText` already handles) and confirm trimming prevents it under the
+  same repro - verified live that the "trimming enabled" test actually fails (not just passes
+  coincidentally) with `trimHistory` reverted to a no-op.
+- `ClaudeBackend` does not hit an analogous practical exhaustion failure, confirmed rather than
+  assumed from the architecture difference (`options.resume` vs. a hand-resent array): a live SDK
+  call's own `result` message reports `modelUsage['claude-sonnet-5'].contextWindow: 1000000` - about
+  244x the local Ollama model's 4096-token default - and `COMPANION_AUTO_CLEAR_CONTEXT` already caps
+  growth to one problem's own conversation regardless, so a realistic tutoring session (a handful of
+  Run/Submit captures) comes nowhere close. What *is* real and measured: `ClaudeBackend.sendMessage`
+  never restricted `tools`/`mcpServers`/`settingSources`, so the Agent SDK's defaults ("load
+  everything") apply - a live call with this file's exact options shape (custom `cwd`, a plain-string
+  `systemPrompt`, nothing else set) carried ~12,500 tokens of pure overhead unrelated to the tutor
+  conversation: the SDK's ~25 built-in tool definitions (Task, Bash, Edit, Write, Read, ...) plus,
+  in an environment with any MCP connectors configured, every one of *their* tool definitions too -
+  none of which this companion, which has no tools configured, ever calls. `allowedTools: []` looked
+  like the fix but isn't - confirmed live it only skips the permission prompt, the tool list is
+  unchanged (~10,800 tokens); `tools: []` (disables built-ins) plus `mcpServers: {}` +
+  `strictMcpConfig: true` (drops ambient/MCP-connector tools, `strictMcpConfig` required or the SDK
+  still merges in project/user MCP config) is what actually removes them, confirmed live: same call,
+  197 tokens total, zero cache overhead - a ~98% reduction. `settingSources: []` was added too
+  (filesystem settings default to "load everything," independent of the `systemPrompt` override,
+  confirmed live: pointing `cwd` at this repo - which has a 53KB CLAUDE.md/AGENTS.md - with
+  otherwise-identical options raised the same call to ~32,000 tokens) - defense in depth on top of
+  `cwd` already being `SCRATCH_DIR`, a dedicated non-project directory (confirmed no CLAUDE.md
+  exists anywhere in its own directory-ancestor chain either, so this repo's CLAUDE.md was never
+  actually reachable from there in practice) - but `settingSources: []` also stopped
+  `ClaudeBackend` from inheriting Thomson's global `~/.claude/CLAUDE.md` writing-style preferences
+  the way it used to (confirmed live: an identical prompt reliably avoided an em dash with the SDK's
+  old default settings-loading, then used one once `settingSources: []` was added) - fixed by
+  promoting the style rules from a `LocalBackend`-only addendum (`STYLE_ADDENDUM`, formerly
+  `LOCAL_STYLE_ADDENDUM`) to both backends explicitly, rather than relying on either backend
+  incidentally inheriting the rest of that file's unrelated engineering-workflow guidance, which was
+  never meant for this tutor persona regardless.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

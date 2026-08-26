@@ -445,7 +445,7 @@ function startTrackingStubBackend() {
   });
 }
 
-function makeIdCapture({ slug, title, attemptSeq, trigger = 'run' }) {
+function makeIdCapture({ slug, title, attemptSeq, trigger = 'run', code = 'pass' }) {
   return {
     receivedAt: new Date().toISOString(),
     problemSlug: slug,
@@ -456,7 +456,7 @@ function makeIdCapture({ slug, title, attemptSeq, trigger = 'run' }) {
     trigger,
     timestamp: new Date().toISOString(),
     url: 'https://leetcode.com/problems/x/',
-    code: 'pass',
+    code,
     attemptSeq,
   };
 }
@@ -572,4 +572,201 @@ test('a problem switch is still detected via the problemTitle fallback when prob
   assert.equal(requests[0].length, 2);
   assert.equal(requests[1].length, 2, 'title-fallback identifier switch should still clear context');
   assert.match(out, /new problem detected \(House Robber\) - clearing tutor context/);
+});
+
+// --- LocalBackend history trimming (COMPANION_LOCAL_MAX_HISTORY_TURNS) -----
+//
+// LocalBackend resends its full history array on every call (see
+// companion.js's LocalBackend class comment); across a long single-problem
+// conversation (several Run/Submit captures in a row, the scenario
+// COMPANION_AUTO_CLEAR_CONTEXT's own reset-on-problem-switch doesn't help
+// with) that grows without bound until it exhausts even a real backend's
+// context window - confirmed live against the real Ollama gemma4:26b model
+// this companion is configured for (see resolveReplyText's own comment).
+// This stub reproduces that failure mode directly and deterministically,
+// without needing a real model: once a request's total message content
+// crosses `thresholdChars`, it responds the same way a real context-
+// exhausted Ollama does - empty `content`, a `reasoning` scratchpad,
+// finish_reason "length" - instead of a normal reply, so a request that
+// grows past the threshold surfaces the same "error talking to backend...
+// cut off before finishing" companion.js already prints for that case (see
+// the "reply cut off mid-thought" test above). Always responds over SSE,
+// like startTrackingStubBackend above - a capture always streams.
+function startExhaustionStubBackend({ thresholdChars }) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const parsedBody = JSON.parse(body);
+      requests.push(parsedBody.messages);
+      const totalChars = parsedBody.messages.reduce((sum, m) => sum + (m.content || '').length, 0);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (totalChars > thresholdChars) {
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta: { reasoning: 'partial internal reasoning trace, cut off mid-thought' } }],
+          })}\n\n`
+        );
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`);
+      } else {
+        const content = `Reply number ${requests.length}`;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, requests }));
+  });
+}
+
+// A sizeable, but not huge, code field - big enough that a handful of resent
+// turns cross a modest thresholdChars, small enough the test stays fast.
+const EXHAUSTION_TEST_CODE = 'def solve(nums):\n    # placeholder line for size\n    pass\n'.repeat(15);
+
+// Spawns companion.js against startExhaustionStubBackend and feeds it
+// `turnCount` captures, one at a time, all for the *same* problem (so
+// COMPANION_AUTO_CLEAR_CONTEXT's own reset never fires and can't be the
+// reason growth stops) - waiting after each one for either a numbered reply
+// or the exhaustion error to appear before sending the next, so the queue
+// never races two captures against each other.
+async function runManyTurnsScenario({ turnCount, capturePort, thresholdChars, env = {} }) {
+  const { server, requests } = await startExhaustionStubBackend({ thresholdChars });
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-exhaustion-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(capturePort),
+      ...env,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    for (let i = 1; i <= turnCount; i += 1) {
+      const markerLen = out.length;
+      fs.appendFileSync(
+        capturesPath,
+        JSON.stringify(
+          makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: i, code: EXHAUSTION_TEST_CODE })
+        ) + '\n'
+      );
+      const deadline = Date.now() + 8000;
+      // eslint-disable-next-line no-await-in-loop
+      while (
+        Date.now() < deadline &&
+        !/Reply number|error talking to backend/.test(out.slice(markerLen))
+      ) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.match(
+        out.slice(markerLen),
+        /Reply number|error talking to backend/,
+        `turn ${i} produced neither a reply nor an error`
+      );
+      // If this turn already errored, stop early - matches how a real
+      // conversation would actually be interrupted, and avoids feeding more
+      // captures into a queue that's already surfaced the failure.
+      if (/error talking to backend/.test(out.slice(markerLen))) break;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 200)); // let the queue fully settle
+    }
+
+    return { out, requests };
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// The repro: with trimming disabled (the old, unbounded behavior),
+// resending the full history every turn eventually crosses the stub's
+// simulated context ceiling on a long enough single-problem conversation -
+// this is PR #31's bug in its non-leaking form (the truncation is now caught
+// and surfaced as an error rather than printed as the reply), but the
+// exhaustion itself is still happening, which is exactly what this task
+// fixes.
+test('without history trimming, a long single-problem conversation eventually exhausts context (repro)', async () => {
+  const { out } = await runManyTurnsScenario({
+    turnCount: 6,
+    capturePort: 18150,
+    thresholdChars: 6000,
+    env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '0' },
+  });
+
+  assert.match(
+    out,
+    /error talking to backend.*cut off before finishing/s,
+    `expected the growing unbounded history to eventually exhaust the stub's simulated context window, got: ${JSON.stringify(out)}`
+  );
+});
+
+// The fix: with trimming enabled, the same growing conversation over the
+// same number of turns never crosses the threshold, because the resent
+// history is capped rather than growing without bound - confirming this
+// isn't just "the same bug, later."
+test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation from ever exhausting context', async () => {
+  const { out, requests } = await runManyTurnsScenario({
+    turnCount: 6,
+    capturePort: 18151,
+    thresholdChars: 6000,
+    env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' },
+  });
+
+  assert.ok(
+    !out.includes('error talking to backend'),
+    `expected no exhaustion errors with trimming enabled, got: ${JSON.stringify(out)}`
+  );
+  assert.equal(requests.length, 6, 'all six turns should have gone through without an early failure');
+  for (const req of requests) {
+    // system + at most 1 turn-pair still in flight (the trimmed-to pair plus
+    // this request's own new user message can transiently be 2 pairs' worth
+    // - see trimHistory's own comment: trimming runs after a reply lands,
+    // not before the next request goes out).
+    assert.ok(
+      req.length <= 1 + 2 * 2,
+      `request history should stay bounded (system + at most ~2 pairs), got ${req.length} messages`
+    );
+  }
+});
+
+// Every request's own message array must stay in well-formed
+// [system, user, assistant, user, assistant, ...] shape - trimming a whole
+// pair at a time (see trimHistory) must never leave a dangling half-turn.
+test('trimmed history never leaves a dangling half-turn', async () => {
+  const { requests } = await runManyTurnsScenario({
+    turnCount: 6,
+    capturePort: 18152,
+    thresholdChars: 6000,
+    env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' },
+  });
+
+  for (const req of requests) {
+    assert.equal(req[0].role, 'system');
+    for (let i = 1; i < req.length; i += 2) {
+      assert.equal(req[i].role, 'user', `message ${i} should be a user turn`);
+      if (i + 1 < req.length) assert.equal(req[i + 1].role, 'assistant', `message ${i + 1} should be its reply`);
+    }
+  }
 });

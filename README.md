@@ -104,3 +104,8 @@ macOS/Linux (bash/zsh): `export COMPANION_MODEL=llama3.2`
 Windows PowerShell: `$env:COMPANION_MODEL="llama3.2"`
 
 Windows cmd: `set COMPANION_MODEL=llama3.2`
+
+The local backend resends its whole conversation history on every turn (the standard way to hold a multi-turn chat against an OpenAI-compatible endpoint), which can exhaust a small local model's context window over a long single-problem conversation.
+To keep that bounded, it also trims history to the most recent `COMPANION_LOCAL_MAX_HISTORY_TURNS` Run/Submit exchanges (default 6) once a problem's conversation grows past that, dropping the oldest exchanges first.
+This is separate from `COMPANION_AUTO_CLEAR_CONTEXT` above, which clears everything on a problem switch - this bound applies within one still-current problem.
+Set `COMPANION_LOCAL_MAX_HISTORY_TURNS=0` to disable trimming and go back to unbounded history, or raise it if your model/server has enough context to spare.
