@@ -46,6 +46,7 @@ import {
   spinnerFrame,
   createMarkdownStreamer,
   refreshWidth,
+  indentContinuation,
 } from './terminal-format.js';
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
 
@@ -754,7 +755,11 @@ let boxShown = false;
 // own current height (2 fixed rows - the blank line and the rule - plus
 // however many rows its prompt currently wraps to, computed fresh; see
 // boxShown above) when the box is what's on screen, or bottomRowsShown
-// (the spinner's fixed 1 row, or 0) otherwise.
+// (the spinner's fixed 1 row, or 0) otherwise. Deliberately does NOT count
+// the extra blank breathing-room row currentVisibleRows() reserves below
+// the prompt (see that function) - this is "rows at and above the cursor's
+// own row," and that reserved row sits below the cursor, never touched by
+// clearBottomRows's own upward-clearing loop.
 function reservedBottomRows() {
   return boxShown ? 2 + promptRowCount() : bottomRowsShown;
 }
@@ -897,6 +902,34 @@ function promptRowCount() {
 function drawBoxRaw() {
   if (!stylingEnabled()) return;
   process.stdout.write(`\n${boxRule()}\n`);
+  // Reserve the blank breathing-room row below the prompt (symmetric with
+  // the blank line above the rule, just written) *before* rendering the
+  // prompt itself, while the cursor sits at a known, unambiguous position:
+  // column 0 of the prompt's own first row. Writing promptRowCount() plain
+  // newlines forces the terminal to scroll if it's already at its bottom
+  // margin - the only way to genuinely create a new row there; a relative
+  // cursor-down move (readline.moveCursor with a positive dy, i.e. CSI
+  // "...B") does *not* scroll, it just clamps uselessly at the last row,
+  // which would silently skip the reservation exactly when it's needed
+  // most (the steady-state, screen-already-full case this function mostly
+  // runs in). clearLine then guards against stale content left over from a
+  // taller previous draw landing at this same spot (e.g. right after a
+  // resize). moveCursor back up the same count is a pure relative vertical
+  // move (unlike another plain '\n', which most terminals' own output
+  // processing also treats as an implicit carriage return) - paired with
+  // the explicit cursorTo(0) after it, this returns the cursor to exactly
+  // where it started, so rl.prompt(true) below renders into unchanged,
+  // correctly-positioned space, unaware any of this happened. Doing this
+  // *before* rl.prompt(true) - rather than after, relative to wherever it
+  // leaves the cursor - sidesteps having to know precisely where within a
+  // multi-row wrapped prompt the cursor ends up (e.g. mid-line editing
+  // after arrowing left): that position is genuinely ambiguous from here,
+  // while "column 0 of the prompt's first row" is not.
+  const promptRows = promptRowCount();
+  process.stdout.write('\n'.repeat(promptRows));
+  readline.clearLine(process.stdout, 0);
+  readline.moveCursor(process.stdout, 0, -promptRows);
+  readline.cursorTo(process.stdout, 0);
   // Reset readline's own internal "how many rows did my last render take"
   // bookkeeping (rl.prevRows - an undocumented but stable, directly-
   // readable property; see node's lib/internal/readline/interface.js
@@ -1108,7 +1141,13 @@ async function sendAndPrintTurn(label, text, onReply) {
       // separator, so only one more newline (not two) is needed here to
       // leave exactly one blank row before a second-or-later piece.
       const separatorOrMarker = wroteMarker ? '\n' : turnMarker();
-      const fullPiece = piece.endsWith('\n') ? piece : `${piece}\n`;
+      // The very first piece's own first line sits right after turnMarker()
+      // itself, so only that one line stays unindented; every later piece
+      // starts on a fresh line of its own (following the blank-line
+      // separator above) and needs the same hanging indent as any other
+      // continuation line - see indentContinuation.
+      const indentedPiece = indentContinuation(piece, { indentFirstLine: wroteMarker });
+      const fullPiece = indentedPiece.endsWith('\n') ? indentedPiece : `${indentedPiece}\n`;
       recordHistory(separatorOrMarker + fullPiece);
       process.stdout.write(separatorOrMarker);
       wroteMarker = true;
@@ -1179,7 +1218,13 @@ async function sendAndPrintTurn(label, text, onReply) {
   const displayText = onReply(reply);
   const isEmpty = !(typeof displayText === 'string' && displayText.trim());
   const marker = stylingEnabled() && !isEmpty ? turnMarker() : '';
-  const body = isEmpty ? dim('companion: warning: backend returned an empty reply') : renderMarkdown(displayText);
+  // Same hanging-indent treatment as the streaming path's first piece
+  // (writeReplyPiece) - the whole reply prints as one block here, so its
+  // own first line sits right after the marker and only that one line
+  // stays unindented; see indentContinuation.
+  const body = isEmpty
+    ? dim('companion: warning: backend returned an empty reply')
+    : indentContinuation(renderMarkdown(displayText));
   const fullBody = `${marker}${body.endsWith('\n') ? body : `${body}\n`}`;
   recordHistory(fullBody);
   process.stdout.write(fullBody);
@@ -1462,14 +1507,25 @@ let scrollOffset = 0;
 const WHEEL_SCROLL_LINES = 3;
 
 // Leaves room for the box's own rows: a blank breathing-room line, the
-// rule, and however many physical rows the prompt itself currently needs
-// (see promptRowCount - normally 1, more once a long typed/pasted line has
-// wrapped). Recomputed on every call rather than assumed fixed, so a long
-// typed line correctly shrinks the space left for chat content instead of
-// the box's extra wrapped row silently overlapping it.
+// rule, however many physical rows the prompt itself currently needs (see
+// promptRowCount - normally 1, more once a long typed/pasted line has
+// wrapped), and one more blank breathing-room row below the prompt,
+// symmetric with the one above the rule (see drawBoxRaw's own reservation
+// of that below-row, right before it renders the prompt). Reserving it here
+// too, so redrawViewport's own padding math leaves the box's bottom pinned
+// one row higher than the terminal's actual last row, is what makes the
+// *fill-phase* draws (before the screen has genuinely filled with real
+// content) agree with drawBoxRaw's own steady-state reservation, rather
+// than the two disagreeing about where the box's bottom belongs.
+// clearBottomRows/reservedBottomRows deliberately keep counting only "the
+// rule plus the prompt" rows, since those are the rows at-and-above the
+// cursor's own row - the reserved row below the cursor is never part of
+// that upward count. Recomputed on every call rather than assumed fixed, so
+// a long typed line correctly shrinks the space left for chat content
+// instead of the box's extra wrapped row silently overlapping it.
 function currentVisibleRows() {
   const rows = process.stdout.rows || 24;
-  return Math.max(1, rows - 2 - promptRowCount());
+  return Math.max(1, rows - 3 - promptRowCount());
 }
 
 // Repaints the screen from historyBuffer at the current scrollOffset, sized

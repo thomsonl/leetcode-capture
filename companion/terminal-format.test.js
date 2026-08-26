@@ -145,6 +145,61 @@ test('turnMarker is a bullet, boxRule is a plain rule, when styling is on', asyn
   assert.ok(!rule.includes('•'), 'boxRule should not repeat the turn marker');
 });
 
+// --- indentContinuation (Claude Code CLI transcript-style hanging indent) --
+
+test('indentContinuation is a no-op when styling is off', async () => {
+  const out = await runInChild({
+    isTTY: false,
+    script: `
+      const { indentContinuation } = await import('./terminal-format.js');
+      console.log(JSON.stringify(indentContinuation('first\\nsecond\\nthird')));
+    `,
+  });
+  assert.match(out, /"first\\nsecond\\nthird"/);
+});
+
+test('indentContinuation indents every line but the first by turnMarker\'s own width', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: `
+      const { indentContinuation } = await import('./terminal-format.js');
+      console.log(JSON.stringify(indentContinuation('first line\\nsecond line\\nthird line')));
+    `,
+  });
+  const [text] = JSON.parse(`[${out.trim()}]`);
+  const lines = text.split('\n');
+  assert.equal(lines[0], 'first line', 'the first line stays flush - the marker itself occupies that column');
+  assert.equal(lines[1], '  second line', 'wrapped/continuation lines indent under where the marker\'s text starts');
+  assert.equal(lines[2], '  third line');
+});
+
+test('indentContinuation with indentFirstLine indents every line, including the first', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: `
+      const { indentContinuation } = await import('./terminal-format.js');
+      console.log(JSON.stringify(indentContinuation('first line\\nsecond line', { indentFirstLine: true })));
+    `,
+  });
+  const [text] = JSON.parse(`[${out.trim()}]`);
+  const lines = text.split('\n');
+  assert.equal(lines[0], '  first line', 'a second-or-later streamed piece has no marker of its own to sit flush against');
+  assert.equal(lines[1], '  second line');
+});
+
+test('indentContinuation leaves blank lines untouched (no trailing whitespace on a separator row)', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: `
+      const { indentContinuation } = await import('./terminal-format.js');
+      console.log(JSON.stringify(indentContinuation('first paragraph\\n\\nsecond paragraph')));
+    `,
+  });
+  const [text] = JSON.parse(`[${out.trim()}]`);
+  const lines = text.split('\n');
+  assert.equal(lines[1], '', 'a blank separator line between blocks must stay genuinely empty, not padded');
+});
+
 test('boxRule reflects a live terminal resize immediately - it recomputes width on every call', async () => {
   const out = await runInChild({
     isTTY: true,
