@@ -127,6 +127,24 @@ const VAULT_AUTO_SUMMARY = /^(1|true|yes)$/i.test(process.env.VAULT_AUTO_SUMMARY
 // Explicit "0"/"false"/"no" (case-insensitive) turns it off; anything else,
 // including unset, leaves it on.
 const AUTO_CLEAR_CONTEXT = !/^(0|false|no)$/i.test(process.env.COMPANION_AUTO_CLEAR_CONTEXT || '');
+
+// How many user+assistant turn-pairs LocalBackend.history keeps before
+// dropping the oldest ones - see LocalBackend.trimHistory for what this
+// fixes and why trimming (rather than a bigger num_ctx) is the portable
+// choice here. AUTO_CLEAR_CONTEXT above already resets history to nothing
+// on a problem switch; this is the additional bound *within* one still-
+// current problem's own back-and-forth, which AUTO_CLEAR_CONTEXT alone
+// doesn't touch. A whole number of turns, not a token/character budget -
+// simpler to reason about and tune, and already sufficient to keep resent
+// history bounded regardless of how large any individual capture is.
+// Defaults to 6 (6 full Run/Submit exchanges) - comfortably more than a
+// typical single-problem session needs, while still capping the worst case
+// long before it can exhaust a small local model's context window the way
+// unbounded growth did. 0 (or unset to a non-number) disables trimming
+// entirely, restoring the old unbounded behavior - not the default, since
+// that's exactly the failure mode this exists to prevent.
+const LOCAL_MAX_HISTORY_TURNS = Number(process.env.COMPANION_LOCAL_MAX_HISTORY_TURNS || 6);
+
 const { vaultPath: VAULT_PATH, algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER } = resolveVaultConfig();
 // Fail loudly at startup, not on the first Submit - a wrong or unset vault
 // path should never silently fabricate a new folder tree (see
@@ -161,14 +179,26 @@ On a Run capture, do not do the full Submit breakdown above - no approach descri
 
 Keep your tone warm and encouraging, like a good teaching assistant - not terse, not clinical.`;
 
-// Local-backend-only style addendum: two of Thomson's general writing-style
-// preferences (from his global agent instructions) that are actually about
-// what the model says out loud, unlike the rest of that file which is
-// engineering-workflow guidance that doesn't apply to a chat companion. The
-// Claude backend already inherits these independently from Thomson's real
-// global Claude preferences, so they're kept separate here rather than
-// folded into the shared TUTOR_SYSTEM_PROMPT above.
-const LOCAL_STYLE_ADDENDUM = `Two additional style rules for your responses:
+// Two of Thomson's general writing-style preferences (from his global agent
+// instructions, ~/.claude/CLAUDE.md) that are actually about what the model
+// says out loud, unlike the rest of that file, which is engineering-workflow
+// guidance (commit message conventions, CHANGELOG.md handling, and the like)
+// that has no bearing on a chat companion. Used by both backends - shared
+// rather than folded into TUTOR_SYSTEM_PROMPT above only because it's a
+// Thomson-specific preference, not an inherent property of the tutor persona
+// itself. This used to be LocalBackend-only, on the reasoning that
+// ClaudeBackend "already inherits these independently from Thomson's real
+// global Claude preferences" via the Agent SDK loading his user-level
+// settings/CLAUDE.md by default - true before the `settingSources: []`
+// isolation below (see ClaudeBackend.sendMessage's own comment), confirmed
+// live: an identical prompt reliably avoided an em dash with the SDK's old
+// default settings-loading, then used one once `settingSources: []` was
+// added. Rather than leave that isolation in place and lose the preference,
+// both backends now say so explicitly - cheap (a couple dozen tokens) next
+// to the isolation's own ~98% reduction, and doesn't depend on inheriting
+// the rest of that file's unrelated engineering guidance, which was never
+// meant for this persona in the first place.
+const STYLE_ADDENDUM = `Two additional style rules for your responses:
 - Never use an em dash ("—"). Use a plain dash ("-") instead.
 - Never use emojis.`;
 
@@ -228,7 +258,48 @@ class ClaudeBackend {
     // acting as a coding agent over this repo, so the Claude Code framing
     // (tool-use conventions, CLI-oriented tone) would only get in the way of
     // the tutor persona.
-    const options = { cwd: SCRATCH_DIR, systemPrompt: TUTOR_SYSTEM_PROMPT };
+    //
+    // systemPrompt only controls the system-prompt *text* though - it says
+    // nothing about which tools get defined in the model's context or which
+    // filesystem settings (project/user/local CLAUDE.md, .mcp.json, plugins)
+    // get loaded, both of which default to "everything available" when left
+    // unset (see sdk.d.ts's `tools`/`mcpServers`/`settingSources`). Measured
+    // live via a direct SDK call matching this shape (custom cwd, this same
+    // plain-string systemPrompt, nothing else set): the resulting turn
+    // carried ~12,500 tokens of context that had nothing to do with the
+    // tutor conversation at all - the SDK's ~25 built-in tools (Task, Bash,
+    // Edit, Write, Read, and the rest) plus, in an environment with any MCP
+    // connectors configured (this one had Gmail/Calendar/Drive), every one
+    // of *their* tool definitions too - none of which this companion ever
+    // calls. `tools: []` is the specific fix for the built-in set - note
+    // `allowedTools: []` looked like the obvious option but does NOT do
+    // this: per sdk.d.ts it only skips the permission prompt for listed
+    // tools, it doesn't remove anything from context, confirmed live (still
+    // ~10,800 tokens with `allowedTools: []` alone, tool list unchanged).
+    // `mcpServers: {}` plus `strictMcpConfig: true` is the equivalent fix for
+    // MCP-server tool definitions - `strictMcpConfig` is required, not just
+    // `mcpServers: {}` alone, since without it the SDK still merges in
+    // whatever a user's own project/user config declares. `settingSources:
+    // []` additionally opts out of loading any CLAUDE.md/AGENTS.md at all
+    // (filesystem settings default to "load everything" too, independent of
+    // the systemPrompt override above) - defense in depth on top of `cwd`
+    // already pointing at SCRATCH_DIR, a dedicated non-project directory, so
+    // this repo's own 53KB CLAUDE.md was never actually reachable from here
+    // in practice (confirmed: no CLAUDE.md exists anywhere in SCRATCH_DIR's
+    // own directory-ancestor chain either) - but making the isolation
+    // explicit here means that stays true regardless of where SCRATCH_DIR
+    // ever points. With all four set, the same measured call dropped to 197
+    // tokens total, zero cache overhead - a ~98% reduction - confirming the
+    // ~12,500 tokens above really was unused tool/settings scaffolding, not
+    // anything the tutor persona needed.
+    const options = {
+      cwd: SCRATCH_DIR,
+      systemPrompt: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}`,
+      tools: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      settingSources: [],
+    };
     if (this.model) options.model = this.model;
     if (this.sessionId) options.resume = this.sessionId;
     // Only opt into partial-message events when a caller actually wants
@@ -324,7 +395,7 @@ function resolveReplyText({ content, reasoning, finishReason }) {
 }
 
 class LocalBackend {
-  constructor({ baseUrl, model, apiKey }) {
+  constructor({ baseUrl, model, apiKey, maxHistoryTurns }) {
     if (!model) {
       throw new Error(
         'COMPANION_MODEL is required for COMPANION_BACKEND=local (e.g. COMPANION_MODEL=llama3.2)'
@@ -333,12 +404,16 @@ class LocalBackend {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.model = model;
     this.apiKey = apiKey;
+    this.maxHistoryTurns = maxHistoryTurns;
     // Standard OpenAI chat-completions shape: a leading `role: 'system'`
     // message, resent in full on every turn along with the rest of history.
-    // Local-backend-only: append the style addendum (see LOCAL_STYLE_ADDENDUM).
-    // Kept on its own so resetContext (below) can restore exactly this,
-    // rather than re-deriving it or leaving stale history entries behind.
-    this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${LOCAL_STYLE_ADDENDUM}` };
+    // Includes the shared style addendum (see STYLE_ADDENDUM) - this backend
+    // never inherits it any other way, unlike ClaudeBackend which has its own
+    // ambient settings it could (and, before this file's isolation fix, did)
+    // ride along on. Kept on its own so resetContext (below) can restore
+    // exactly this, rather than re-deriving it or leaving stale history
+    // entries behind.
+    this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}` };
     this.history = [this.systemMessage];
   }
 
@@ -403,7 +478,38 @@ class LocalBackend {
       throw new Error('local backend returned an empty reply (no content or reasoning in the response)');
     }
     this.history.push({ role: 'assistant', content: replyText });
+    // Only runs once this turn is fully resolved and paired (the user
+    // message pushed above, now matched by this assistant reply) - see
+    // trimHistory's own comment for why that matters.
+    this.trimHistory();
     return replyText;
+  }
+
+  // Drops the oldest complete user+assistant pairs once history holds more
+  // than maxHistoryTurns of them, so LocalBackend.history - resent in full on
+  // every turn (see the class comment above sendMessage) - stays bounded
+  // across a long single-problem conversation instead of growing without
+  // limit turn over turn, which is what actually exhausts a small local
+  // model's context window (see resolveReplyText's own comment for the live-
+  // confirmed failure this causes). This is deliberately a *different* bound
+  // than COMPANION_AUTO_CLEAR_CONTEXT's full reset on a problem switch (see
+  // companion.js's "automatic context reset on problem switch" section): that
+  // one clears everything the instant the problem changes, this one caps how
+  // much of one still-current problem's own back-and-forth stays resent.
+  //
+  // Only ever called right after sendMessage pushes a successful assistant
+  // reply (never mid-turn, and never on an error path - every error path
+  // above pops the dangling user message first instead), so this.history is
+  // always exactly [system, user, assistant, user, assistant, ...] when it
+  // runs - splicing out the oldest pair (indices 1 and 2, right after the
+  // system message) can never cut a turn in half or separate a capture's own
+  // code from its own reply, since a "pair" here is always a whole exchange.
+  trimHistory() {
+    if (!this.maxHistoryTurns || this.maxHistoryTurns <= 0) return; // 0/unset: unbounded, trimming off
+    const keepMessages = 1 + this.maxHistoryTurns * 2; // system + N whole pairs
+    while (this.history.length > keepMessages) {
+      this.history.splice(1, 2);
+    }
   }
 
   // Reads an OpenAI-compatible chat-completions SSE stream (one `data:
@@ -460,7 +566,14 @@ class LocalBackend {
 
 function makeBackend() {
   if (BACKEND === 'claude') return new ClaudeBackend({ model: MODEL });
-  if (BACKEND === 'local') return new LocalBackend({ baseUrl: BASE_URL, model: MODEL, apiKey: API_KEY });
+  if (BACKEND === 'local') {
+    return new LocalBackend({
+      baseUrl: BASE_URL,
+      model: MODEL,
+      apiKey: API_KEY,
+      maxHistoryTurns: LOCAL_MAX_HISTORY_TURNS,
+    });
+  }
   throw new Error(`unknown COMPANION_BACKEND "${BACKEND}" (expected "claude" or "local")`);
 }
 
