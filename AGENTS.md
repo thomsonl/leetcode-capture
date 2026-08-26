@@ -491,6 +491,54 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Ollama backend with an oversized capture reproduces the original leak and confirms the fix, and a
   normal-sized capture's clean reply is unaffected.
 
+- Two padding/spacing changes matched against a Claude Code CLI transcript's own look: a hanging indent
+  for wrapped reply lines, and a blank breathing-room row below the input box's prompt (symmetric with
+  the existing one above the rule). Both needed more than a formula change to actually hold up under
+  live terminal rendering - see the PR that introduced them for a `tmux capture-pane` comparison.
+  - Hanging indent: `terminal-format.js`'s `indentContinuation(text, { indentFirstLine })` indents every
+    line after the first by `TURN_MARKER_WIDTH` (2 - `turnMarker()`'s bullet-plus-space) spaces, so a
+    reply's wrapped/continuation lines align under where the text starts after the bullet instead of
+    wrapping back to column 0. `companion.js` applies it in both the streaming path (`writeReplyPiece` -
+    `indentFirstLine: wroteMarker`, since only the very first piece's own first line sits flush against
+    the marker) and the non-streaming path (whole reply, `indentFirstLine` default `false`).
+    `configureMarkedTerminal()`'s registered width is narrowed by that same `TURN_MARKER_WIDTH` so an
+    indented line still fits the terminal instead of overflowing past it by 2 columns - safe to apply
+    unconditionally there since `renderMarkdown`/`createMarkdownStreamer` are only ever used for replies,
+    which always carry this indent. Blank lines are left un-padded (no trailing whitespace on what reads
+    as an empty separator row).
+  - Blank row below the prompt: `currentVisibleRows()` reserves one more row (`rows - 3 -
+    promptRowCount()`, not `- 2 -`) so the box's bottom pins one row higher than the terminal's actual
+    last row. Reserving that extra row in the row-count math alone is *not* sufficient on its own -
+    confirmed live (and caught first by `box-padding.test.js`'s own steady-state test before it ever
+    reached a real terminal): once the screen has genuinely filled and natural terminal scrolling takes
+    over (`screenFilledToBox`), any content overflow always re-pins the last-written row to the
+    terminal's true last row regardless of earlier row-count bookkeeping, silently undoing the
+    reservation on every subsequent incremental redraw. `drawBoxRaw()` now actively re-reserves the row
+    on *every* call: right after writing the blank-line-plus-rule and before rendering the prompt
+    (`rl.prompt(true)`) - while the cursor sits at an unambiguous position, column 0 of the prompt's own
+    first row - it writes `promptRowCount()` plain `'\n'` characters (forcing a scroll if already at the
+    terminal's bottom margin; a relative cursor-down move, e.g. `readline.moveCursor` with positive `dy`,
+    does *not* scroll, it just clamps uselessly at the last row - confirmed via `virtual-terminal.js`'s
+    own CSI-`B` handling, which explicitly clamps rather than scrolls), clears the resulting row
+    (guarding against stale content from a taller previous draw at that spot, e.g. after a resize), then
+    moves back up the same count and `cursorTo(0)`. Doing this *before* `rl.prompt(true)` rather than
+    after (relative to wherever it leaves the cursor) sidesteps having to know precisely where within a
+    multi-row wrapped prompt the cursor ends up (e.g. mid-line editing after arrowing left) - genuinely
+    ambiguous from there, unlike the prompt's known first-row starting position.
+    `reservedBottomRows()`/`clearBottomRows()` deliberately keep counting only "the rule plus the
+    prompt" rows (at and above the cursor) - the reserved row sits below the cursor and was never part
+    of that upward-clearing count, so those two didn't need to change. A long typed/pasted line that
+    wraps the prompt past 1 row can still eat into (or past) this reserved gap - readline manages its
+    own multi-row prompt rendering entirely independently of `drawBoxRaw` on every keystroke (see the
+    `promptRowCount`/`prevRows` bullets above), so there's no hook to re-run the reservation dance
+    mid-typing; this is graceful degradation, not a regression, and the gap reappears on the next real
+    `drawBoxRaw` call (e.g. once Enter shrinks the prompt back down) - confirmed live.
+  - `box-padding.test.js`'s two tests that used to do a raw-byte-line-split (`finalScreenLines`, since
+    removed) now use `virtual-terminal.js`'s `replayToScreen` instead, like the file's other tests
+    already did: `drawBoxRaw`'s new reservation maneuver writes real cursor-repositioning bytes during
+    the fill-phase full repaint too (not just the steady-state incremental path), which a naive line
+    split can't interpret correctly.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

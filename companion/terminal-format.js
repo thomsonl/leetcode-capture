@@ -39,6 +39,15 @@ const c = new Chalk({ level: enabled ? 1 : 0 });
 // too, for a narrower-than-comfortable window.
 const COMFORTABLE_WIDTH = 80;
 
+// Visual width of turnMarker()'s own text ('•' plus its one trailing space -
+// see turnMarker below), ignoring ANSI codes: the bullet is a single-column
+// glyph in a monospace terminal. This is the hanging-indent column every
+// wrapped/continuation line of a turnMarker-led reply aligns under (see
+// indentContinuation below), and also how much narrower marked-terminal's
+// own reflow width needs to be so an indented line still fits the terminal
+// instead of running TURN_MARKER_WIDTH columns past it.
+const TURN_MARKER_WIDTH = 2;
+
 function contentWidth() {
   return Math.min(process.stdout.columns || 80, COMFORTABLE_WIDTH);
 }
@@ -51,7 +60,15 @@ function contentWidth() {
 function configureMarkedTerminal() {
   marked.use(
     markedTerminal({
-      width: contentWidth(),
+      // Reserves TURN_MARKER_WIDTH columns for the hanging indent every
+      // rendered reply gets on top of this (renderMarkdown/
+      // createMarkdownStreamer are only ever used for backend replies,
+      // which always carry turnMarker()'s indent - see companion.js's
+      // sendAndPrintTurn) - without this, a paragraph reflowed right up to
+      // contentWidth() would then get indented past it once
+      // indentContinuation runs, overflowing the terminal's actual column
+      // count instead of staying within the comfortable measure.
+      width: contentWidth() - TURN_MARKER_WIDTH,
       // Reflow (word-wrap) prose text to the width above rather than
       // leaving lines exactly as the model generated them - the width is
       // deliberately narrower than the terminal now, so without this,
@@ -99,6 +116,29 @@ export function promptString() {
 export function turnMarker() {
   if (!enabled) return '';
   return `${c.magentaBright('•')} `;
+}
+
+// Indents every line of `text` except its very first by TURN_MARKER_WIDTH
+// spaces, so a multi-line turnMarker-led reply's wrapped/continuation lines
+// align under where the text starts after the bullet - a hanging indent -
+// rather than wrapping back to column 0. Matches a Claude Code CLI
+// transcript's own look (see companion/AGENTS.md's "message padding" note).
+// Blank lines are left untouched rather than padded with trailing
+// whitespace, so a blank separator row between blocks still reads as
+// genuinely empty. `indentFirstLine: true` indents the first line too - for
+// a streamed reply's second-or-later piece (see companion.js's
+// writeReplyPiece), which starts on its own fresh line that still needs the
+// same indent as every other continuation line, unlike the very first piece
+// where turnMarker() itself already occupies that column. A no-op when
+// styling is off, same convention as the rest of this module: there is no
+// marker or indent to align under over a pipe.
+export function indentContinuation(text, { indentFirstLine = false } = {}) {
+  if (!enabled) return text;
+  const pad = ' '.repeat(TURN_MARKER_WIDTH);
+  return text
+    .split('\n')
+    .map((line, i) => ((i === 0 && !indentFirstLine) || line === '' ? line : pad + line))
+    .join('\n');
 }
 
 // A thin rule marking off the pinned input box from the conversation above

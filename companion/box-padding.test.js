@@ -50,11 +50,19 @@
 // the one thing it can't verify is how a real terminal *renders* the
 // resulting escape codes - see companion/AGENTS.md for why the rest of this
 // feature area's verification bar is a real pty/tmux, not `node --test`.
-// What it can verify directly, with no terminal needed: the padding/repaint
-// writes here are literal '\n' and text characters (a screen clear plus a
-// full rewrite, not an incremental cursor-position edit), so simply
-// counting/ordering lines in the raw captured output already proves whether
-// the padding math and content ordering are right.
+//
+// Every test here replays its raw captured output through
+// virtual-terminal.js's replayToScreen (the same technique
+// box-corruption.test.js uses) rather than a plain text/line search over
+// the raw bytes: drawBoxRaw's own reservation of the blank breathing-room
+// row below the prompt (see companion.js) is a real cursor-repositioning
+// maneuver - write past the bottom to force a scroll if needed, then move
+// back up - even during a full repaint, so a naive raw-byte-line-split
+// would see those bytes as literal extra blank lines instead of the "move
+// down, clear, move back up" a real terminal correctly interprets them as.
+// Only replaying the actual escape codes against a real cursor/grid gives
+// the true rendered layout, for every test in this file, not just the ones
+// that hit the incremental redraw path.
 //
 // Run with: node --test box-padding.test.js
 
@@ -70,29 +78,6 @@ import { replayToScreen } from './virtual-terminal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
-// The full-screen clear + cursor-home sequence redrawViewport (see
-// companion.js) writes at the start of every repaint - not an SGR color
-// code, so ANSI_RE above doesn't touch it. A real terminal replaces
-// whatever it was showing the instant this arrives; this raw byte capture
-// doesn't, so anything written *before* the last occurrence of this
-// sequence is stale content a real terminal would already have discarded
-// (see finalScreenLines below).
-const CLEAR_RE = /\x1b\[2J\x1b\[H/g;
-
-// Returns the lines of only the *most recent* full-screen repaint in a raw
-// captured byte stream, ANSI-color-stripped - i.e. what a real terminal
-// would actually be showing right now, not the full history of every write
-// this test happened to capture along the way. Startup alone already
-// triggers one such repaint (drawBox's own fill-phase branch - see
-// companion.js), which duplicates the startup banner's own direct
-// console.log writes earlier in the same raw capture; without this, a naive
-// line search over the whole raw stream can match against that stale,
-// already-superseded first copy instead of the real final layout.
-function finalScreenLines(raw) {
-  const clears = raw.split(CLEAR_RE);
-  const finalScreen = clears[clears.length - 1];
-  return finalScreen.replace(ANSI_RE, '').split('\n');
-}
 
 // Spawns companion.js itself (via a tiny wrapper that fakes isTTY/rows/
 // columns before dynamically importing it - a static `import` would be
@@ -280,9 +265,18 @@ async function runCompanionWithCapturesAndFakeTty({ rows, columns, captureCount,
 
 test('the box pins to the terminal window\'s actual last row on a tall window with only short startup content', async () => {
   const rows = 30;
-  const out = await runCompanionWithFakeTty({ rows, columns: 100 });
+  const columns = 100;
+  const out = await runCompanionWithFakeTty({ rows, columns });
 
-  const lines = finalScreenLines(out);
+  // replayToScreen, not finalScreenLines: drawBoxRaw now reserves its own
+  // blank row below the prompt via a down-then-up cursor maneuver (see
+  // companion.js's drawBoxRaw) even during the fill-phase full repaint, so
+  // a naive raw-byte-line-split would see that maneuver's own extra bytes
+  // as literal blank lines between the rule and the prompt instead of the
+  // "move down, clear, move back up" a real terminal would correctly
+  // interpret it as. Only replaying the actual escape codes against a real
+  // cursor/grid gives the true rendered layout.
+  const lines = replayToScreen(out, { cols: columns, rows });
   // A leading space is boxRule's own one-space left margin (see
   // terminal-format.js's boxRule) - not part of the padding math this test
   // is checking.
@@ -290,22 +284,31 @@ test('the box pins to the terminal window\'s actual last row on a tall window wi
   assert.notEqual(ruleIndex, -1, `expected to find the box's rule line, got: ${JSON.stringify(lines.join('\n'))}`);
 
   // The core invariant this fixes: the rule must sit on the terminal's
-  // actual second-to-last row (0-indexed rows-2), with the prompt right
-  // after it on the last row - not wherever the cursor happened to be after
-  // a handful of startup lines, floating mid-screen with blank space left
-  // *underneath* it instead of above it.
+  // actual third-to-last row (0-indexed rows-3), with the prompt right
+  // after it, and one more guaranteed-blank row below that at the terminal's
+  // true last row (rows-1 - see companion.js's currentVisibleRows/
+  // drawBoxRaw for why that row needs no explicit draw of its own) - not
+  // wherever the cursor happened to be after a handful of startup lines,
+  // floating mid-screen with blank space left *underneath* it instead of
+  // above it, and not flush against the terminal's bottom edge with no
+  // breathing room at all.
   assert.equal(
     ruleIndex,
-    rows - 2,
-    `expected the rule at row ${rows - 2} (0-indexed) so it lands on the terminal's actual last-but-one row, got row ${ruleIndex} - box is floating mid-screen instead of pinned to the bottom`
+    rows - 3,
+    `expected the rule at row ${rows - 3} (0-indexed) so it lands on the terminal's actual third-to-last row (leaving one blank row below the prompt), got row ${ruleIndex} - box is floating mid-screen instead of pinned to the bottom`
   );
   assert.ok(
     lines[ruleIndex + 1].includes('>'),
-    `expected the prompt to immediately follow the rule on the terminal's actual last row, got: ${JSON.stringify(lines[ruleIndex + 1])}`
+    `expected the prompt to immediately follow the rule, got: ${JSON.stringify(lines[ruleIndex + 1])}`
+  );
+  assert.equal(
+    lines[rows - 1],
+    '',
+    `expected a guaranteed blank breathing-room row below the prompt at the terminal's true last row, got: ${JSON.stringify(lines[rows - 1])}`
   );
 
   // Sanity check that this only passed because real padding happened, not
-  // because the startup banner coincidentally already had rows-2 lines: the
+  // because the startup banner coincidentally already had rows-3 lines: the
   // banner is a handful of short, fixed status lines (see companion.js's
   // startup section), nowhere near enough to fill a 30-row window on its
   // own, so the line right before the rule must be blank filler.
@@ -335,10 +338,14 @@ test('a short conversation in a tall window grows from the top, keeping earlier 
   // being available on screen. Confirmed live over several real captures in
   // a tmux pane (see the PR that introduced this test).
   const rows = 40;
+  const columns = 100;
   const replyText = 'Got it, standing by.';
-  const out = await runCompanionWithCapturesAndFakeTty({ rows, columns: 100, captureCount: 3, replyText });
+  const out = await runCompanionWithCapturesAndFakeTty({ rows, columns, captureCount: 3, replyText });
 
-  const lines = finalScreenLines(out);
+  // replayToScreen, not finalScreenLines - see the first test in this file
+  // for why: drawBoxRaw's own below-the-prompt reservation maneuver writes
+  // cursor-repositioning bytes a naive raw-byte-line-split can't interpret.
+  const lines = replayToScreen(out, { cols: columns, rows });
   const screenText = lines.join('\n');
 
   // The startup banner must still be visible - the exact thing the bug
@@ -369,16 +376,20 @@ test('a short conversation in a tall window grows from the top, keeping earlier 
   assert.ok(lines[ruleIndex + 1].includes('>'), 'expected the prompt directly below the rule');
 });
 
-test('the box keeps a guaranteed blank breathing-room line above its rule even once the screen has genuinely filled', async () => {
+test('the box keeps a guaranteed blank breathing-room line above its rule and below its prompt even once the screen has genuinely filled', async () => {
   // Issue 2 (see this file's header and terminal-format.js's boxRule): the
-  // box used to read as cramped against whatever was directly above it.
-  // drawBoxRaw now always writes one blank line before the rule, so there's
-  // real breathing room even once natural terminal scrolling has taken
-  // over (screenFilledToBox latched true) and there's no leftover padding
-  // left to coincidentally provide it. A short window with enough captures
-  // to genuinely fill it is what forces that latched, no-more-padding
-  // state - this deliberately does *not* rely on the startup-padding case
-  // the first test in this file already covers.
+  // box used to read as cramped against whatever was directly above it, and
+  // sat flush against the terminal's actual bottom edge with nothing below
+  // it either. drawBoxRaw now always writes one blank line before the rule,
+  // and currentVisibleRows reserves one more row below the prompt that's
+  // never written into (see companion.js's drawBoxRaw for why that one
+  // needs no explicit draw), so there's real breathing room on both sides
+  // even once natural terminal scrolling has taken over (screenFilledToBox
+  // latched true) and there's no leftover padding left to coincidentally
+  // provide it. A short window with enough captures to genuinely fill it is
+  // what forces that latched, no-more-padding state - this deliberately
+  // does *not* rely on the startup-padding case the first test in this file
+  // already covers.
   //
   // Unlike the other tests in this file, this one needs `replayToScreen`
   // (virtual-terminal.js), not `finalScreenLines`: once the screen has
@@ -408,4 +419,14 @@ test('the box keeps a guaranteed blank breathing-room line above its rule even o
   // rule starting flush at column 0 while the prompt sits one column in.
   assert.match(lines[ruleIndex], /^ ─/, 'expected the rule to carry its one-space left margin');
   assert.match(lines[ruleIndex + 1], /^ >/, 'expected the prompt to carry the same one-space left margin');
+
+  // The prompt must not sit on the terminal's actual last row any more -
+  // one more row below it (the terminal's true last row) stays reserved and
+  // blank, symmetric with the blank line above the rule.
+  assert.equal(ruleIndex, rows - 3, `expected the rule pinned to row ${rows - 3} (0-indexed), leaving one blank row below the prompt, got row ${ruleIndex}`);
+  assert.equal(
+    lines[rows - 1],
+    '',
+    `expected a guaranteed blank breathing-room row below the prompt at the terminal's true last row even with the screen genuinely full, got:\n${lines.join('\n')}`
+  );
 });
