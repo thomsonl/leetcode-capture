@@ -653,6 +653,34 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   capture having gotten smaller - verified the repro test actually fails without the fix (reverted
   the `apiStyle` branch to always use `requestOpenAI` and confirmed the native-mode test fails).
 
+- A *tight* bulleted/numbered list item (no blank line between bullets - what an LLM's own list
+  output almost always looks like) used to skip `reflowText` entirely: marked-terminal's
+  `listitem()` forwards to marked's own `Parser.parse(item.tokens, !!item.loose)`, and marked only
+  routes a `'text'`-type token (what a tight item's tokens are) through paragraph rendering - and
+  therefore through `reflowText` - when that `top` flag is true; a *loose* item's tokens are
+  already `'paragraph'`-type, which renders (and reflows) through that path regardless of `top`. So
+  a tight bullet's text came out completely unwrapped, and the only line break on screen was the
+  raw terminal's own hardware auto-wrap, which could land mid-word with zero hanging indent - a
+  pre-existing gap that PR #36 (uncapped terminal width) turned from a rare edge case into an
+  everyday occurrence, since an ordinary one-sentence bullet exceeds 80-120 characters far more
+  often than 250-320. Fixed in `terminal-format.js` by patching `TerminalRenderer.prototype.listitem`
+  (marked-terminal's default export) once at import time to force every item to look "loose" to
+  marked's Parser - confirmed this doesn't change what's rendered for an already-loose item or for a
+  tight task/checkbox item, and makes a tight list render byte-for-byte identically to the same
+  content as a loose list (which already reflowed correctly). A second, related bug found live in
+  the same pass: marked-terminal's own list rendering adds a further indent on top of
+  `reflowText`'s wrapped output (a tab-stop plus the bullet marker's own width -
+  `Renderer.prototype.list`'s `indentLines`/`bulletPointLines`) that isn't subtracted from the
+  configured reflow `width` the way `TURN_MARKER_WIDTH` already is, so a list item's continuation
+  line could still run past the terminal's actual width and hard-break mid-word once that extra
+  indent landed on top of an already maximally-reflowed line - confirmed live in a real 260-column
+  `tmux` pane (a hyphenated word, "off-by-one", split into "off-by" / "-one"). Fixed by also
+  subtracting `LIST_INDENT_OVERHEAD` (6: marked-terminal's default tab of 4 plus its 2-column
+  bullet marker) from the global reflow width; covers one level of list nesting only (the common
+  case), not arbitrarily nested lists. `terminal-format.test.js` has the regression test (a long
+  single-sentence bullet in a tight list, wrapped at a wide terminal width, compared byte-for-byte
+  against the same content as a loose list) - confirmed it actually fails without the fix.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

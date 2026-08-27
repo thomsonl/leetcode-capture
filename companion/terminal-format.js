@@ -18,7 +18,43 @@
 
 import { Chalk } from 'chalk';
 import { marked } from 'marked';
-import { markedTerminal } from 'marked-terminal';
+import TerminalRenderer, { markedTerminal } from 'marked-terminal';
+
+// marked-terminal's own listitem() only reflow-wraps a *loose* list item
+// (one with a blank line between bullets - marked hands it 'paragraph'-type
+// tokens): it forwards to marked's own Parser.parse(item.tokens,
+// !!item.loose), and marked's Parser only routes a 'text'-type token
+// through paragraph rendering - and therefore through reflowText - when
+// that `top` flag is true (see marked's Parser.prototype.parse's "text"
+// case). A *tight* item (the common case - no blank line between bullets,
+// which is what an LLM's own list output almost always looks like) carries
+// plain 'text' tokens instead, so with top=false its text comes out
+// completely unwrapped; whatever line break then appears on screen is only
+// the raw terminal's own hardware auto-wrap-at-column-N, which can land
+// mid-word with zero hanging indent - confirmed live once PR #36 removed
+// the old fixed-width cap and made a long single-sentence bullet an
+// everyday occurrence rather than a rare edge case (see companion/AGENTS.md
+// and the PR that added this fix for the live repro).
+//
+// Patched once here, directly on marked-terminal's shared
+// TerminalRenderer.prototype (rather than inside configureMarkedTerminal
+// below, which re-registers on every terminal resize - wrapping listitem()
+// again on every one of those would stack redundant wrappers), by forcing
+// every item to look "loose" to marked's Parser. Confirmed this doesn't
+// change what's rendered for an already-loose item (identical either way)
+// or for a tight *task*/checkbox item (whose tokens[0] is 'text' rather
+// than the 'paragraph' the loose branch expects, so it falls through to the
+// same unshift-a-checkbox-token behavior either way) - every other item
+// just takes the same parser.parse(item.tokens, true) call a genuinely
+// loose item's text already took, which is what actually turns reflowText
+// on for it.
+const originalListitem = TerminalRenderer.prototype.listitem;
+TerminalRenderer.prototype.listitem = function (item) {
+  if (item && typeof item === 'object' && !item.loose) {
+    item = { ...item, loose: true };
+  }
+  return originalListitem.call(this, item);
+};
 
 export function stylingEnabled(stream = process.stdout) {
   return Boolean(stream && stream.isTTY) && !process.env.NO_COLOR;
@@ -40,6 +76,33 @@ const c = new Chalk({ level: enabled ? 1 : 0 });
 // own reflow width needs to be so an indented line still fits the terminal
 // instead of running TURN_MARKER_WIDTH columns past it.
 const TURN_MARKER_WIDTH = 2;
+
+// marked-terminal's own list rendering adds a further indent on top of
+// whatever reflowText already wrapped a list item's text to: a tab-stop
+// (marked-terminal's own default `tab` option, left unset here so it's 4)
+// plus the bullet marker's own width (its internal BULLET_POINT constant,
+// '* ' - 2 columns), applied to every line of a list via
+// indentLines/bulletPointLines *after* reflow already ran - see
+// marked-terminal's Renderer.prototype.list. Unlike TURN_MARKER_WIDTH
+// above, neither of those is subtracted from the width reflowText wraps
+// to, so a list item's own continuation line could still run past
+// contentWidth() once that indent lands on top of an already
+// maximally-reflowed line - confirmed live in a real 260-column tmux pane:
+// a hyphenated word ("off-by-one", which reflowText correctly never
+// splits internally - it isn't whitespace) landed exactly on that
+// unaccounted overhang and got hard-split by the terminal's own hardware
+// wrap instead, the exact same mid-word-break symptom this file's list-
+// item reflow fix (below) exists to prevent. Covers exactly one level of
+// list nesting - the common case an LLM reply actually produces; a list
+// nested inside a list item could still overflow by a further
+// LIST_INDENT_OVERHEAD per extra nesting level, not accounted for here as
+// disproportionate to the reported bug. Subtracted from the *global*
+// reflow width (which also governs paragraphs, which don't need it)
+// rather than only for list rendering specifically - marked-terminal
+// doesn't expose a per-element-type width, and paragraphs losing a few
+// columns of a terminal that's often 200+ wide is a non-issue next to a
+// list item actually overflowing and hard-breaking mid-word.
+const LIST_INDENT_OVERHEAD = 6; // marked-terminal's default tab (4) + BULLET_POINT width (2)
 
 // The box rule and prose wrap track the real terminal width exactly, with
 // no upper bound - this used to cap at a fixed ~80 columns (later raised to
@@ -71,8 +134,10 @@ function configureMarkedTerminal() {
       // sendAndPrintTurn) - without this, a paragraph reflowed right up to
       // contentWidth() would then get indented past it once
       // indentContinuation runs, overflowing the terminal's actual column
-      // count instead of staying within the terminal's own width.
-      width: contentWidth() - TURN_MARKER_WIDTH,
+      // count instead of staying within the terminal's own width. Also
+      // reserves LIST_INDENT_OVERHEAD (see above) for the further indent
+      // list rendering adds on top of that.
+      width: contentWidth() - TURN_MARKER_WIDTH - LIST_INDENT_OVERHEAD,
       // Reflow (word-wrap) prose text to the width above rather than
       // leaving lines exactly as the model generated them - the width
       // above already matches the terminal's own edge (minus the hanging
