@@ -109,8 +109,42 @@ if (process.stdout.isTTY) {
 
 const BACKEND = process.env.COMPANION_BACKEND || 'claude';
 const MODEL = process.env.COMPANION_MODEL || null;
-const BASE_URL = process.env.COMPANION_BASE_URL || 'http://localhost:11434/v1';
+// Ollama's own default OpenAI-compat address - also used below to decide
+// whether COMPANION_LOCAL_API's "auto" default should prefer Ollama's native
+// chat API (see the LOCAL_API/LOCAL_NUM_CTX comment).
+const DEFAULT_BASE_URL = 'http://localhost:11434/v1';
+const BASE_URL = process.env.COMPANION_BASE_URL || DEFAULT_BASE_URL;
 const API_KEY = process.env.COMPANION_API_KEY || null;
+
+// Which HTTP API LocalBackend actually speaks: 'openai' (the standard
+// /v1/chat/completions shape, the only thing any non-Ollama OpenAI-compatible
+// server understands) or 'native' (Ollama's own /api/chat, which - unlike the
+// compat endpoint - actually honors a `num_ctx` option; see LOCAL_NUM_CTX and
+// LocalBackend's class comment for why that matters). 'auto' (the default)
+// picks 'native' only when BASE_URL is still Ollama's own out-of-the-box
+// default above - i.e. nothing has pointed this companion at some other
+// server - and 'openai' otherwise, so anyone who has set COMPANION_BASE_URL
+// to a different, genuinely OpenAI-compatible server keeps working exactly
+// as before with zero behavior change. Explicit "openai"/"native" (case-
+// insensitive) always overrides the heuristic.
+const LOCAL_API_RAW = (process.env.COMPANION_LOCAL_API || 'auto').toLowerCase();
+const LOCAL_API =
+  LOCAL_API_RAW === 'openai' || LOCAL_API_RAW === 'native'
+    ? LOCAL_API_RAW
+    : BASE_URL === DEFAULT_BASE_URL
+      ? 'native'
+      : 'openai';
+
+// Context window (in tokens) requested from Ollama's native /api/chat via
+// `options.num_ctx` - only used when LOCAL_API resolves to 'native'; the
+// OpenAI-compat endpoint ignores this entirely (see LocalBackend's class
+// comment). 8192 is double the 4096 this project's configured Ollama model
+// (gemma4:26b) actually runs with by default, and was confirmed live to turn
+// a real single-capture failure (a normal ~150-line solution plus its problem
+// description, no prior history) into a normal completed reply with the
+// exact same input - raise it further if an even larger real capture still
+// gets cut off.
+const LOCAL_NUM_CTX = Number(process.env.COMPANION_LOCAL_NUM_CTX || 8192);
 
 // Off by default: a portable checkout of this repo for someone other than
 // Thomson won't have this vault's Study/Algorithms structure, or even use
@@ -380,7 +414,18 @@ class ClaudeBackend {
 // the same "companion: error talking to backend" path as any other backend
 // failure - so the failure is visible instead of silently masquerading as a
 // real tutoring reply.
-function resolveReplyText({ content, reasoning, finishReason }) {
+//
+// This also fires on the very first turn of a brand-new conversation, with
+// no accumulated history at all: one capture's own content (system prompt +
+// problem description + submitted code) can by itself already exceed a
+// small model's context window - a genuinely different failure from the
+// multi-turn growth `trimHistory` guards against, and confirmed live to
+// happen with a perfectly normal-sized real submission (a description plus a
+// ~150-line solution), not just a synthetic worst case. See LocalBackend's
+// class comment for the actual fix (a bigger real context window via
+// Ollama's native chat API) - `advice` lets the caller phrase this error
+// according to which API path is actually in play, since the fix differs.
+function resolveReplyText({ content, reasoning, finishReason, advice }) {
   const trimmedContent = content && content.trim();
   if (trimmedContent) return trimmedContent;
   const trimmedReasoning = reasoning && reasoning.trim();
@@ -388,14 +433,56 @@ function resolveReplyText({ content, reasoning, finishReason }) {
     throw new Error(
       'local backend reply was cut off before finishing (likely ran out of context while still ' +
         '"thinking") - discarding it rather than showing incomplete internal reasoning as the reply; ' +
-        'try a shorter capture, clearing context, or a model/server configuration with more context'
+        (advice ||
+          'try a shorter capture, clearing context, or a model/server configuration with more context')
     );
   }
   return trimmedReasoning || '';
 }
 
+// Phrases resolveReplyText's cut-off advice according to which API path
+// LocalBackend actually used, so the message always points at something that
+// can genuinely help rather than generic advice that may not apply -
+// COMPANION_LOCAL_NUM_CTX only does anything under 'native', and
+// COMPANION_LOCAL_API=native only does anything when starting from 'openai'.
+function contextAdviceFor(apiStyle, numCtx) {
+  if (apiStyle === 'native') {
+    return (
+      `try a shorter capture, clearing context, or raising COMPANION_LOCAL_NUM_CTX ` +
+      `(currently ${numCtx}) if your model/machine has room for a bigger context window`
+    );
+  }
+  return (
+    'try a shorter capture, clearing context, or setting COMPANION_LOCAL_API=native if the ' +
+    'server at COMPANION_BASE_URL is actually Ollama (its native chat API allows a real, ' +
+    'larger context window via COMPANION_LOCAL_NUM_CTX; the standard OpenAI-compatible ' +
+    'endpoint used here cannot)'
+  );
+}
+
 class LocalBackend {
-  constructor({ baseUrl, model, apiKey, maxHistoryTurns }) {
+  // Talks to either a standard OpenAI-compatible /v1/chat/completions
+  // endpoint (`apiStyle: 'openai'`, portable to any such server) or Ollama's
+  // own native /api/chat (`apiStyle: 'native'`) - see companion.js's
+  // LOCAL_API/LOCAL_NUM_CTX config comment for how that choice gets made and
+  // why it matters: the native API is the only one of the two that actually
+  // honors a `num_ctx` (context window size) option. This project's own
+  // configured model (Ollama, gemma4:26b) runs with a 4096-token window by
+  // default, and that alone - not just accumulated multi-turn history, which
+  // trimHistory (below) already bounds - can be too small for a single
+  // capture: confirmed live that a perfectly normal, single Submit capture
+  // (a real problem description plus a ~150-line solution, no prior history
+  // at all) already exhausts it, because the model's own "thinking" burns
+  // through whatever's left after the system prompt and capture content, and
+  // a longer capture also means more for the model to reason about - so
+  // trimming the capture's own content can't reliably guarantee safety
+  // either, short of cutting the student's code short (which would make the
+  // tutor review incomplete code, undermining the one thing this tool exists
+  // to do). Raising the actual context window is the only thing confirmed
+  // live to fix this without touching capture content: the exact request
+  // that failed against the openai-style endpoint's default 4096 completed
+  // normally once resent to /api/chat with `num_ctx: 8192`.
+  constructor({ baseUrl, model, apiKey, maxHistoryTurns, apiStyle, numCtx }) {
     if (!model) {
       throw new Error(
         'COMPANION_MODEL is required for COMPANION_BACKEND=local (e.g. COMPANION_MODEL=llama3.2)'
@@ -405,6 +492,14 @@ class LocalBackend {
     this.model = model;
     this.apiKey = apiKey;
     this.maxHistoryTurns = maxHistoryTurns;
+    this.apiStyle = apiStyle === 'native' ? 'native' : 'openai';
+    this.numCtx = numCtx;
+    // Ollama's native API lives at the server root (e.g.
+    // http://localhost:11434/api/chat), not under the OpenAI-compat prefix -
+    // strip a trailing /v1 from baseUrl (its default value has one) so both
+    // API styles can share the same COMPANION_BASE_URL. If a custom baseUrl
+    // doesn't end in /v1, this is a no-op and native mode is used as-is.
+    this.nativeBaseUrl = this.baseUrl.replace(/\/v1$/, '');
     // Standard OpenAI chat-completions shape: a leading `role: 'system'`
     // message, resent in full on every turn along with the rest of history.
     // Includes the shared style addendum (see STYLE_ADDENDUM) - this backend
@@ -412,7 +507,9 @@ class LocalBackend {
     // ambient settings it could (and, before this file's isolation fix, did)
     // ride along on. Kept on its own so resetContext (below) can restore
     // exactly this, rather than re-deriving it or leaving stale history
-    // entries behind.
+    // entries behind. Ollama's native /api/chat accepts this exact same
+    // messages shape too, so history/resetContext/trimHistory are all
+    // shared unchanged between both API styles.
     this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}` };
     this.history = [this.systemMessage];
   }
@@ -420,54 +517,15 @@ class LocalBackend {
   async sendMessage(text, { onChunk } = {}) {
     this.history.push({ role: 'user', content: text });
 
-    let response;
-    try {
-      response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
-        body: JSON.stringify({ model: this.model, messages: this.history, stream: Boolean(onChunk) }),
-      });
-    } catch (err) {
-      this.history.pop(); // don't leave a dangling user turn with no reply
-      throw new Error(`could not reach ${this.baseUrl} (${err.message})`);
-    }
-
-    if (!response.ok) {
-      this.history.pop();
-      const bodyText = await response.text().catch(() => '');
-      throw new Error(`local backend request failed: ${response.status} ${response.statusText} ${bodyText}`);
-    }
-
-    // Some locally-hosted "thinking" models (e.g. Ollama's gemma-family
-    // thinking variants) put their whole answer in a separate `reasoning`
-    // field and leave `content` empty, especially on the longer responses a
-    // Submit's full breakdown asks for - a plain `content ?? ''` here would
-    // silently hand sendAndPrint an empty string, which prints nothing but
-    // the capture's label, looking exactly like "the reply never arrived"
-    // even though the backend technically succeeded. Fall back to
-    // `reasoning` before giving up - in both the streamed and non-streamed
-    // shapes below, via resolveReplyText.
-    // resolveReplyText (and streamReply, which also calls it) can throw -
-    // e.g. the cut-off-mid-thought case above - so this is wrapped the same
-    // way the response.ok/fetch-failure cases above already are: pop the
-    // dangling user turn before letting the error propagate, rather than
-    // leaving history with a user message that was never actually answered.
+    // resolveReplyText (called by both request paths, directly or via their
+    // own stream readers) can throw - e.g. the cut-off-mid-thought case - so
+    // every failure path here pops the dangling user turn before propagating,
+    // rather than leaving history with a user message that was never
+    // actually answered.
     let replyText;
     try {
-      if (onChunk) {
-        replyText = await this.streamReply(response, onChunk);
-      } else {
-        const data = await response.json();
-        const choice = data?.choices?.[0];
-        replyText = resolveReplyText({
-          content: choice?.message?.content,
-          reasoning: choice?.message?.reasoning,
-          finishReason: choice?.finish_reason,
-        });
-      }
+      replyText =
+        this.apiStyle === 'native' ? await this.requestNative(onChunk) : await this.requestOpenAI(onChunk);
     } catch (err) {
       this.history.pop();
       throw err;
@@ -483,6 +541,92 @@ class LocalBackend {
     // trimHistory's own comment for why that matters.
     this.trimHistory();
     return replyText;
+  }
+
+  // Standard OpenAI-compatible /v1/chat/completions request/response shape -
+  // portable to any server that speaks it, including but not limited to
+  // Ollama. Unchanged from before native-mode support existed.
+  async requestOpenAI(onChunk) {
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ model: this.model, messages: this.history, stream: Boolean(onChunk) }),
+      });
+    } catch (err) {
+      throw new Error(`could not reach ${this.baseUrl} (${err.message})`);
+    }
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '');
+      throw new Error(`local backend request failed: ${response.status} ${response.statusText} ${bodyText}`);
+    }
+
+    // Some locally-hosted "thinking" models (e.g. Ollama's gemma-family
+    // thinking variants) put their whole answer in a separate `reasoning`
+    // field and leave `content` empty, especially on the longer responses a
+    // Submit's full breakdown asks for - a plain `content ?? ''` here would
+    // silently hand sendAndPrint an empty string, which prints nothing but
+    // the capture's label, looking exactly like "the reply never arrived"
+    // even though the backend technically succeeded. Fall back to
+    // `reasoning` before giving up - in both the streamed and non-streamed
+    // shapes below, via resolveReplyText.
+    if (onChunk) return this.streamReply(response, onChunk);
+    const data = await response.json();
+    const choice = data?.choices?.[0];
+    return resolveReplyText({
+      content: choice?.message?.content,
+      reasoning: choice?.message?.reasoning,
+      finishReason: choice?.finish_reason,
+      advice: contextAdviceFor('openai', this.numCtx),
+    });
+  }
+
+  // Ollama's native /api/chat - same messages shape in, but a different
+  // response shape out: a single JSON object (non-streaming) or newline-
+  // delimited JSON objects (streaming), `message: { content, thinking }`
+  // instead of `choices[0].message`, and `done_reason` at the top level
+  // instead of `finish_reason` per-choice. The only reason to use this over
+  // requestOpenAI is `options.num_ctx`, below - confirmed live this is
+  // honored here and nowhere on the compat endpoint. Response shapes
+  // confirmed live against a real Ollama server (gemma4:26b).
+  async requestNative(onChunk) {
+    let response;
+    try {
+      response = await fetch(`${this.nativeBaseUrl}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: this.history,
+          stream: Boolean(onChunk),
+          options: { num_ctx: this.numCtx },
+        }),
+      });
+    } catch (err) {
+      throw new Error(`could not reach ${this.nativeBaseUrl} (${err.message})`);
+    }
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '');
+      throw new Error(`local backend request failed: ${response.status} ${response.statusText} ${bodyText}`);
+    }
+
+    if (onChunk) return this.streamReplyNative(response, onChunk);
+    const data = await response.json();
+    return resolveReplyText({
+      content: data?.message?.content,
+      reasoning: data?.message?.thinking,
+      finishReason: data?.done_reason === 'length' ? 'length' : data?.done_reason,
+      advice: contextAdviceFor('native', this.numCtx),
+    });
   }
 
   // Drops the oldest complete user+assistant pairs once history holds more
@@ -554,7 +698,54 @@ class LocalBackend {
         if (choice?.finish_reason) finishReason = choice.finish_reason;
       }
     }
-    return resolveReplyText({ content, reasoning, finishReason });
+    return resolveReplyText({ content, reasoning, finishReason, advice: contextAdviceFor('openai', this.numCtx) });
+  }
+
+  // Reads Ollama's native /api/chat streaming shape: newline-delimited JSON
+  // objects (no `data:`/SSE framing, no `[DONE]` sentinel), each carrying an
+  // incremental `message.content` and/or `message.thinking`, with the final
+  // object marked `done: true` and carrying `done_reason` - confirmed live
+  // against a real Ollama server. Mirrors streamReply's onChunk/reasoning
+  // handling exactly: `thinking` deltas accumulate the same way `reasoning`
+  // deltas do above, but are never handed to onChunk.
+  async streamReplyNative(response, onChunk) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    let reasoning = '';
+    let doneReason = null;
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) continue;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue; // a malformed/partial line - ignore rather than crash the stream
+        }
+        const delta = event?.message;
+        if (delta?.content) {
+          content += delta.content;
+          onChunk(delta.content);
+        }
+        if (delta?.thinking) reasoning += delta.thinking;
+        if (event?.done) doneReason = event.done_reason || 'stop';
+      }
+    }
+    return resolveReplyText({
+      content,
+      reasoning,
+      finishReason: doneReason === 'length' ? 'length' : doneReason,
+      advice: contextAdviceFor('native', this.numCtx),
+    });
   }
 
   // Truncates history back to just the leading system message, so the next
@@ -572,6 +763,8 @@ function makeBackend() {
       model: MODEL,
       apiKey: API_KEY,
       maxHistoryTurns: LOCAL_MAX_HISTORY_TURNS,
+      apiStyle: LOCAL_API,
+      numCtx: LOCAL_NUM_CTX,
     });
   }
   throw new Error(`unknown COMPANION_BACKEND "${BACKEND}" (expected "claude" or "local")`);
