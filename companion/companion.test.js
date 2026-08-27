@@ -1054,10 +1054,12 @@ test('the dual-API stub correctly separates compat and native requests by route'
 // terminal-format.js's old COMFORTABLE_WIDTH, a fixed 80-column target
 // regardless of how wide the terminal actually was: confirmed live, a
 // 100+ column real terminal still rendered an 80-col box rule with visible
-// unused space to its right. Fixed by raising that fixed target to a much
-// more generous MAX_CONTENT_WIDTH ceiling (120) that a terminal narrower
-// than the ceiling now tracks exactly, rather than changing anything about
-// how the resize event itself is wired up.
+// unused space to its right. First fixed by raising that fixed target to a
+// 120-col ceiling; Thomson then asked for it to be literally uncapped (a
+// fullscreen monitor is often 200-300+ columns, and 120 still read as
+// capped), so contentWidth() now tracks process.stdout.columns exactly with
+// no upper bound at all - see terminal-format.js's own comment. Neither
+// change touched how the resize event itself is wired up.
 //
 // These two tests spawn the real companion.js (via the same fake-TTY
 // wrapper box-padding.test.js/box-corruption.test.js already use) and fire
@@ -1079,10 +1081,16 @@ function findRuleWidth(screenLines) {
   return ruleLine === undefined ? null : ruleLine.length;
 }
 
-test('an idle live terminal resize grows the box rule up to the new MAX_CONTENT_WIDTH ceiling, not a fixed 80 columns', async () => {
+test('an idle live terminal resize grows the box rule to the real terminal width, with no upper cap', async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-width-resize-test-'));
   const capturesPath = path.join(scratch, 'captures.jsonl');
   fs.writeFileSync(capturesPath, '');
+
+  // 260 columns - deliberately past the old 80/120-col caps and into the
+  // range Thomson described a real fullscreen monitor's terminal reaching
+  // (200-300+ cols), so this proves genuinely uncapped tracking, not just
+  // "wider than 120".
+  const WIDE_COLUMNS = 260;
 
   const wrapper = [
     `process.stdout.isTTY = true;`,
@@ -1094,7 +1102,7 @@ test('an idle live terminal resize grows the box rule up to the new MAX_CONTENT_
     // 'resize' - exercising the actual live listener, not a reimplementation
     // of it.
     `setTimeout(() => {`,
-    `  process.stdout.columns = 200;`,
+    `  process.stdout.columns = ${WIDE_COLUMNS};`,
     `  process.stdout.emit('resize');`,
     `}, 700);`,
   ].join('\n');
@@ -1133,13 +1141,12 @@ test('an idle live terminal resize grows the box rule up to the new MAX_CONTENT_
   child.kill();
   fs.rmSync(scratch, { recursive: true, force: true });
 
-  const screen = replayToScreen(out, { cols: 200, rows: 20 });
+  const screen = replayToScreen(out, { cols: WIDE_COLUMNS, rows: 20 });
   const width = findRuleWidth(screen);
   assert.ok(width !== null, `expected a box rule in the rendered screen, got: ${JSON.stringify(out)}`);
-  // The 200-col terminal is wider than MAX_CONTENT_WIDTH (120), so the rule
-  // must grow well past the old fixed 80-col target and land at the new
-  // ceiling - not stay pinned at 80, and not stretch to the full 200.
-  assert.equal(width, 120, `expected the rule to track the resize up to the 120-col ceiling, got ${width}`);
+  // Must land exactly at the new terminal width, not the old fixed 80-col
+  // target and not either of the previously-considered 120-col ceilings.
+  assert.equal(width, WIDE_COLUMNS, `expected the rule to track the resize to the full ${WIDE_COLUMNS}-col terminal width, got ${width}`);
 });
 
 // Same resize, but fired while a reply is actively streaming (turnActive) -
@@ -1177,13 +1184,16 @@ test('a live terminal resize mid-stream does not corrupt the turn and the box re
   const capturesPath = path.join(scratch, 'captures.jsonl');
   fs.writeFileSync(capturesPath, '');
 
+  // Same deliberately-past-any-old-cap width as the idle test above.
+  const WIDE_COLUMNS = 260;
+
   const wrapper = [
     `process.stdout.isTTY = true;`,
     `process.stdout.columns = 60;`,
     `process.stdout.rows = 20;`,
     `await import('./companion.js');`,
     `setTimeout(() => {`,
-    `  process.stdout.columns = 200;`,
+    `  process.stdout.columns = ${WIDE_COLUMNS};`,
     `  process.stdout.emit('resize');`,
     `}, 300);`, // lands while the reply above is still mid-stream
   ].join('\n');
@@ -1238,8 +1248,8 @@ test('a live terminal resize mid-stream does not corrupt the turn and the box re
   // the resize landing mid-write.
   assert.match(stripped, /interact with rather than an empty turn\.?/);
 
-  const screen = replayToScreen(out, { cols: 200, rows: 20 });
+  const screen = replayToScreen(out, { cols: WIDE_COLUMNS, rows: 20 });
   const width = findRuleWidth(screen);
   assert.ok(width !== null, `expected a box rule in the final rendered screen, got: ${JSON.stringify(out)}`);
-  assert.equal(width, 120, `expected the box to reflect the new width once the turn ended, got ${width}`);
+  assert.equal(width, WIDE_COLUMNS, `expected the box to reflect the full ${WIDE_COLUMNS}-col terminal width once the turn ended, got ${width}`);
 });

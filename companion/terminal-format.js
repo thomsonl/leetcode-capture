@@ -32,21 +32,6 @@ const enabled = stylingEnabled();
 // above ever leaking a color decision we didn't intend.
 const c = new Chalk({ level: enabled ? 1 : 0 });
 
-// The ceiling on how wide the box rule and prose wrap ever get, even on an
-// ultra-wide terminal - a bare line length with no upper bound at all reads
-// poorly once a window gets wide enough (a monitor-spanning terminal, a
-// maximized ultrawide), so this still caps it somewhere. Below this ceiling,
-// contentWidth() now tracks the real terminal width exactly - this used to
-// be a fixed ~80-column target regardless of how wide the terminal actually
-// was (confirmed live: a 100+ col terminal still rendered an 80-col rule
-// with visible unused space to its right, and Thomson reported this as
-// "the width isn't tracking the window"), which was a deliberate choice at
-// the time but is no longer what's wanted. 120 is picked as a generous but
-// still-readable ceiling (common max-line-length convention across many
-// terminal tools/style guides) - raise or remove this cap if a literally
-// uncapped width is preferred instead.
-const MAX_CONTENT_WIDTH = 120;
-
 // Visual width of turnMarker()'s own text ('•' plus its one trailing space -
 // see turnMarker below), ignoring ANSI codes: the bullet is a single-column
 // glyph in a monospace terminal. This is the hanging-indent column every
@@ -56,8 +41,19 @@ const MAX_CONTENT_WIDTH = 120;
 // instead of running TURN_MARKER_WIDTH columns past it.
 const TURN_MARKER_WIDTH = 2;
 
+// The box rule and prose wrap track the real terminal width exactly, with
+// no upper bound - this used to cap at a fixed ~80 columns (later raised to
+// a 120-column ceiling) regardless of how wide the terminal actually was,
+// which read as "the width isn't tracking the window" on anything wider
+// than that (confirmed live: a 100+ col terminal still rendered an 80-col
+// rule with visible unused space to its right). Thomson confirmed he wants
+// this literally uncapped - a fullscreen monitor is often 200-300+ columns,
+// and even 120 still read as capped - so there is deliberately no ceiling
+// here any more. `|| 80` only covers the case where the terminal hasn't
+// reported a column count at all (columns is undefined/0), not a readability
+// cap.
 function contentWidth() {
-  return Math.min(process.stdout.columns || 80, MAX_CONTENT_WIDTH);
+  return process.stdout.columns || 80;
 }
 
 // Registers marked-terminal's renderer with the current width. Callable
@@ -75,13 +71,13 @@ function configureMarkedTerminal() {
       // sendAndPrintTurn) - without this, a paragraph reflowed right up to
       // contentWidth() would then get indented past it once
       // indentContinuation runs, overflowing the terminal's actual column
-      // count instead of staying within the comfortable measure.
+      // count instead of staying within the terminal's own width.
       width: contentWidth() - TURN_MARKER_WIDTH,
       // Reflow (word-wrap) prose text to the width above rather than
-      // leaving lines exactly as the model generated them - below
-      // MAX_CONTENT_WIDTH the width above already matches the terminal's
-      // own edge, but once a terminal exceeds that ceiling this is what
-      // actually stops prose from running past it.
+      // leaving lines exactly as the model generated them - the width
+      // above already matches the terminal's own edge (minus the hanging
+      // indent), so without this, text generated with its own line breaks
+      // (e.g. a numbered list item) could still run past it.
       reflowText: true,
     })
   );
@@ -150,9 +146,9 @@ export function indentContinuation(text, { indentFirstLine = false } = {}) {
 }
 
 // A thin rule marking off the pinned input box from the conversation above
-// it, at the same comfortable width prose wraps to (minus the one-space left
-// margin below, so the rule's right edge still lands at the comfortable
-// width rather than running one column past it). A one-space left margin -
+// it, at the same width prose wraps to (minus the one-space left margin
+// below, so the rule's right edge still lands at the terminal's own edge
+// rather than running one column past it). A one-space left margin -
 // matching promptString's own - gives the box a consistent inset rather than
 // starting flush at column 0; companion.js's drawBoxRaw also prints a blank
 // line above this rule for breathing room from whatever chat content
@@ -165,9 +161,9 @@ export function boxRule() {
 
 // Renders markdown (headers, bold/emphasis, lists, fenced code blocks with
 // syntax highlighting) to ANSI-styled text for a real TTY, wrapped to the
-// comfortable width above. Returns the text unchanged when styling is off,
-// so piped output keeps showing the raw markdown exactly as before this
-// feature existed.
+// width above. Returns the text unchanged when styling is off, so piped
+// output keeps showing the raw markdown exactly as before this feature
+// existed.
 export function renderMarkdown(text) {
   if (!enabled) return text;
   // marked-terminal pads block elements with blank lines; collapse runs of

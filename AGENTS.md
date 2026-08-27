@@ -151,13 +151,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   marker opening a tutor reply turn (`turnMarker`, replacing an earlier "tutor" role-label/framing-rule
   design - no per-speaker labels any more), dimmed `companion: ...` status/error lines, and markdown
   rendering via `marked`/`marked-terminal`. Both the box rule and markdown wrap share one width source,
-  `contentWidth()` (`Math.min(process.stdout.columns, MAX_CONTENT_WIDTH)`) - below the `MAX_CONTENT_WIDTH`
-  ceiling (120 cols) this tracks the real terminal width exactly; only a terminal wider than that gets
-  capped, for readability on an ultra-wide window rather than letting a line run edge to edge. This used
-  to be a fixed ~80-column target regardless of how wide the terminal actually was (`COMFORTABLE_WIDTH`) -
-  changed after Thomson reported the width "not tracking the window": confirmed live the resize *handling*
-  below was never broken, the fixed target itself was the actual complaint (a 100+ col terminal still
-  rendered an 80-col rule with visible unused space to its right). That width tracks a live terminal
+  `contentWidth()` (`process.stdout.columns || 80`) - the real terminal width exactly, with no upper cap
+  at all. This used to be a fixed ~80-column target regardless of how wide the terminal actually was
+  (`COMFORTABLE_WIDTH`) - changed after Thomson reported the width "not tracking the window": confirmed
+  live the resize *handling* below was never broken, the fixed target itself was the actual complaint (a
+  100+ col terminal still rendered an 80-col rule with visible unused space to its right). First raised to
+  a 120-col ceiling (`MAX_CONTENT_WIDTH`), then dropped entirely at Thomson's request - a fullscreen
+  monitor is often 200-300+ columns, and 120 still read as capped - so there is deliberately no readability
+  ceiling here any more; the `|| 80` only covers a terminal that hasn't reported a column count at all.
+  That width tracks a live terminal
   resize: `boxRule()` re-reads `process.stdout.columns` on every call, so the box's own rule updates the
   instant it's next redrawn, but `marked-terminal`'s renderer is registered once against a snapshot width
   via `marked.use(...)` - `refreshWidth()` re-registers it with the current width, and `companion.js` calls
