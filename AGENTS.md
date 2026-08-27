@@ -680,6 +680,52 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   case), not arbitrarily nested lists. `terminal-format.test.js` has the regression test (a long
   single-sentence bullet in a tight list, wrapped at a wide terminal width, compared byte-for-byte
   against the same content as a loose list) - confirmed it actually fails without the fix.
+- `companion/context-budget.js` holds `LocalBackend`'s context-budget logic (pre-flight size
+  estimate, the pinned problem description, and older-turn diff compression) as pure, importable
+  functions - split out from `companion.js` so it's directly unit-testable (`context-budget.test.js`)
+  the same way `terminal-format.js`/`vault-summary.js` already are, rather than only reachable
+  through a full `companion.js` subprocess. Built from two firstmate investigations
+  (`data/companion-context-capacity-test` and `data/companion-reply-cutoff-recheck` in the firstmate
+  repo): past ~800-900 lines in a single capture, Ollama's native `/api/chat` silently discards part
+  of the prompt *before* generating, with `done_reason: "stop"` (identical to genuine success) -
+  none of `resolveReplyText`'s `finishReason`-based guards (PR #31/#33/#34/#35) can see this, since
+  they only ever check for `"length"`. Three fixes, all in `LocalBackend.sendMessage`/`buildMessages`:
+  1. **Pre-flight size check** (`estimateMessagesTokens` vs `LOCAL_NUM_CTX - LOCAL_RESERVE_TOKENS`,
+     default reserve 2600, both in `companion.js`): refuses to send an over-budget request at all,
+     turning the invisible wrong-review failure into the same clean `companion: error talking to
+     backend (local): ...` line the existing cutoff guard already produces. `CHARS_PER_TOKEN_ESTIMATE`
+     (3.9) is calibrated, not guessed - four live `/api/chat` calls against gemma4:26b at
+     30/100/250/500 lines of real Python measured 4.28/4.13/4.01/3.93 chars/token, converging toward
+     3.9 as size grows (matching the capacity report almost exactly); 3.9 is deliberately the
+     conservative end (smaller divisor -> larger, safer token estimate) and is most accurate exactly
+     in the large-capture danger zone. Live-confirmed: a real 903-line capture against real
+     production defaults (`num_ctx=8192`) was refused instantly (~8,711 estimated tokens vs a
+     5,592-token budget) rather than silently reviewing truncated code.
+  2. **Problem description sent once per problem, not every turn**: `formatCaptureMessage` no longer
+     embeds the description in the per-turn text at all; `captureProblemContext` bundles it with the
+     problem id and is passed to `backend.sendMessage` on every capture. `LocalBackend` pins the
+     first description it sees per problem (`pinnedProblemContext`) and `buildMessages` reconstructs
+     it fresh as a second system message on *every* request - never stored inside `this.history`
+     itself, so it can't be lost when `trimHistory` drops the turn that originally carried it.
+     `ClaudeBackend` instead prepends it to the prompt text only on a fresh SDK session's first
+     message (`!this.sessionId`), since that backend's own continuity never trims. Live-confirmed
+     with `COMPANION_LOCAL_MAX_HISTORY_TURNS=1` (aggressive enough that turn 1 is provably gone from
+     `history` by turn 3): after 4 captures plus a typed follow-up, the real model still answered a
+     detail-specific question ("what exact condition triggers the police alarm") correctly from the
+     pinned description alone.
+  3. **Older history turns compressed to a diff**: `buildMessages` sends every user turn in full
+     *except* older ones (not the first-ever capture, which has nothing to diff against, and never
+     the current turn) - those get replaced with `compressOldCaptureTurn`'s output, a compact
+     LCS-based line diff (`diffLines`/`formatDiffSummary`, own from-scratch implementation, no new
+     dependency) against the code from the attempt before it, keeping the header line but dropping
+     the RUN/SUBMIT addendum. Live-measured on an identical real 7-turn session (same problem,
+     mostly Run with a Submit every third) run twice against the real model, before and after:
+     `prompt_eval_count` at turn 7 dropped from 2,879 to 1,901 (34% less) with the gap widening every
+     turn (turn 1 is a wash - the pinned-description wrapper costs a few more tokens than the old
+     inline `Problem:` prefix did - the real savings only start once there's a second capture to
+     compress), and both runs' actual tutor replies stayed accurate and equivalent in substance.
+  All three closed-loop-verified against the real, locally-running `gemma4:26b` (never a stub) in a
+  real `tmux` pty session, per this file's own established bar - not just the piped test suite.
 
 ## Maintaining this file
 

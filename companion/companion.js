@@ -49,6 +49,7 @@ import {
   indentContinuation,
 } from './terminal-format.js';
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
+import { estimateMessagesTokens, buildMessages as buildLocalMessages } from './context-budget.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -145,6 +146,18 @@ const LOCAL_API =
 // exact same input - raise it further if an even larger real capture still
 // gets cut off.
 const LOCAL_NUM_CTX = Number(process.env.COMPANION_LOCAL_NUM_CTX || 8192);
+
+// How many tokens of LOCAL_NUM_CTX to hold back for the model's own
+// thinking + answer when pre-flight checking a request's estimated size
+// (see estimateTokens/LocalBackend.sendMessage below) - the request itself
+// only gets the remainder as budget. Chosen from live investigation data
+// (data/companion-context-capacity-test in the firstmate repo): eval_count
+// (thinking+answer combined) ranged 1,141-2,607 tokens across a wide sweep
+// of real prompt sizes against this project's configured model, largely
+// independent of prompt length. 2600 sits just above that observed max, so
+// an unusually long "thinking" pass still has room without needing a
+// per-request guess.
+const LOCAL_RESERVE_TOKENS = Number(process.env.COMPANION_LOCAL_RESERVE_TOKENS || 2600);
 
 // Off by default: a portable checkout of this repo for someone other than
 // Thomson won't have this vault's Study/Algorithms structure, or even use
@@ -280,7 +293,11 @@ class ClaudeBackend {
     this.queryFn = mod.query;
   }
 
-  async sendMessage(text, { onChunk } = {}) {
+  // `problemContext` (see companion.js's captureProblemContext) is supplied
+  // on every capture-driven turn, undefined for a typed chat message - only
+  // actually used below on a fresh SDK session's very first message (see
+  // promptText).
+  async sendMessage(text, { onChunk, problemContext } = {}) {
     await this.ensureLoaded();
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 
@@ -342,9 +359,24 @@ class ClaudeBackend {
     // request in that case.
     if (onChunk) options.includePartialMessages = true;
 
+    // A fresh SDK session (no resumed session id yet) needs the problem
+    // description inline, once - unlike LocalBackend, this backend's own
+    // continuity is a resumed server-side session with no trimming (see
+    // resetContext below), so the description only needs supplying once per
+    // session, right at its start, and stays available for the rest of this
+    // problem's captures until AUTO_CLEAR_CONTEXT resets sessionId on a
+    // genuine problem switch - no separate pinning/reconstruction logic
+    // needed the way LocalBackend.buildMessages requires.
+    let promptText = text;
+    if (!this.sessionId && problemContext?.description) {
+      promptText =
+        `Problem currently being discussed: ${problemContext.title} (${problemContext.slug})\n\n` +
+        `${problemContext.description}\n\n${text}`;
+    }
+
     let resultText = null;
     let errorNote = null;
-    for await (const message of this.queryFn({ prompt: text, options })) {
+    for await (const message of this.queryFn({ prompt: promptText, options })) {
       if (message.session_id) this.sessionId = message.session_id;
       // A `stream_event` message wraps a raw Anthropic API stream event
       // (see SDKPartialAssistantMessage in sdk.d.ts); only its text deltas
@@ -490,6 +522,18 @@ class LocalBackend {
   // live to fix this without touching capture content: the exact request
   // that failed against the openai-style endpoint's default 4096 completed
   // normally once resent to /api/chat with `num_ctx: 8192`.
+  //
+  // Beyond that already-fixed failure, a second, more serious one exists at
+  // even larger sizes (data/companion-context-capacity-test in the
+  // firstmate repo, and this file's own AGENTS.md entry): past roughly
+  // 800-900 lines in a single capture, Ollama's native /api/chat silently
+  // discards part of the prompt *before* generating at all, rather than
+  // erroring - done_reason comes back "stop", identical to a genuine
+  // success, so resolveReplyText's finishReason-based guards (above) are
+  // structurally blind to it. sendMessage's own pre-flight size check below
+  // is what actually closes that gap, by refusing to send a request
+  // estimated to exceed budget in the first place rather than trying to
+  // detect the damage after the fact.
   constructor({ baseUrl, model, apiKey, maxHistoryTurns, apiStyle, numCtx }) {
     if (!model) {
       throw new Error(
@@ -520,10 +564,65 @@ class LocalBackend {
     // shared unchanged between both API styles.
     this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}` };
     this.history = [this.systemMessage];
+    // The full problem description for whichever problem is currently being
+    // discussed, if one has been seen yet - `{ problemId, title, slug,
+    // description }`, or null. Deliberately NOT part of `this.history`: see
+    // "send the problem description once per problem" (buildMessages,
+    // below) for why it's reconstructed fresh into every outgoing request
+    // instead, so a long session can never lose it to trimHistory dropping
+    // the turn that originally carried it.
+    this.pinnedProblemContext = null;
   }
 
-  async sendMessage(text, { onChunk } = {}) {
-    this.history.push({ role: 'user', content: text });
+  // `problemContext` (see companion.js's captureProblemContext) is supplied
+  // on every capture-driven turn, undefined for a typed chat message.
+  // `captureMeta` (`{ code, headerLine }`) is the raw code and header line
+  // for this turn if it's a capture, used only by buildMessages below to
+  // compress this turn once it's no longer the current one - never sent as-
+  // is; buildMessages derives the actual outgoing content from `text`/
+  // `code` fresh on every request.
+  async sendMessage(text, { onChunk, problemContext, captureMeta } = {}) {
+    // Pin the description the first time we see one for whichever problem
+    // is now current - ignored on every later turn for the same problem,
+    // which is exactly what keeps it from being resent every turn (see
+    // buildMessages, which is what actually re-includes it on each
+    // request).
+    if (problemContext?.description && problemContext.problemId !== this.pinnedProblemContext?.problemId) {
+      this.pinnedProblemContext = problemContext;
+    }
+    this.history.push({
+      role: 'user',
+      content: text,
+      code: typeof captureMeta?.code === 'string' ? captureMeta.code : null,
+      headerLine: captureMeta?.headerLine ?? null,
+    });
+
+    const outgoingMessages = this.buildMessages();
+
+    // Pre-flight size check - refuse to send a request estimated to exceed
+    // this model's real context window before it ever reaches the network,
+    // rather than letting it through and risking Ollama's native /api/chat
+    // silently discarding part of the prompt and generating a confident-
+    // looking review of the wrong code with no visible sign anything went
+    // wrong (see this class's own header comment and companion/AGENTS.md
+    // for the live-confirmed failure this closes - none of
+    // resolveReplyText's finishReason-based guards catch it, since that
+    // failure's own done_reason is "stop", identical to a genuine success).
+    // Checked once, here, ahead of either API style - requestOpenAI/
+    // requestNative below just send whatever this already built and
+    // cleared, they don't build the request themselves any more.
+    const estimatedTokens = estimateMessagesTokens(outgoingMessages);
+    const budget = this.numCtx - LOCAL_RESERVE_TOKENS;
+    if (estimatedTokens > budget) {
+      this.history.pop();
+      throw new Error(
+        `this request is estimated at ~${estimatedTokens} prompt tokens, over the ${budget}-token budget ` +
+          `(COMPANION_LOCAL_NUM_CTX=${this.numCtx} minus a ${LOCAL_RESERVE_TOKENS}-token reserve for the ` +
+          `model's own thinking/answer) - refusing to send it rather than risk the local model silently ` +
+          `discarding part of the prompt and reviewing the wrong code with no visible sign anything went ` +
+          `wrong; ${contextAdviceFor(this.apiStyle, this.numCtx)}`
+      );
+    }
 
     // resolveReplyText (called by both request paths, directly or via their
     // own stream readers) can throw - e.g. the cut-off-mid-thought case - so
@@ -533,7 +632,9 @@ class LocalBackend {
     let replyText;
     try {
       replyText =
-        this.apiStyle === 'native' ? await this.requestNative(onChunk) : await this.requestOpenAI(onChunk);
+        this.apiStyle === 'native'
+          ? await this.requestNative(onChunk, outgoingMessages)
+          : await this.requestOpenAI(onChunk, outgoingMessages);
     } catch (err) {
       this.history.pop();
       throw err;
@@ -551,10 +652,25 @@ class LocalBackend {
     return replyText;
   }
 
+  // Builds the actual outgoing messages array for a request - the leading
+  // system prompt, the pinned problem description right after it, then the
+  // rest of history with every *older* user turn compressed down to a diff
+  // against the capture before it. The real logic lives in context-
+  // budget.js's buildMessages (pure, unit-tested directly); this is a thin
+  // wrapper passing this instance's own fields through. Recomputed fresh on
+  // every request rather than mutating this.history itself, so
+  // trimHistory's own pair-splicing (which assumes this.history is exactly
+  // [system, user, assistant, ...]) and the pinned description's own
+  // independence from history trimming both stay simple and correct -
+  // this.history remains the true, full record throughout.
+  buildMessages() {
+    return buildLocalMessages({ history: this.history, pinnedProblemContext: this.pinnedProblemContext });
+  }
+
   // Standard OpenAI-compatible /v1/chat/completions request/response shape -
   // portable to any server that speaks it, including but not limited to
   // Ollama. Unchanged from before native-mode support existed.
-  async requestOpenAI(onChunk) {
+  async requestOpenAI(onChunk, messages) {
     let response;
     try {
       response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -563,7 +679,7 @@ class LocalBackend {
           'Content-Type': 'application/json',
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
-        body: JSON.stringify({ model: this.model, messages: this.history, stream: Boolean(onChunk) }),
+        body: JSON.stringify({ model: this.model, messages, stream: Boolean(onChunk) }),
       });
     } catch (err) {
       throw new Error(`could not reach ${this.baseUrl} (${err.message})`);
@@ -602,7 +718,7 @@ class LocalBackend {
   // requestOpenAI is `options.num_ctx`, below - confirmed live this is
   // honored here and nowhere on the compat endpoint. Response shapes
   // confirmed live against a real Ollama server (gemma4:26b).
-  async requestNative(onChunk) {
+  async requestNative(onChunk, messages) {
     let response;
     try {
       response = await fetch(`${this.nativeBaseUrl}/api/chat`, {
@@ -613,7 +729,7 @@ class LocalBackend {
         },
         body: JSON.stringify({
           model: this.model,
-          messages: this.history,
+          messages,
           stream: Boolean(onChunk),
           options: { num_ctx: this.numCtx },
         }),
@@ -757,9 +873,13 @@ class LocalBackend {
   }
 
   // Truncates history back to just the leading system message, so the next
-  // sendMessage resends none of the prior conversation.
+  // sendMessage resends none of the prior conversation - and drops the
+  // pinned problem description too, so a genuinely new problem's own
+  // description gets pinned fresh on its first capture rather than
+  // continuing to reconstruct the old problem's into every request.
   resetContext() {
     this.history = [this.systemMessage];
+    this.pinnedProblemContext = null;
   }
 }
 
@@ -907,20 +1027,30 @@ const RUN_ADDENDUM =
 const SUBMIT_ADDENDUM =
   '\n\nThis was a Submit. Per your instructions: give the full breakdown - approach description, correctness check, and complexity evaluation.';
 
+// Builds the per-turn message text sent to the backend for one capture.
+// Deliberately does NOT embed the full problem description here - see "send
+// the problem description once per problem" below (captureProblemContext,
+// maybeResetContextForCapture's sibling): the header line's title/slug is
+// still a short reference on every single turn, but the full description
+// text is handled separately so each backend can send it once per problem
+// rather than repeating it on every capture. Returns the raw code and
+// header line alongside the formatted text (not just the text alone) so
+// LocalBackend can compress an *older* turn down to a diff against the
+// capture before it without needing to re-parse code back out of already-
+// formatted message text (see "compress older history turns",
+// compressOldCaptureTurn).
 function formatCaptureMessage(capture) {
   const title = capture.problemTitle || capture.problemSlug || '(unknown problem)';
   const slug = capture.problemSlug || 'unknown-slug';
   const language = capture.language || 'unknown language';
   const label = triggerLabel(capture.trigger);
   const code = typeof capture.code === 'string' ? capture.code : '';
-  const description = typeof capture.problemDescription === 'string' ? capture.problemDescription : null;
   const fence = '```';
 
-  const lines = [`[LeetCode capture] ${label} - ${title} (${slug})`, `Language: ${language}`];
-  if (description) lines.push('', 'Problem:', description);
-  lines.push('', `${fence}${languageFenceHint(language)}`, code, fence);
+  const headerLine = `[LeetCode capture] ${label} - ${title} (${slug})`;
+  const lines = [headerLine, `Language: ${language}`, '', `${fence}${languageFenceHint(language)}`, code, fence];
   const addendum = capture.trigger === 'submit' ? SUBMIT_ADDENDUM : RUN_ADDENDUM;
-  return lines.join('\n') + addendum;
+  return { text: lines.join('\n') + addendum, code, headerLine };
 }
 
 // --- automatic context reset on problem switch (AUTO_CLEAR_CONTEXT) --------
@@ -957,6 +1087,31 @@ let currentProblemId = null;
 
 function captureProblemId(capture) {
   return capture.problemSlug || capture.problemTitle || null;
+}
+
+// The same problem-identity signal as captureProblemId above, bundled with
+// the actual description text - passed to backend.sendMessage on every
+// capture-driven turn (see handleCaptureLine) so each backend can decide
+// for itself, from its own state, whether it already has this problem's
+// description and can skip resending it (LocalBackend.sendMessage pins the
+// first one it sees per problem; ClaudeBackend.sendMessage only prepends it
+// on a fresh SDK session's first message) - see "send the problem
+// description once per problem" in each backend for the full rationale.
+// Deliberately no separate "have we sent this yet" tracking lives here:
+// each backend already has to track its own continuity state (pinned
+// context / session id) for other reasons, so asking it to also decide this
+// avoids a second, possibly-inconsistent copy of the same decision.
+function captureProblemContext(capture) {
+  const description =
+    typeof capture.problemDescription === 'string' && capture.problemDescription.trim()
+      ? capture.problemDescription
+      : null;
+  return {
+    problemId: captureProblemId(capture),
+    title: capture.problemTitle || capture.problemSlug || '(unknown problem)',
+    slug: capture.problemSlug || 'unknown-slug',
+    description,
+  };
 }
 
 // Updates the tracked problem and, if this capture is for a different one
@@ -1399,7 +1554,7 @@ function startSpinner() {
 // before it ever reaches the terminal. That stripping can only happen once
 // the reply is complete, so a turn with onReply set never streams - see the
 // non-streaming branch below.
-function sendAndPrint(label, text, { onReply } = {}) {
+function sendAndPrint(label, text, { onReply, problemContext, captureMeta } = {}) {
   // Same reasoning as handleCaptureLine's own call to this: a typed
   // message is new activity too, so it always returns the view to the
   // live bottom first if the user was scrolled up reading history.
@@ -1407,14 +1562,14 @@ function sendAndPrint(label, text, { onReply } = {}) {
   return enqueue(async () => {
     turnActive = true;
     try {
-      await sendAndPrintTurn(label, text, onReply);
+      await sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta });
     } finally {
       turnActive = false;
     }
   });
 }
 
-async function sendAndPrintTurn(label, text, onReply) {
+async function sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta } = {}) {
   const separator = consumeTurnBoundary();
   if (label) printAboveInput(separator + label);
   else if (separator) printAboveInput(''); // separator alone - printAboveInput('') is exactly one blank line
@@ -1476,6 +1631,8 @@ async function sendAndPrintTurn(label, text, onReply) {
           anyChunk = true;
           writeReplyPiece(streamer.push(chunk));
         },
+        problemContext,
+        captureMeta,
       });
     } catch (err) {
       stopSpinner();
@@ -1516,7 +1673,7 @@ async function sendAndPrintTurn(label, text, onReply) {
   // shape as before streaming existed.
   let reply;
   try {
-    reply = await backend.sendMessage(text);
+    reply = await backend.sendMessage(text, { problemContext, captureMeta });
   } catch (err) {
     stopSpinner();
     clearBottomRows();
@@ -1713,7 +1870,8 @@ async function handleCaptureLine(line) {
       printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
     }
   }
-  const message = formatCaptureMessage(capture) + (vaultContext ? vaultContext.addendum : '');
+  const { text: captureText, code, headerLine } = formatCaptureMessage(capture);
+  const message = captureText + (vaultContext ? vaultContext.addendum : '');
 
   await sendAndPrint(label, message, {
     onReply: vaultContext
@@ -1735,6 +1893,11 @@ async function handleCaptureLine(line) {
           return displayText;
         }
       : undefined,
+    // See "send the problem description once per problem" (captureProblemContext) -
+    // supplied on every capture-driven turn; each backend decides for
+    // itself whether it's actually new information worth including.
+    problemContext: captureProblemContext(capture),
+    captureMeta: { code, headerLine },
   });
 }
 

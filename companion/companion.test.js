@@ -570,10 +570,15 @@ test('consecutive captures for the same problem do not clear context', async () 
     capturePort: 18139,
   });
 
-  assert.equal(requests[0].length, 2, 'first call: system + this turn\'s user message');
-  // Full continuity: system, first user turn, first assistant reply, second
+  // system + the pinned problem description (see "send the problem
+  // description once per problem", companion.js's captureProblemContext) +
+  // this turn's own user message.
+  assert.equal(requests[0].length, 3, 'first call: system + pinned description + this turn\'s user message');
+  // Full continuity: system, pinned description (still pinned - same
+  // problem, not resent as a second copy), first user turn (sent in full -
+  // nothing earlier to diff it against yet), first assistant reply, second
   // user turn - nothing truncated.
-  assert.equal(requests[1].length, 4, 'second call should still carry the first turn as history');
+  assert.equal(requests[1].length, 5, 'second call should still carry the first turn as history');
   assert.ok(!out.includes('new problem detected'), 'no reset notice should print for the same problem');
 });
 
@@ -584,10 +589,12 @@ test('a capture for a different problemSlug clears context (auto-clear on by def
     capturePort: 18140,
   });
 
-  assert.equal(requests[0].length, 2);
-  // Reset: truncated back to just the leading system message plus this
-  // turn's own user message - the first problem's turn is gone.
-  assert.equal(requests[1].length, 2, 'context should have been cleared before the second call');
+  assert.equal(requests[0].length, 3, 'system + pinned description + this turn\'s user message');
+  // Reset: truncated back to just the leading system message, the new
+  // problem's own pinned description, and this turn's own user message -
+  // the first problem's turn (and its now-stale pinned description) is
+  // gone.
+  assert.equal(requests[1].length, 3, 'context should have been cleared before the second call');
   assert.match(out, /new problem detected \(house-robber\) - clearing tutor context/);
 });
 
@@ -599,8 +606,15 @@ test('COMPANION_AUTO_CLEAR_CONTEXT=0 disables the reset even across a problem sw
     env: { COMPANION_AUTO_CLEAR_CONTEXT: '0' },
   });
 
-  assert.equal(requests[0].length, 2);
-  assert.equal(requests[1].length, 4, 'context must not be cleared when the toggle is off');
+  assert.equal(requests[0].length, 3, 'system + pinned description + this turn\'s user message');
+  // Conversation history (the first problem's own user/assistant turn) is
+  // NOT cleared - but the *pinned description* still switches to whichever
+  // problem is now actually current, independent of AUTO_CLEAR_CONTEXT:
+  // LocalBackend.sendMessage's pinning decision only compares problemId,
+  // it doesn't consult this toggle, since resending a stale problem's
+  // description makes no sense to skip just because context-clearing
+  // itself is turned off (see companion.js's LocalBackend class comment).
+  assert.equal(requests[1].length, 5, 'context must not be cleared when the toggle is off');
   assert.ok(!out.includes('new problem detected'), 'no reset notice should print when the toggle is off');
 });
 
@@ -611,8 +625,8 @@ test('a problem switch is still detected via the problemTitle fallback when prob
     capturePort: 18142,
   });
 
-  assert.equal(requests[0].length, 2);
-  assert.equal(requests[1].length, 2, 'title-fallback identifier switch should still clear context');
+  assert.equal(requests[0].length, 3, 'system + pinned description + this turn\'s user message');
+  assert.equal(requests[1].length, 3, 'title-fallback identifier switch should still clear context');
   assert.match(out, /new problem detected \(House Robber\) - clearing tutor context/);
 });
 
@@ -806,7 +820,14 @@ test('trimmed history never leaves a dangling half-turn', async () => {
 
   for (const req of requests) {
     assert.equal(req[0].role, 'system');
-    for (let i = 1; i < req.length; i += 2) {
+    // req[1] is the pinned problem description (a second, reconstructed-
+    // fresh system-role message - see context-budget.js's buildMessages)
+    // whenever one is known; the actual user/assistant pairs start right
+    // after it. makeIdCapture always supplies a problemDescription, so it's
+    // present here from the very first request onward - detected rather
+    // than assumed, so this test still holds if that ever changes.
+    const start = req[1]?.role === 'system' ? 2 : 1;
+    for (let i = start; i < req.length; i += 2) {
       assert.equal(req[i].role, 'user', `message ${i} should be a user turn`);
       if (i + 1 < req.length) assert.equal(req[i + 1].role, 'assistant', `message ${i + 1} should be its reply`);
     }
@@ -1042,6 +1063,262 @@ test('the dual-API stub correctly separates compat and native requests by route'
   });
   assert.equal(nativeRoutes.compat.length, 0);
   assert.equal(nativeRoutes.native.length, 1);
+});
+
+// --- context-budget: pre-flight size check, pinned description, ----------
+// --- and older-turn compression -------------------------------------------
+//
+// See companion/context-budget.test.js for direct unit coverage of the pure
+// helpers (diffLines/formatDiffSummary/buildMessages/estimateTokens) these
+// three subprocess-level tests exercise end to end. Investigation:
+// data/companion-context-capacity-test (firstmate repo), and companion's
+// own AGENTS.md, for the live-confirmed failure and design this closes.
+
+// Drives `turnCount` consecutive captures for the *same* problem through a
+// real companion.js subprocess against startTrackingStubBackend, each
+// turn's code carrying a distinct, easy-to-grep marker
+// (`attempt N marker line`) so a test can tell exactly which turn's raw
+// code did or didn't survive into a later request. Waits for each numbered
+// reply before sending the next, same discipline as
+// runContextResetScenario/runManyTurnsScenario above.
+async function runSameProblemManyTurns({ turnCount, capturePort, env = {} }) {
+  const { server, requests } = await startTrackingStubBackend();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-budget-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(capturePort),
+      ...env,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    for (let i = 1; i <= turnCount; i += 1) {
+      fs.appendFileSync(
+        capturesPath,
+        JSON.stringify(
+          makeIdCapture({
+            slug: 'two-sum',
+            title: 'Two Sum',
+            attemptSeq: i,
+            trigger: i === turnCount ? 'submit' : 'run',
+            // Realistic incremental edits (most lines identical between
+            // attempts, only the marker comment line actually changes) -
+            // unlike a synthetic fixture where every line differs between
+            // attempts, this is the shape a diff is actually meant to
+            // compress well, and matches how a student's real
+            // attempt-to-attempt edits usually look.
+            code:
+              'def twoSum(nums, target):\n' +
+              '    seen = {}\n' +
+              '    for i, val in enumerate(nums):\n' +
+              '        complement = target - val\n' +
+              '        if complement in seen:\n' +
+              '            return [seen[complement], i]\n' +
+              `        # attempt ${i} marker line\n` +
+              '        seen[val] = i\n' +
+              '    return []\n',
+          })
+        ) + '\n'
+      );
+      const marker = `Reply number ${i}`;
+      const deadline = Date.now() + 8000;
+      // eslint-disable-next-line no-await-in-loop
+      while (Date.now() < deadline && !out.includes(marker)) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.ok(out.includes(marker), `turn ${i} reply never arrived`);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 200)); // let the queue fully settle
+    }
+    return { out, requests };
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// The priority fix: a capture whose estimated prompt size exceeds
+// COMPANION_LOCAL_NUM_CTX minus COMPANION_LOCAL_RESERVE_TOKENS must be
+// refused with a clean, visible error before it's ever sent - not silently
+// let through to risk Ollama's native /api/chat discarding part of the
+// prompt and reviewing the wrong code (the failure this exists to close).
+// Uses a small NUM_CTX/RESERVE_TOKENS pair so this doesn't need an actual
+// ~900-line capture to reproduce - the mechanism under test is the
+// estimate-vs-budget comparison itself, not any particular real-world size.
+test('a capture sized to exceed the estimated token budget is refused with a visible error, never sent', async () => {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      requests.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'should never be reached' } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-preflight-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  // Far larger than the tight budget below allows (COMPANION_LOCAL_NUM_CTX
+  // 2000 minus COMPANION_LOCAL_RESERVE_TOKENS 200 = an 1800-token budget;
+  // this alone is roughly 18,800 characters, on top of the system prompt).
+  const oversizedCode = 'def helper(nums, target):\n    return sum(nums) + target\n'.repeat(400);
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: '18170',
+      COMPANION_LOCAL_NUM_CTX: '2000',
+      COMPANION_LOCAL_RESERVE_TOKENS: '200',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    fs.appendFileSync(
+      capturesPath,
+      JSON.stringify(
+        makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: 1, trigger: 'submit', code: oversizedCode })
+      ) + '\n'
+    );
+
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !out.includes('error talking to backend')) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.match(
+      out,
+      /error talking to backend \(local\): this request is estimated at ~\d+ prompt tokens, over the \d+-token budget/,
+      `expected a clean pre-flight refusal error, got: ${JSON.stringify(out)}`
+    );
+    assert.ok(
+      !out.includes('should never be reached'),
+      'the oversized reply must never print - the request should never have reached the stub'
+    );
+    assert.equal(requests.length, 0, 'the stub should never have received a request at all');
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// The correctness constraint on the description-once-per-problem change:
+// the description must stay available for the whole session, not just for
+// as long as the turn that first carried it survives trimHistory's rolling
+// window. Aggressive trimming (COMPANION_LOCAL_MAX_HISTORY_TURNS=1) across
+// 5 turns for the same problem guarantees turn 1's own user message is long
+// gone from history by the last request - yet the pinned description (see
+// context-budget.js's buildMessages) must still be there, reconstructed
+// fresh into every request independent of that window.
+test('the pinned problem description survives trimHistory dropping the turn that first carried it', async () => {
+  const { requests } = await runSameProblemManyTurns({
+    turnCount: 5,
+    capturePort: 18171,
+    env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' }, // only the latest pair is ever kept
+  });
+
+  assert.equal(requests.length, 5);
+  const lastRequest = requests[4];
+  assert.ok(
+    !lastRequest.some((m) => m.role === 'user' && (m.content || '').includes('attempt 1 marker line')),
+    "turn 1's own code should genuinely be gone from history by now (trimmed out)"
+  );
+  assert.ok(
+    lastRequest.some((m) => m.role === 'system' && (m.content || '').includes('a problem description')),
+    `expected the pinned description to still be present on the last request, got: ${JSON.stringify(lastRequest)}`
+  );
+});
+
+// The compression itself: an older, already-reviewed turn's own raw code
+// must not survive verbatim into a later request - only the very first
+// capture (nothing earlier to diff against) and the current turn (never
+// compressed - see buildMessages) keep their full code.
+test('older history turns are compressed to a diff; the current turn always keeps its full code', async () => {
+  const { requests } = await runSameProblemManyTurns({ turnCount: 4, capturePort: 18172 });
+
+  assert.equal(requests.length, 4);
+  const lastRequest = requests[3];
+  const currentTurnMsg = lastRequest.find(
+    (m) => m.role === 'user' && (m.content || '').includes('attempt 4 marker line')
+  );
+  assert.ok(currentTurnMsg, "the current turn's own code should be present");
+  // Only a full, uncompressed turn carries the fenced code block
+  // formatCaptureMessage wraps real code in - a compressed turn (below)
+  // never does, since compressOldCaptureTurn drops it entirely.
+  assert.match(currentTurnMsg.content, /```/, "the current turn should still carry its full fenced code block");
+
+  const olderTurnMsg = lastRequest.find(
+    (m) => m.role === 'user' && (m.content || '').includes('Code changed from the previous attempt')
+  );
+  assert.ok(olderTurnMsg, `expected a compressed diff for an older (non-first, non-current) turn, got: ${JSON.stringify(lastRequest)}`);
+  assert.ok(
+    !olderTurnMsg.content.includes('```'),
+    "a compressed turn should no longer carry its own fenced code block"
+  );
+});
+
+// Measures, not just asserts the marker text is present: a compressed
+// older turn (a small, realistic one-line edit between attempts here -
+// see runSameProblemManyTurns) should be dramatically smaller than its own
+// full code+header+fences would have been, confirming this is a real size
+// win and not just a cosmetic relabeling.
+test('a compressed older turn is measurably smaller than its own original content', async () => {
+  const { requests } = await runSameProblemManyTurns({ turnCount: 4, capturePort: 18173 });
+  const lastRequest = requests[3];
+
+  const diffMessages = lastRequest.filter(
+    (m) => m.role === 'user' && (m.content || '').includes('Code changed from the previous attempt')
+  );
+  assert.ok(diffMessages.length >= 1, 'expected at least one compressed older turn in this request');
+  const fullTurnMsg = lastRequest.find((m) => m.role === 'user' && (m.content || '').includes('```'));
+  assert.ok(fullTurnMsg, 'expected at least one full (uncompressed) turn to compare against');
+  for (const m of diffMessages) {
+    assert.ok(
+      m.content.length < fullTurnMsg.content.length / 2,
+      `expected a compressed turn (${m.content.length} chars) to be well under half a full turn's size ` +
+        `(${fullTurnMsg.content.length} chars)`
+    );
+  }
 });
 
 // Regression tests for the companion's displayed width tracking a live

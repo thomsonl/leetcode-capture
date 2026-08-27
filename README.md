@@ -115,3 +115,10 @@ The standard OpenAI-compatible endpoint (`/v1/chat/completions`) has no way to a
 `COMPANION_LOCAL_API` controls which one the companion uses: `auto` (the default) uses Ollama's native API automatically when `COMPANION_BASE_URL` is still pointed at Ollama's own default address, and the standard endpoint otherwise, so pointing this at some other OpenAI-compatible server keeps working exactly as before.
 Set it explicitly to `openai` or `native` to override that choice.
 `COMPANION_LOCAL_NUM_CTX` (default 8192) sets the context window requested when the native API is in use - raise it if an unusually large capture still gets cut off.
+
+Past a certain size, Ollama's native API can silently discard part of an oversized prompt rather than erroring, which would otherwise produce a normal-looking reply that's actually reviewing truncated code.
+Before sending a request, the local backend estimates its size and refuses to send it - with the same kind of visible `companion: error talking to backend (local): ...` line the cutoff case above already prints - rather than risk that.
+`COMPANION_LOCAL_RESERVE_TOKENS` (default 2600) is how much of `COMPANION_LOCAL_NUM_CTX` this check holds back for the model's own thinking and answer; only the remainder counts as the request's own budget.
+
+To leave more of that budget for your actual code, the local backend also avoids repeating the full problem description on every turn (only the first capture for a given problem includes it - later turns get a short reference plus the code, and the description itself is still available to the model for the rest of that problem's session) and compresses older, already-reviewed turns down to a summary of what changed since the attempt before them, rather than resending their full code.
+The current turn under review always still gets its full, real code either way.
