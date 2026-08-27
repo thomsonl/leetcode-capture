@@ -109,3 +109,9 @@ The local backend resends its whole conversation history on every turn (the stan
 To keep that bounded, it also trims history to the most recent `COMPANION_LOCAL_MAX_HISTORY_TURNS` Run/Submit exchanges (default 6) once a problem's conversation grows past that, dropping the oldest exchanges first.
 This is separate from `COMPANION_AUTO_CLEAR_CONTEXT` above, which clears everything on a problem switch - this bound applies within one still-current problem.
 Set `COMPANION_LOCAL_MAX_HISTORY_TURNS=0` to disable trimming and go back to unbounded history, or raise it if your model/server has enough context to spare.
+
+Separately, even a *single* capture with no prior history at all can be big enough to exceed a small model's context window by itself - a long problem description plus a real submission can already be more than the model has room for, especially once it starts "thinking" about it.
+The standard OpenAI-compatible endpoint (`/v1/chat/completions`) has no way to ask for a bigger context window - Ollama's own native chat API (`/api/chat`) does, via a `num_ctx` option.
+`COMPANION_LOCAL_API` controls which one the companion uses: `auto` (the default) uses Ollama's native API automatically when `COMPANION_BASE_URL` is still pointed at Ollama's own default address, and the standard endpoint otherwise, so pointing this at some other OpenAI-compatible server keeps working exactly as before.
+Set it explicitly to `openai` or `native` to override that choice.
+`COMPANION_LOCAL_NUM_CTX` (default 8192) sets the context window requested when the native API is in use - raise it if an unusually large capture still gets cut off.

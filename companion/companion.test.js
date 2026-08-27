@@ -770,3 +770,234 @@ test('trimmed history never leaves a dangling half-turn', async () => {
     }
   }
 });
+
+// --- single-capture context overflow (COMPANION_LOCAL_API / _NUM_CTX) ------
+//
+// A genuinely different bug from the history-growth one above: one capture's
+// own content (problem description + submitted code, formatted alongside
+// TUTOR_SYSTEM_PROMPT) can by itself exceed a small local model's context
+// window, on the very first turn of a brand-new conversation - before any
+// history has accumulated at all, so trimHistory (which only bounds growth
+// across turns) cannot help. Confirmed live against the real Ollama
+// gemma4:26b model this companion is configured for (see companion.js's
+// LocalBackend class comment): a single normal-sized Submit capture (a real
+// problem description plus a ~150-line solution, no prior history) already
+// exhausted its default 4096-token window over the OpenAI-compat endpoint,
+// then completed normally once resent to Ollama's native /api/chat with a
+// larger `num_ctx`.
+//
+// This stub reproduces both API shapes on one server so a test can drive
+// LocalBackend down either path: POST /v1/chat/completions behaves like the
+// existing exhaustion stub above (OpenAI-compat SSE, small simulated
+// context), while POST /api/chat behaves like real Ollama's native chat API
+// (newline-delimited JSON, `message.content`/`message.thinking`,
+// `done`/`done_reason`) with its own, independently-sized simulated context -
+// letting a test prove the native path genuinely has more headroom, not just
+// that it happens not to fail.
+function startDualApiStubBackend({ compatThresholdChars, nativeThresholdChars }) {
+  const requestsByRoute = { compat: [], native: [] };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const parsedBody = JSON.parse(body);
+      const totalChars = parsedBody.messages.reduce((sum, m) => sum + (m.content || '').length, 0);
+
+      if (req.url === '/api/chat') {
+        requestsByRoute.native.push(parsedBody.messages);
+        const exceeded = totalChars > nativeThresholdChars;
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        if (exceeded) {
+          res.write(JSON.stringify({ message: { content: '', thinking: 'partial native reasoning, cut off' } }) + '\n');
+          res.write(JSON.stringify({ message: { content: '' }, done: true, done_reason: 'length' }) + '\n');
+        } else {
+          const content = `Reply number ${requestsByRoute.native.length}`;
+          res.write(JSON.stringify({ message: { content } }) + '\n');
+          res.write(JSON.stringify({ message: { content: '' }, done: true, done_reason: 'stop' }) + '\n');
+        }
+        res.end();
+        return;
+      }
+
+      // Default: the OpenAI-compat route (/v1/chat/completions).
+      requestsByRoute.compat.push(parsedBody.messages);
+      const exceeded = totalChars > compatThresholdChars;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (exceeded) {
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta: { reasoning: 'partial compat reasoning, cut off mid-thought' } }],
+          })}\n\n`
+        );
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`);
+      } else {
+        const content = `Reply number ${requestsByRoute.compat.length}`;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, requestsByRoute }));
+  });
+}
+
+// A single, realistic-sized capture - a real problem description plus a
+// plausible ~150-line solution (not a synthetic worst case) - matching the
+// order of magnitude confirmed live against the real Ollama model to exceed
+// its default context window by itself, on the first turn, with zero prior
+// history.
+const SINGLE_CAPTURE_DESCRIPTION =
+  'You are given an undirected graph with n nodes labeled from 0 to n - 1, and an array edges where ' +
+  'edges[i] = [ui, vi] indicates a bidirectional edge between ui and vi. You are also given an array ' +
+  'queries where queries[i] = [srci, dsti]. For each query, determine the length of the shortest path ' +
+  'between srci and dsti, or -1 if none exists. Return an array answer where answer[i] is the answer ' +
+  'to the ith query.\n\nExample 1:\nInput: n = 5, edges = [[0,1],[1,2],[2,3],[3,4]], queries = ' +
+  '[[0,4],[0,2],[1,3]]\nOutput: [4,2,2]\n\nConstraints:\n- 2 <= n <= 10^5\n- 1 <= queries.length <= 10^5';
+const SINGLE_CAPTURE_CODE =
+  'class Solution {\npublic:\n    unordered_map<int, vector<int>> adj;\n\n    void buildGraph(vector<vector<int>>& edges) {\n' +
+  '        for (auto& e : edges) { adj[e[0]].push_back(e[1]); adj[e[1]].push_back(e[0]); }\n    }\n\n' +
+  '    int bfsDistance(int src, int dst, int n) {\n        vector<int> dist(n, -1);\n        queue<int> q;\n' +
+  '        dist[src] = 0; q.push(src);\n        while (!q.empty()) {\n            int cur = q.front(); q.pop();\n' +
+  '            if (cur == dst) return dist[cur];\n            for (int next : adj[cur]) {\n' +
+  '                if (dist[next] == -1) { dist[next] = dist[cur] + 1; q.push(next); }\n            }\n        }\n' +
+  '        return -1;\n    }\n\n    vector<int> findShortestPaths(int n, vector<vector<int>>& edges, vector<vector<int>>& queries) {\n' +
+  '        buildGraph(edges);\n        vector<int> results;\n        for (auto& query : queries) {\n' +
+  '            results.push_back(bfsDistance(query[0], query[1], n));\n        }\n        return results;\n    }\n' +
+  '};\n'.repeat(6); // repeated to land in the same order of magnitude as a real ~150-line submission
+
+function makeSingleCapture() {
+  return {
+    receivedAt: new Date().toISOString(),
+    problemSlug: 'shortest-path-queries',
+    problemTitle: 'Shortest Path Queries',
+    problemDescription: SINGLE_CAPTURE_DESCRIPTION,
+    problemTags: ['Graph', 'BFS'],
+    language: 'cpp',
+    trigger: 'submit',
+    timestamp: new Date().toISOString(),
+    url: 'https://leetcode.com/problems/shortest-path-queries/',
+    code: SINGLE_CAPTURE_CODE,
+    attemptSeq: 1,
+  };
+}
+
+async function runSingleCaptureScenario({ capturePort, compatThresholdChars, nativeThresholdChars, env = {} }) {
+  const { server, requestsByRoute } = await startDualApiStubBackend({ compatThresholdChars, nativeThresholdChars });
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-single-capture-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(capturePort),
+      ...env,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    fs.appendFileSync(capturesPath, JSON.stringify(makeSingleCapture()) + '\n');
+
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !/Reply number|error talking to backend/.test(out)) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.match(out, /Reply number|error talking to backend/, 'the single capture produced neither a reply nor an error');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    return { out, requestsByRoute };
+  } finally {
+    child.kill();
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// The repro: COMPANION_BASE_URL is a stub port (not Ollama's own default
+// address), so COMPANION_LOCAL_API's "auto" default resolves to 'openai' -
+// matching any plain OpenAI-compatible server (the pre-fix behavior for
+// every local-backend user, Ollama included, before native-mode support
+// existed). A single, realistic-sized Submit capture with NO prior history
+// alone crosses the simulated small context window, on the very first turn -
+// this is the bug the task describes, not PR #33's accumulated-history one.
+test('a single oversized capture with no prior history exhausts context on the very first turn (repro)', async () => {
+  const { out, requestsByRoute } = await runSingleCaptureScenario({
+    capturePort: 18160,
+    compatThresholdChars: 500, // well below this single realistic capture's own size
+    nativeThresholdChars: 100000, // irrelevant here - the compat route is the one hit
+  });
+
+  assert.match(
+    out,
+    /error talking to backend.*cut off before finishing/s,
+    `expected the single oversized capture to exhaust the simulated compat-endpoint context on its own, got: ${JSON.stringify(out)}`
+  );
+  assert.equal(requestsByRoute.compat.length, 1, 'exactly one request, no history to have accumulated yet');
+  assert.equal(requestsByRoute.native.length, 0, 'auto mode should not have touched the native route here');
+});
+
+// The fix: same single capture, same COMPANION_BASE_URL (still not Ollama's
+// own default address, so this forces native mode explicitly rather than
+// relying on the auto-detection default - see companion.js's LOCAL_API
+// comment for why the default heuristic can't apply to a stub server).
+// nativeThresholdChars is set above this capture's size (simulating the
+// real, larger num_ctx headroom Ollama's native API actually provides),
+// while compatThresholdChars stays just as tiny as the repro above - proving
+// the fix comes from genuinely using the native route with more room, not
+// from the capture having gotten any smaller.
+test('COMPANION_LOCAL_API=native avoids the single-capture overflow via a real bigger context window', async () => {
+  const { out, requestsByRoute } = await runSingleCaptureScenario({
+    capturePort: 18161,
+    compatThresholdChars: 500,
+    nativeThresholdChars: 100000,
+    env: { COMPANION_LOCAL_API: 'native', COMPANION_LOCAL_NUM_CTX: '8192' },
+  });
+
+  assert.match(out, /Reply number 1/, `expected a normal reply via the native route, got: ${JSON.stringify(out)}`);
+  assert.ok(!out.includes('error talking to backend'), 'the native route should not have exhausted context');
+  assert.equal(requestsByRoute.native.length, 1, 'the request should have gone to /api/chat');
+  assert.equal(requestsByRoute.compat.length, 0, 'native mode should never touch the compat route');
+});
+
+// A stray /api/tags-style probe or any other route this stub doesn't know
+// about isn't part of this feature (see companion.js's LOCAL_API comment:
+// the API style is decided once up front from config, never auto-probed at
+// request time), but this pins down that requestsByRoute stays keyed
+// correctly by exact route even though both routes share one server/port -
+// a regression here would silently misattribute requests between the two
+// tests above.
+test('the dual-API stub correctly separates compat and native requests by route', async () => {
+  const { requestsByRoute: openaiRoutes } = await runSingleCaptureScenario({
+    capturePort: 18162,
+    compatThresholdChars: 100000,
+    nativeThresholdChars: 100000,
+  });
+  assert.equal(openaiRoutes.compat.length, 1);
+  assert.equal(openaiRoutes.native.length, 0);
+
+  const { requestsByRoute: nativeRoutes } = await runSingleCaptureScenario({
+    capturePort: 18163,
+    compatThresholdChars: 100000,
+    nativeThresholdChars: 100000,
+    env: { COMPANION_LOCAL_API: 'native' },
+  });
+  assert.equal(nativeRoutes.compat.length, 0);
+  assert.equal(nativeRoutes.native.length, 1);
+});

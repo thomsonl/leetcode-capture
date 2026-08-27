@@ -594,6 +594,40 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   incidentally inheriting the rest of that file's unrelated engineering-workflow guidance, which was
   never meant for this tutor persona regardless.
 
+- `LocalBackend` can hit context overflow on a *single* capture, with zero accumulated history -
+  a genuinely different failure from the multi-turn growth `trimHistory` (above) bounds, and one
+  that bound cannot help with. Confirmed live against the real Ollama gemma4:26b model this project
+  is configured for: a single, realistic Submit capture (a real problem description plus a
+  ~150-line solution, first message of a brand-new conversation) already exhausted its default
+  4096-token context window over the OpenAI-compat endpoint (`/v1/chat/completions`) - the model's
+  own "thinking" burns through whatever's left after the system prompt and capture content, and a
+  longer capture also means more for it to reason about, so trimming the capture's own content
+  can't reliably guarantee safety either short of cutting the student's code short (which would
+  make the tutor review incomplete code - undermining the one thing this tool exists to do).
+  Re-confirmed live that this Ollama version's compat endpoint still ignores `num_ctx` entirely,
+  top-level or nested under `options` - only its native `/api/chat` honors it. Fixed by giving
+  `LocalBackend` a second API style (`requestNative`/`streamReplyNative` alongside the original
+  `requestOpenAI`/`streamReply`) that speaks Ollama's native chat API instead, requesting a larger
+  `num_ctx` (`COMPANION_LOCAL_NUM_CTX`, default 8192) - confirmed live that the *exact* request that
+  failed against the compat endpoint's default 4096 completed normally once resent to `/api/chat`
+  with `num_ctx: 8192`, and confirmed live end-to-end via a real `companion.js` subprocess against
+  the real model both ways (forced `COMPANION_LOCAL_API=openai` reproduces the failure, the default
+  config does not). `COMPANION_LOCAL_API` (`auto`/`openai`/`native`) picks between the two per
+  request, not by live-probing the server (an early design considered probing `/api/tags` at
+  startup, rejected: it would silently break every existing stub-backend test in
+  `companion.test.js`, none of which serve that route, and adds latency/a false-negative risk on a
+  slow-to-answer server) - `auto` (the default) resolves to `native` only when `COMPANION_BASE_URL`
+  is still exactly Ollama's own out-of-the-box default address, so a deliberately-configured
+  different OpenAI-compatible server (or any test pointed at a stub port) keeps behaving exactly as
+  before with zero risk of a silent protocol-mismatch regression. Switching wholesale to the native
+  API by default (irrespective of `COMPANION_BASE_URL`) was considered and rejected: it would 404
+  for a genuinely different OpenAI-compatible server, the one case `COMPANION_BASE_URL` exists to
+  support. `companion/companion.test.js`'s dual-route stub (`startDualApiStubBackend`) serves both
+  `/v1/chat/completions` and `/api/chat` behind independently-sized simulated context thresholds, so
+  a test can prove the fix comes from genuinely using the native route with more room, not from the
+  capture having gotten smaller - verified the repro test actually fails without the fix (reverted
+  the `apiStyle` branch to always use `requestOpenAI` and confirmed the native-mode test fails).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
