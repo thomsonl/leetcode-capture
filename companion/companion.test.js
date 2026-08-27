@@ -25,6 +25,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { replayToScreen } from './virtual-terminal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1041,4 +1042,204 @@ test('the dual-API stub correctly separates compat and native requests by route'
   });
   assert.equal(nativeRoutes.compat.length, 0);
   assert.equal(nativeRoutes.native.length, 1);
+});
+
+// Regression tests for the companion's displayed width tracking a live
+// terminal resize. Reproduced live first (see the PR description and
+// companion/AGENTS.md): the box rule and prose wrap width are already a
+// single, correctly-firing width source (terminal-format.js's
+// contentWidth(), driven by companion.js's real process.stdout 'resize'
+// listener - see companion.js's own comment above that listener) - the
+// resize *handling* itself was never broken. The actual bug was
+// terminal-format.js's old COMFORTABLE_WIDTH, a fixed 80-column target
+// regardless of how wide the terminal actually was: confirmed live, a
+// 100+ column real terminal still rendered an 80-col box rule with visible
+// unused space to its right. Fixed by raising that fixed target to a much
+// more generous MAX_CONTENT_WIDTH ceiling (120) that a terminal narrower
+// than the ceiling now tracks exactly, rather than changing anything about
+// how the resize event itself is wired up.
+//
+// These two tests spawn the real companion.js (via the same fake-TTY
+// wrapper box-padding.test.js/box-corruption.test.js already use) and fire
+// a genuine process.stdout 'resize' event partway through - not just call
+// terminal-format.js's exports directly (that unit-level coverage already
+// lives in terminal-format.test.js) - so this also stands as the
+// resize-event-handler regression test the bug's other possible root cause
+// (a #24-style regression, ruled out by the live reproduction above) would
+// have needed. Output is replayed through virtual-terminal.js's
+// replayToScreen, not a raw text/line search, for the same reason
+// box-padding.test.js/box-corruption.test.js already do: a resize triggers
+// a full \x1b[2J\x1b[H repaint, which a naive search can't tell apart from
+// stale pre-resize bytes still sitting earlier in the stream.
+function findRuleWidth(screenLines) {
+  // replayToScreen returns one already-right-trimmed string per row (see
+  // its own return statement), so a rule row's string length is exactly its
+  // rendered width.
+  const ruleLine = screenLines.find((line) => line.includes('─'));
+  return ruleLine === undefined ? null : ruleLine.length;
+}
+
+test('an idle live terminal resize grows the box rule up to the new MAX_CONTENT_WIDTH ceiling, not a fixed 80 columns', async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-width-resize-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const wrapper = [
+    `process.stdout.isTTY = true;`,
+    `process.stdout.columns = 60;`,
+    `process.stdout.rows = 20;`,
+    `await import('./companion.js');`,
+    // Mirrors what a real terminal does on SIGWINCH (see companion.js's own
+    // comment above its 'resize' listener): update columns, then emit
+    // 'resize' - exercising the actual live listener, not a reimplementation
+    // of it.
+    `setTimeout(() => {`,
+    `  process.stdout.columns = 200;`,
+    `  process.stdout.emit('resize');`,
+    `}, 700);`,
+  ].join('\n');
+
+  const child = spawn(process.execPath, ['--input-type=module', '-e', wrapper], {
+    cwd: __dirname,
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: '18170',
+      NO_COLOR: '',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  // Wait for the startup box to appear, then for comfortably longer than
+  // the scheduled resize (700ms above) plus its own redraw - a single '─'
+  // count can't distinguish "one rule drawn" from "two rules drawn" since
+  // each rule is itself dozens of '─' characters.
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline && !out.includes('─')) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+
+  child.kill();
+  fs.rmSync(scratch, { recursive: true, force: true });
+
+  const screen = replayToScreen(out, { cols: 200, rows: 20 });
+  const width = findRuleWidth(screen);
+  assert.ok(width !== null, `expected a box rule in the rendered screen, got: ${JSON.stringify(out)}`);
+  // The 200-col terminal is wider than MAX_CONTENT_WIDTH (120), so the rule
+  // must grow well past the old fixed 80-col target and land at the new
+  // ceiling - not stay pinned at 80, and not stretch to the full 200.
+  assert.equal(width, 120, `expected the rule to track the resize up to the 120-col ceiling, got ${width}`);
+});
+
+// Same resize, but fired while a reply is actively streaming (turnActive) -
+// companion.js's own resize listener explicitly defers the visible redraw
+// in that case (see its comment: "mid-turn, the new size still takes
+// effect - just only visibly once the turn's own next write calls drawBox
+// again") rather than forcing one immediately, so as not to corrupt
+// whatever the in-progress turn's own writes are tracking. This proves that
+// deferral still ends with the box correctly reflecting the new width once
+// the turn completes, and that nothing above the box was corrupted by the
+// resize landing mid-stream.
+test('a live terminal resize mid-stream does not corrupt the turn and the box reflects the new width once it ends', async () => {
+  const longReply =
+    'This is a long paragraph meant to exercise prose wrapping so a resize landing mid-stream has real in-progress content to interact with rather than an empty turn.';
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const mid = Math.ceil(longReply.length / 2);
+      const first = longReply.slice(0, mid);
+      const second = longReply.slice(mid);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: first } }] })}\n\n`);
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: second } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }, 600);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-width-resize-midstream-test-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+
+  const wrapper = [
+    `process.stdout.isTTY = true;`,
+    `process.stdout.columns = 60;`,
+    `process.stdout.rows = 20;`,
+    `await import('./companion.js');`,
+    `setTimeout(() => {`,
+    `  process.stdout.columns = 200;`,
+    `  process.stdout.emit('resize');`,
+    `}, 300);`, // lands while the reply above is still mid-stream
+  ].join('\n');
+
+  const child = spawn(process.execPath, ['--input-type=module', '-e', wrapper], {
+    cwd: __dirname,
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: '18171',
+      NO_COLOR: '',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let out = '';
+  child.stdout.on('data', (chunk) => (out += chunk.toString()));
+  child.stderr.on('data', (chunk) => (out += chunk.toString()));
+
+  await new Promise((resolve) => setTimeout(resolve, 800)); // let the box appear
+  fs.appendFileSync(capturesPath, JSON.stringify(makeCapture({ trigger: 'submit', attemptSeq: 1 })) + '\n');
+
+  // A single word, not a multi-word phrase - the reply's own wrap width
+  // (which this very test varies) can land a line break between any two
+  // words, so a phrase spanning a wrap point would falsely look absent.
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline && !out.includes('turn.')) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  child.kill();
+  server.close();
+  fs.rmSync(scratch, { recursive: true, force: true });
+
+  // Strip ANSI codes and undo indentContinuation's hanging-indent line
+  // breaks (a "\n" followed by the turnMarker-width indent) before checking
+  // the full phrase survived - otherwise a wrap point landing mid-phrase
+  // (which shifts with the width this test is exercising) would make an
+  // intact reply look corrupted.
+  const stripped = out.replace(/\x1b\[[0-9;]*m/g, '').replace(/\n {2}/g, ' ');
+  assert.match(stripped, /got your Submit for Two Sum - taking a look/);
+  assert.match(stripped, /attempt 1/);
+  // The full reply must have reached the terminal intact, not corrupted by
+  // the resize landing mid-write.
+  assert.match(stripped, /interact with rather than an empty turn\.?/);
+
+  const screen = replayToScreen(out, { cols: 200, rows: 20 });
+  const width = findRuleWidth(screen);
+  assert.ok(width !== null, `expected a box rule in the final rendered screen, got: ${JSON.stringify(out)}`);
+  assert.equal(width, 120, `expected the box to reflect the new width once the turn ended, got ${width}`);
 });

@@ -150,14 +150,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - `companion/terminal-format.js` owns companion.js's CLI-look styling: a `>` prompt marker, a `•`
   marker opening a tutor reply turn (`turnMarker`, replacing an earlier "tutor" role-label/framing-rule
   design - no per-speaker labels any more), dimmed `companion: ...` status/error lines, and markdown
-  rendering via `marked`/`marked-terminal` wrapped to a comfortable reading width (`COMFORTABLE_WIDTH`,
-  currently 80 cols, capped by a narrower real terminal) rather than the terminal's full width. That
-  width tracks a live terminal resize: `boxRule()` re-reads `process.stdout.columns` on every call, so
-  the box's own rule updates the instant it's next redrawn, but `marked-terminal`'s renderer is
-  registered once against a snapshot width via `marked.use(...)` - `refreshWidth()` re-registers it
-  with the current width, and `companion.js` calls it from a `process.stdout.on('resize', ...)`
-  listener so markdown rendered after a resize wraps to the new size rather than whatever was current
-  at import time. A separate module specifically so the styling decision (TTY or not, `NO_COLOR` or
+  rendering via `marked`/`marked-terminal`. Both the box rule and markdown wrap share one width source,
+  `contentWidth()` (`Math.min(process.stdout.columns, MAX_CONTENT_WIDTH)`) - below the `MAX_CONTENT_WIDTH`
+  ceiling (120 cols) this tracks the real terminal width exactly; only a terminal wider than that gets
+  capped, for readability on an ultra-wide window rather than letting a line run edge to edge. This used
+  to be a fixed ~80-column target regardless of how wide the terminal actually was (`COMFORTABLE_WIDTH`) -
+  changed after Thomson reported the width "not tracking the window": confirmed live the resize *handling*
+  below was never broken, the fixed target itself was the actual complaint (a 100+ col terminal still
+  rendered an 80-col rule with visible unused space to its right). That width tracks a live terminal
+  resize: `boxRule()` re-reads `process.stdout.columns` on every call, so the box's own rule updates the
+  instant it's next redrawn, but `marked-terminal`'s renderer is registered once against a snapshot width
+  via `marked.use(...)` - `refreshWidth()` re-registers it with the current width, and `companion.js` calls
+  it from a `process.stdout.on('resize', ...)` listener so markdown rendered after a resize wraps to the
+  new size rather than whatever was current at import time. `companion/companion.test.js`'s two
+  width-resize tests fire a real `process.stdout.emit('resize')` against a fake-TTY-wrapped real
+  `companion.js` subprocess (idle, and mid-stream/`turnActive`) and replay the output through
+  `virtual-terminal.js` to assert the rendered rule width, rather than calling `terminal-format.js`'s
+  exports directly (that unit-level coverage lives in `terminal-format.test.js`) - verified live over a
+  real `tmux` pane too, per this file's own bar for this class of bug (see below). A separate module
+  specifically so the styling decision (TTY or not, `NO_COLOR` or
   not) is computed
   once at import time and every exported helper already no-ops correctly, rather than each call site
   in companion.js carrying its own branch. Gates on `process.stdout.isTTY` explicitly rather than

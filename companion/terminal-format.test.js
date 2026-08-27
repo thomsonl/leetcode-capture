@@ -92,10 +92,10 @@ test('styling renders markdown (wrapped to a comfortable width, not the full ter
   assert.match(out, />/); // promptString's ">" marker
   // The 200-char paragraph must wrap well short of the 200-column terminal -
   // strip ANSI codes and check the longest rendered line stays bounded to
-  // the comfortable measure, not the terminal width.
+  // the 120-col ceiling, not the terminal's own width.
   const stripped = out.replace(/\x1b\[[0-9;]*m/g, '');
   const longestLine = Math.max(...stripped.split('\n').map((l) => l.length));
-  assert.ok(longestLine < 100, `expected wrapping well under the 200-col terminal, longest line was ${longestLine} chars`);
+  assert.ok(longestLine <= 120, `expected wrapping capped well under the 200-col terminal, longest line was ${longestLine} chars`);
 });
 
 test('NO_COLOR disables styling even on a TTY', async () => {
@@ -207,7 +207,9 @@ test('boxRule reflects a live terminal resize immediately - it recomputes width 
       "const { boxRule } = await import('./terminal-format.js');",
       'process.stdout.columns = 40;',
       "console.log('narrow', JSON.stringify(boxRule().replace(/\\x1b\\[[0-9;]*m/g, '').length));",
-      'process.stdout.columns = 200;', // still capped at the 80-col comfortable width
+      'process.stdout.columns = 100;', // below the 120-col ceiling - tracks the terminal exactly
+      "console.log('midwide', JSON.stringify(boxRule().replace(/\\x1b\\[[0-9;]*m/g, '').length));",
+      'process.stdout.columns = 200;', // beyond the ceiling - stays capped at 120
       "console.log('wide', JSON.stringify(boxRule().replace(/\\x1b\\[[0-9;]*m/g, '').length));",
     ].join('\n'),
   });
@@ -217,8 +219,9 @@ test('boxRule reflects a live terminal resize immediately - it recomputes width 
       .split('\n')
       .map((l) => l.split(' '))
   );
-  assert.equal(Number(lines.narrow), 40); // narrower than the comfortable width - not capped
-  assert.equal(Number(lines.wide), 80); // wider than comfortable - stays capped at 80
+  assert.equal(Number(lines.narrow), 40); // narrower than the ceiling - not capped
+  assert.equal(Number(lines.midwide), 100); // still below the ceiling - tracks the terminal exactly
+  assert.equal(Number(lines.wide), 120); // wider than the ceiling - stays capped at 120
 });
 
 test('refreshWidth re-registers marked-terminal so a resize changes where markdown wraps', async () => {
@@ -231,7 +234,7 @@ test('refreshWidth re-registers marked-terminal so a resize changes where markdo
       'refreshWidth();',
       "const narrow = renderMarkdown(longParagraph).replace(/\\x1b\\[[0-9;]*m/g, '');",
       "const narrowLongest = Math.max(...narrow.split('\\n').map((l) => l.length));",
-      'process.stdout.columns = 200;', // still capped at 80 by COMFORTABLE_WIDTH
+      'process.stdout.columns = 200;', // beyond the 120-col ceiling - stays capped at 120
       'refreshWidth();',
       "const wide = renderMarkdown(longParagraph).replace(/\\x1b\\[[0-9;]*m/g, '');",
       "const wideLongest = Math.max(...wide.split('\\n').map((l) => l.length));",
@@ -253,7 +256,7 @@ test('refreshWidth re-registers marked-terminal so a resize changes where markdo
   const wideLongest = Number(lines.wideLongest);
   assert.ok(narrowLongest <= 40, `expected the narrow render to wrap at <=40 cols, got ${narrowLongest}`);
   assert.ok(wideLongest > narrowLongest, `expected the post-resize render to use more width than the narrow one (${wideLongest} vs ${narrowLongest})`);
-  assert.ok(wideLongest <= 80, `expected the wide render to still cap at the 80-col comfortable width, got ${wideLongest}`);
+  assert.ok(wideLongest <= 120, `expected the wide render to still cap at the 120-col ceiling, got ${wideLongest}`);
 });
 
 // An unbroken long token (a URL, a long identifier) has no whitespace for
@@ -270,7 +273,7 @@ test('renderMarkdown hard-wraps an unbroken long token (no whitespace to break o
     isTTY: true,
     script: [
       "const { renderMarkdown } = await import('./terminal-format.js');",
-      'process.stdout.columns = 100;', // wider than the 80-col comfortable width
+      'process.stdout.columns = 100;', // below the 120-col ceiling - tracks the terminal exactly
       "const longToken = 'https://example.com/' + 'a'.repeat(200);",
       "console.log(renderMarkdown(`Here is a reference: ${longToken} and more text after it.`));",
     ].join('\n'),
@@ -278,8 +281,8 @@ test('renderMarkdown hard-wraps an unbroken long token (no whitespace to break o
   const stripped = out.replace(/\x1b\[[0-9;]*m/g, '');
   const longestLine = Math.max(...stripped.split('\n').map((l) => l.length));
   assert.ok(
-    longestLine <= 80,
-    `expected the unbroken token to be hard-wrapped to the 80-col comfortable width, longest line was ${longestLine} chars: ${JSON.stringify(stripped)}`
+    longestLine <= 100,
+    `expected the unbroken token to be hard-wrapped to the terminal's 100-col width, longest line was ${longestLine} chars: ${JSON.stringify(stripped)}`
   );
 });
 

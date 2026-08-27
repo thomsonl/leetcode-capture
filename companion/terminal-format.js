@@ -32,12 +32,20 @@ const enabled = stylingEnabled();
 // above ever leaking a color decision we didn't intend.
 const c = new Chalk({ level: enabled ? 1 : 0 });
 
-// A comfortable reading measure (chars per line), independent of how wide
-// the actual terminal window is - matching Claude Code's own CLI look,
-// where prose wraps well short of a wide/ultrawide terminal's full width
-// rather than stretching edge to edge. Capped by the real terminal width
-// too, for a narrower-than-comfortable window.
-const COMFORTABLE_WIDTH = 80;
+// The ceiling on how wide the box rule and prose wrap ever get, even on an
+// ultra-wide terminal - a bare line length with no upper bound at all reads
+// poorly once a window gets wide enough (a monitor-spanning terminal, a
+// maximized ultrawide), so this still caps it somewhere. Below this ceiling,
+// contentWidth() now tracks the real terminal width exactly - this used to
+// be a fixed ~80-column target regardless of how wide the terminal actually
+// was (confirmed live: a 100+ col terminal still rendered an 80-col rule
+// with visible unused space to its right, and Thomson reported this as
+// "the width isn't tracking the window"), which was a deliberate choice at
+// the time but is no longer what's wanted. 120 is picked as a generous but
+// still-readable ceiling (common max-line-length convention across many
+// terminal tools/style guides) - raise or remove this cap if a literally
+// uncapped width is preferred instead.
+const MAX_CONTENT_WIDTH = 120;
 
 // Visual width of turnMarker()'s own text ('•' plus its one trailing space -
 // see turnMarker below), ignoring ANSI codes: the bullet is a single-column
@@ -49,7 +57,7 @@ const COMFORTABLE_WIDTH = 80;
 const TURN_MARKER_WIDTH = 2;
 
 function contentWidth() {
-  return Math.min(process.stdout.columns || 80, COMFORTABLE_WIDTH);
+  return Math.min(process.stdout.columns || 80, MAX_CONTENT_WIDTH);
 }
 
 // Registers marked-terminal's renderer with the current width. Callable
@@ -70,10 +78,10 @@ function configureMarkedTerminal() {
       // count instead of staying within the comfortable measure.
       width: contentWidth() - TURN_MARKER_WIDTH,
       // Reflow (word-wrap) prose text to the width above rather than
-      // leaving lines exactly as the model generated them - the width is
-      // deliberately narrower than the terminal now, so without this,
-      // text would still run to the terminal's own edge regardless of the
-      // configured width.
+      // leaving lines exactly as the model generated them - below
+      // MAX_CONTENT_WIDTH the width above already matches the terminal's
+      // own edge, but once a terminal exceeds that ceiling this is what
+      // actually stops prose from running past it.
       reflowText: true,
     })
   );
