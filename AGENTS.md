@@ -489,7 +489,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   this with a stub `finish_reason: "length"` response, verified live to actually fail (not just pass
   coincidentally) when the `finishReason` gate is disabled - a real end-to-end run against the actual
   Ollama backend with an oversized capture reproduces the original leak and confirms the fix, and a
-  normal-sized capture's clean reply is unaffected.
+  normal-sized capture's clean reply is unaffected. That first fix only checked `finishReason` in the
+  *empty*-`content` branch: `resolveReplyText`'s `if (trimmedContent) return trimmedContent;` still ran
+  unconditionally before it, so a response that got cut off *after* already writing some real, non-empty
+  `content` was returned as a normal successful reply instead of raising the same cutoff error - a
+  narrower but real gap, code-reviewed rather than live-forced (20+ live trials never produced a
+  non-empty-but-truncated response). Fixed by moving the `finishReason === 'length'` check ahead of the
+  `trimmedContent` early return, covering both fields. The regression test for this
+  (`companion.test.js`, "non-empty content" case) cannot assert the partial text never reaches the
+  terminal the way the empty-content case's test does: `streamReply` calls `onChunk` with each
+  `delta.content` piece live, as it arrives over SSE, before `finishReason` is known at all - genuine
+  streaming behavior, out of scope to change here. What the test asserts instead is the actual bug/fix
+  boundary: the turn ends via the `companion: error talking to backend ... cut off before finishing`
+  path rather than completing silently with no error line.
 
 - Two padding/spacing changes matched against a Claude Code CLI transcript's own look: a hanging indent
   for wrapped reply lines, and a blank breathing-room row below the input box's prompt (symmetric with

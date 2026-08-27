@@ -200,6 +200,47 @@ test('a reply cut off mid-thought (finish_reason "length", empty content) is dis
   assert.match(out, /cut off before finishing/);
 });
 
+// Regression test for a related but distinct gap in the same fix: the check
+// above only covered `content` being *empty* at cutoff time. A model can
+// also get cut off (finish_reason "length") after it had already started
+// writing real, non-empty `content` - resolveReplyText's old early return
+// (`if (trimmedContent) return trimmedContent;`) ran before any check of
+// finishReason, so this partial content was returned as if it were a
+// complete, successful reply instead of raising the same error the
+// empty-content case above already raises (see companion.js's
+// resolveReplyText).
+//
+// Unlike the reasoning-only case above, this test can't assert the partial
+// text never reaches the terminal at all: `streamReply` calls `onChunk` with
+// each `delta.content` piece live, as it arrives over SSE, before
+// finishReason is even known - genuine, correct streaming behavior (a reply
+// is meant to appear as it's generated) that's out of scope for this fix
+// (see companion.js's streamReply/writeReplyPiece). What distinguishes the
+// fix from the bug is what happens once the stream ends: pre-fix,
+// resolveReplyText returned the partial content as a normal successful
+// reply - no error line, and LocalBackend.history would carry it as a
+// completed exchange. Post-fix, the turn ends in the same
+// "companion: error talking to backend ... cut off before finishing" path
+// the empty-content case uses, rather than a silent, clean finish.
+test('a reply cut off mid-generation (finish_reason "length", non-empty content) raises the cutoff error instead of completing silently', async () => {
+  const partialContent = 'Nice work on the hash-map approach. Your time complexity is O(n) and the';
+  const out = await runCompanion({
+    stubReplyFor: () => ({
+      role: 'assistant',
+      content: partialContent,
+      finishReason: 'length',
+    }),
+    capture: makeCapture({ trigger: 'submit', attemptSeq: 1 }),
+  });
+
+  assert.match(out, /got your Submit for Two Sum - taking a look/);
+  assert.match(out, /attempt 1/);
+  // The turn must end in the error path, not a silent, clean completion -
+  // this is the actual bug/fix boundary (see comment above).
+  assert.match(out, /error talking to backend/);
+  assert.match(out, /cut off before finishing/);
+});
+
 test('a normal reply with populated `content` still prints as before', async () => {
   const out = await runCompanion({
     stubReplyFor: () => ({ role: 'assistant', content: 'Got your run - standing by.' }),

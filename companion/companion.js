@@ -427,16 +427,24 @@ class ClaudeBackend {
 // according to which API path is actually in play, since the fix differs.
 function resolveReplyText({ content, reasoning, finishReason, advice }) {
   const trimmedContent = content && content.trim();
-  if (trimmedContent) return trimmedContent;
   const trimmedReasoning = reasoning && reasoning.trim();
-  if (trimmedReasoning && finishReason === 'length') {
+  // A truncated generation (finishReason "length") is unsafe to show even
+  // when `content` is non-empty: the model was still mid-answer when it got
+  // cut off, so whatever content it had written so far is a partial reply,
+  // not a complete one - showing it as-is silently passes off an incomplete
+  // answer as though the tutor had finished responding. This check has to
+  // run before the `trimmedContent` early-return below, not after, or a
+  // non-empty-but-truncated reply would return successfully and never reach
+  // it at all.
+  if (finishReason === 'length' && (trimmedContent || trimmedReasoning)) {
     throw new Error(
       'local backend reply was cut off before finishing (likely ran out of context while still ' +
-        '"thinking") - discarding it rather than showing incomplete internal reasoning as the reply; ' +
+        '"thinking") - discarding it rather than showing incomplete/partial content as the reply; ' +
         (advice ||
           'try a shorter capture, clearing context, or a model/server configuration with more context')
     );
   }
+  if (trimmedContent) return trimmedContent;
   return trimmedReasoning || '';
 }
 
