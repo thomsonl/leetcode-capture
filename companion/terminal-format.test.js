@@ -300,6 +300,66 @@ test('renderMarkdown hard-wraps an unbroken long token (no whitespace to break o
   );
 });
 
+// A *tight* bulleted list (no blank line between items - what an LLM's own
+// list output almost always looks like) used to skip reflowText entirely:
+// marked-terminal's listitem() only reflow-wraps a *loose* item (blank line
+// between bullets), so a tight item's long single-sentence bullet rendered
+// as one raw, unwrapped line, relying on the terminal's own hardware
+// auto-wrap to break it - mid-word, with no hanging indent - once it hit
+// the physical column edge. Confirmed live at a 250+ column tmux width (see
+// companion/AGENTS.md and the PR that introduced this test) before this fix
+// existed. This compares a tight list's rendering directly against the
+// *same* content as a genuinely loose list (which already reflowed
+// correctly before this fix) rather than hardcoding marked-terminal's own
+// indent amount, so the test stays meaningful even if marked-terminal
+// changes its internal list-indent width in a future upgrade.
+test('a long single-sentence bullet in a tight list wraps at a word boundary with a hanging indent, same as a loose list', async () => {
+  const out = await runInChild({
+    isTTY: true,
+    script: [
+      'process.stdout.columns = 280;', // wide enough that the old bug's single unwrapped line was visibly absurd
+      "const { renderMarkdown } = await import('./terminal-format.js');",
+      // A realistic long, single-sentence bullet - well past 280 columns
+      // unwrapped, with no punctuation-adjacent whitespace near the column
+      // boundary a naive fixed-offset split might accidentally land on.
+      "const sentence = 'Correctness: your window invariant held throughout the trace I walked through by hand, including the tricky case where a repeated character last recorded index is actually to the left of the current window own left boundary, which is the classic off-by-one trap in this exact family of sliding-window problems.';",
+      "const tight = renderMarkdown(`- ${sentence}\\n- Complexity: O(n) time.`).replace(/\\x1b\\[[0-9;]*m/g, '');",
+      "const loose = renderMarkdown(`- ${sentence}\\n\\n- Complexity: O(n) time.`).replace(/\\x1b\\[[0-9;]*m/g, '');",
+      'console.log(JSON.stringify({ tight, loose, columns: 280 }));',
+    ].join('\n'),
+  });
+  const { tight, loose } = JSON.parse(out.trim());
+  const tightLines = tight.split('\n');
+  const longest = Math.max(...tightLines.map((l) => l.length));
+  // No line - including the list's own tab+bullet-marker indent on top of
+  // the reflowed text (LIST_INDENT_OVERHEAD) - may run past the terminal's
+  // actual width. A looser bound here previously let a genuine overflow
+  // bug through: reflowText wrapped a bullet's raw text to fit, but the
+  // list-render indent added on top of that pushed the total past 280
+  // anyway, and the terminal's own hardware wrap then split a hyphenated
+  // word ("off-by-one") mid-word - confirmed live in a real 260-col tmux
+  // pane (see the PR that added this test and companion/AGENTS.md).
+  assert.ok(longest <= 280, `expected every rendered line to fit within the 280-col terminal, longest line was ${longest} chars: ${JSON.stringify(tight)}`);
+  assert.ok(tightLines.length >= 3, `expected the long bullet to wrap across multiple lines, got: ${JSON.stringify(tight)}`);
+  // The fix should make a tight list render byte-for-byte identically to
+  // the same content as a loose list - that's the existing, already-correct
+  // behavior this test pins the tight-list path to.
+  assert.equal(tight, loose, 'expected a tight list to reflow exactly like an equivalent loose list');
+  // No mid-word break: every word from the source sentence survives intact
+  // somewhere in the wrapped output, rather than being split across two
+  // lines at whatever column the raw terminal happened to hard-wrap on.
+  for (const word of ['recorded', 'boundary,', 'off-by-one', 'sliding-window', 'problems.']) {
+    assert.ok(tight.includes(word), `expected the word "${word}" to survive intact (not split mid-word), got: ${JSON.stringify(tight)}`);
+  }
+  // Continuation lines (wrapped text that isn't the bullet marker's own
+  // first line) are indented under the marker, not flush at column 0 -
+  // found generically rather than by a specific word, since exactly where
+  // the line wraps shifts with marked-terminal's own indent accounting.
+  const continuationLine = tightLines.find((l) => l && !l.trim().startsWith('*'));
+  assert.ok(continuationLine, `expected to find a wrapped continuation line, got: ${JSON.stringify(tight)}`);
+  assert.ok(/^\s+\S/.test(continuationLine), `expected the continuation line to be indented, got: ${JSON.stringify(continuationLine)}`);
+});
+
 test('spinnerFrame cycles through distinct glyphs and stays plain text off a TTY', async () => {
   const out = await runInChild({
     isTTY: false,
