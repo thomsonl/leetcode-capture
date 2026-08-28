@@ -175,6 +175,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   confirmed via a real relay server receiving exactly one correctly-shaped capture per shortcut
   press with focus both inside and outside that element, and confirmed the dedup guard collapses a
   simulated native-handler synthetic click into exactly one capture rather than two.
+  A second, initially-missed double-capture path: browsers fire repeated `keydown` events
+  (`event.repeat === true`) for as long as a key combo is held - an initial ~500ms delay, then
+  repeats every ~30-50ms - and that first repeat lands *outside* `isDuplicateCapture`'s 300ms
+  window (which only catches the fast repeats once they start), so briefly holding Ctrl+Enter/Ctrl+'
+  down produced a second real capture. Fixed by excluding `event.repeat` directly in
+  `matchesRunShortcut`/`matchesSubmitShortcut`, so only the genuine initial press ever matches.
+  Live-confirmed both ways with a simulated held-key sequence (real timing: initial press, then
+  repeats starting at 500ms): reverting the `!event.repeat` check reliably reproduced 2 captures
+  from one held-down press, restoring it brought it back to 1, for both shortcuts.
 
 - `companion/terminal-format.js` owns companion.js's CLI-look styling: a `>` prompt marker, a `•`
   marker opening a tutor reply turn (`turnMarker`, replacing an earlier "tutor" role-label/framing-rule

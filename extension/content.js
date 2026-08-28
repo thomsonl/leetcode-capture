@@ -370,14 +370,24 @@
     return (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
   }
 
+  // Browsers fire repeated keydown events (event.repeat === true) for as
+  // long as a key combo is held down - typically an initial ~500ms delay,
+  // then repeats every ~30-50ms. sendCapture's own dedup guard
+  // (isDuplicateCapture, above) catches the fast repeats fine once they
+  // start, but the *first* repeat lands ~500ms after the initial press -
+  // outside its 300ms window - so without this check, briefly holding
+  // Ctrl+Enter/Ctrl+' down (even by accident) would produce a second real
+  // capture at that first repeat. Excluding event.repeat here means only
+  // the genuine initial press of a combo ever counts as a match, regardless
+  // of how long it's then held.
   function matchesRunShortcut(event) {
     // event.code === "Quote" is a fallback for keyboard layouts where the
     // physical apostrophe key doesn't produce event.key === "'".
-    return isShortcutModifierPressed(event) && (event.key === "'" || event.code === "Quote");
+    return !event.repeat && isShortcutModifierPressed(event) && (event.key === "'" || event.code === "Quote");
   }
 
   function matchesSubmitShortcut(event) {
-    return isShortcutModifierPressed(event) && event.key === "Enter";
+    return !event.repeat && isShortcutModifierPressed(event) && event.key === "Enter";
   }
 
   // Bound on `document` in the capture phase - same as handleDelegatedClick

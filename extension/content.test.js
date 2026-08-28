@@ -55,8 +55,8 @@ function mockButton({ locator = null, ariaLabel = null, hasPlayIcon = false, tex
 
 // Plain mock of the KeyboardEvent fields matchesRunShortcut/matchesSubmitShortcut
 // actually read - no real DOM/Event needed, matching mockButton's approach above.
-function mockKeyboardEvent({ key = '', code = '', ctrlKey = false, metaKey = false, shiftKey = false, altKey = false } = {}) {
-  return { key, code, ctrlKey, metaKey, shiftKey, altKey };
+function mockKeyboardEvent({ key = '', code = '', ctrlKey = false, metaKey = false, shiftKey = false, altKey = false, repeat = false } = {}) {
+  return { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat };
 }
 
 test('matchesRunButton matches an icon-only Run button with no visible text', () => {
@@ -239,6 +239,22 @@ test('matchesSubmitShortcut does not match plain Enter with no modifier held', (
 
 test('matchesSubmitShortcut does not match Ctrl+Alt+Enter', () => {
   const event = mockKeyboardEvent({ key: 'Enter', ctrlKey: true, altKey: true });
+  assert.equal(matchesSubmitShortcut(event), false);
+});
+
+// Regression tests for the auto-repeat gap: holding a key combo down makes
+// the browser fire repeated keydown events (event.repeat === true) - the
+// first of which lands well outside sendCapture's 300ms dedup window (an
+// initial ~500ms delay before repeats start), so without an explicit
+// event.repeat check, briefly holding the combo down would produce a second
+// real capture. Only the genuine initial (non-repeat) press should match.
+test('matchesRunShortcut does not match an auto-repeat Ctrl+apostrophe from a held-down key', () => {
+  const event = mockKeyboardEvent({ key: "'", ctrlKey: true, repeat: true });
+  assert.equal(matchesRunShortcut(event), false);
+});
+
+test('matchesSubmitShortcut does not match an auto-repeat Ctrl+Enter from a held-down key', () => {
+  const event = mockKeyboardEvent({ key: 'Enter', ctrlKey: true, repeat: true });
   assert.equal(matchesSubmitShortcut(event), false);
 });
 
