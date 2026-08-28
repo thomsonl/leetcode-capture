@@ -20,7 +20,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const { matchesRunButton, matchesSubmitButton, requestModelCode } = require(path.join(__dirname, 'content.js'));
+const {
+  matchesRunButton,
+  matchesSubmitButton,
+  requestModelCode,
+  matchesRunShortcut,
+  matchesSubmitShortcut,
+  isDuplicateCapture,
+} = require(path.join(__dirname, 'content.js'));
 
 // Minimal EventTarget-like mock so requestModelCode's CustomEvent
 // request/response round-trip (normally against `document`, shared between
@@ -44,6 +51,12 @@ function mockButton({ locator = null, ariaLabel = null, hasPlayIcon = false, tex
     },
     textContent: text,
   };
+}
+
+// Plain mock of the KeyboardEvent fields matchesRunShortcut/matchesSubmitShortcut
+// actually read - no real DOM/Event needed, matching mockButton's approach above.
+function mockKeyboardEvent({ key = '', code = '', ctrlKey = false, metaKey = false, shiftKey = false, altKey = false } = {}) {
+  return { key, code, ctrlKey, metaKey, shiftKey, altKey };
 }
 
 test('matchesRunButton matches an icon-only Run button with no visible text', () => {
@@ -169,6 +182,93 @@ test('requestModelCode resolves to null on timeout when nothing responds', async
 // assertion below requires WAR's pattern to strictly cover - not just
 // equal - the content script's pattern: reintroducing an identical pair is
 // exactly what silently broke PR #16's fix in the first place.
+// Regression tests for the keyboard-shortcut support: Ctrl/Cmd+' triggers a
+// Run capture, Ctrl/Cmd+Enter triggers a Submit capture. This mapping is the
+// opposite of what an early draft of the task assumed - live investigation
+// found real leetcode.com Cloudflare-blocked in the environment that added
+// this feature, and external research (LeetCode's own removed-then-missed
+// native Ctrl+Enter-submits-code binding, and the well-known third-party
+// "LeetCode Shortcuts" extension) turned up Ctrl+'=Run / Ctrl+Enter=Submit
+// as the real-world convention. See content.js's own comment above
+// matchesRunShortcut for the full story.
+test('matchesRunShortcut matches Ctrl+apostrophe', () => {
+  const event = mockKeyboardEvent({ key: "'", ctrlKey: true });
+  assert.equal(matchesRunShortcut(event), true);
+  assert.equal(matchesSubmitShortcut(event), false);
+});
+
+test('matchesRunShortcut matches Cmd+apostrophe (metaKey, for Mac)', () => {
+  const event = mockKeyboardEvent({ key: "'", metaKey: true });
+  assert.equal(matchesRunShortcut(event), true);
+});
+
+test('matchesRunShortcut matches via event.code "Quote" as a layout fallback even if event.key differs', () => {
+  const event = mockKeyboardEvent({ key: 'Dead', code: 'Quote', ctrlKey: true });
+  assert.equal(matchesRunShortcut(event), true);
+});
+
+test('matchesRunShortcut does not match plain apostrophe with no modifier held', () => {
+  // The common case while just typing a string literal containing a quote.
+  const event = mockKeyboardEvent({ key: "'" });
+  assert.equal(matchesRunShortcut(event), false);
+});
+
+test('matchesRunShortcut does not match Ctrl+Shift+apostrophe', () => {
+  const event = mockKeyboardEvent({ key: "'", ctrlKey: true, shiftKey: true });
+  assert.equal(matchesRunShortcut(event), false);
+});
+
+test('matchesSubmitShortcut matches Ctrl+Enter', () => {
+  const event = mockKeyboardEvent({ key: 'Enter', ctrlKey: true });
+  assert.equal(matchesSubmitShortcut(event), true);
+  assert.equal(matchesRunShortcut(event), false);
+});
+
+test('matchesSubmitShortcut matches Cmd+Enter (metaKey, for Mac)', () => {
+  const event = mockKeyboardEvent({ key: 'Enter', metaKey: true });
+  assert.equal(matchesSubmitShortcut(event), true);
+});
+
+test('matchesSubmitShortcut does not match plain Enter with no modifier held', () => {
+  // The overwhelmingly common case: every newline typed while writing code.
+  // This must never accidentally match, or every Enter keystroke would fire
+  // a Submit capture.
+  const event = mockKeyboardEvent({ key: 'Enter' });
+  assert.equal(matchesSubmitShortcut(event), false);
+});
+
+test('matchesSubmitShortcut does not match Ctrl+Alt+Enter', () => {
+  const event = mockKeyboardEvent({ key: 'Enter', ctrlKey: true, altKey: true });
+  assert.equal(matchesSubmitShortcut(event), false);
+});
+
+// Regression tests for sendCapture's dedup guard, which collapses a second
+// capture for the same trigger arriving shortly after the first into a
+// no-op - guarding against the shortcut listener and handleDelegatedClick
+// both firing for what's really one logical Run/Submit event (see
+// content.js's own comment above isDuplicateCapture for the full
+// reasoning). isDuplicateCapture is a pure function so this is tested
+// directly, without going through sendCapture's real fetch/DOM-reading side
+// effects.
+test('isDuplicateCapture is false for a trigger with no prior capture recorded', () => {
+  assert.equal(isDuplicateCapture('run', 1000, {}), false);
+});
+
+test('isDuplicateCapture is true for the same trigger arriving just after a prior capture', () => {
+  const lastCaptureAt = { submit: 1000 };
+  assert.equal(isDuplicateCapture('submit', 1200, lastCaptureAt), true);
+});
+
+test('isDuplicateCapture is false once the dedup window has fully elapsed', () => {
+  const lastCaptureAt = { submit: 1000 };
+  assert.equal(isDuplicateCapture('submit', 1301, lastCaptureAt), false);
+});
+
+test('isDuplicateCapture tracks each trigger independently - a recent "run" capture does not suppress a "submit" capture', () => {
+  const lastCaptureAt = { run: 1000 };
+  assert.equal(isDuplicateCapture('submit', 1050, lastCaptureAt), false);
+});
+
 test("manifest's web_accessible_resources matches strictly cover (are broader than) content_scripts matches", () => {
   const manifest = require(path.join(__dirname, 'manifest.json'));
 

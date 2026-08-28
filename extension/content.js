@@ -205,7 +205,36 @@
     return getEditorCodeFromDom();
   }
 
+  // Guards against the same logical Run/Submit event producing two captures
+  // via two different paths - e.g. the keyboard-shortcut listener below
+  // calling sendCapture("submit") directly, *and* LeetCode's own native
+  // Ctrl+Enter handler (see the shortcut section below for why Ctrl+Enter
+  // is believed to already be LeetCode's own native Submit binding)
+  // separately ending up triggering handleDelegatedClick's own
+  // sendCapture("submit") - e.g. if that native handler performs a real DOM
+  // click on the Submit button internally rather than calling some other
+  // internal submit function directly. Which mechanism LeetCode's frontend
+  // actually uses couldn't be confirmed live (real leetcode.com is
+  // Cloudflare-blocked in this environment - see the shortcut section), so
+  // this guard is deliberately mechanism-agnostic: it doesn't matter *how*
+  // a second call for the same trigger might arrive, only that one arriving
+  // within CAPTURE_DEDUP_WINDOW_MS of an already-sent capture for that same
+  // trigger is the same logical event and should be dropped, not resent.
+  const CAPTURE_DEDUP_WINDOW_MS = 300;
+  const lastCaptureAt = {};
+  function isDuplicateCapture(trigger, now, lastCaptureAtByTrigger) {
+    const last = lastCaptureAtByTrigger[trigger];
+    return last !== undefined && now - last < CAPTURE_DEDUP_WINDOW_MS;
+  }
+
   async function sendCapture(trigger) {
+    const now = Date.now();
+    if (isDuplicateCapture(trigger, now, lastCaptureAt)) {
+      console.log(`[leetcode-capture] skipping duplicate ${trigger} capture (already captured within the last ${CAPTURE_DEDUP_WINDOW_MS}ms)`);
+      return;
+    }
+    lastCaptureAt[trigger] = now;
+
     const code = await getEditorCode();
     if (code === null) {
       console.warn("[leetcode-capture] editor content not found, skipping capture");
@@ -302,6 +331,76 @@
     }
   }
 
+  // Keyboard-shortcut support for Run/Submit captures, so a capture can be
+  // triggered without touching the mouse: Ctrl/Cmd+' for Run, Ctrl/Cmd+Enter
+  // for Submit.
+  //
+  // This mapping was decided after the task's own required first step -
+  // live-verifying against a real leetcode.com/problems/ page with
+  // chrome-devtools-axi - turned out to be blocked in this environment: real
+  // leetcode.com fails Cloudflare's Turnstile bot challenge for the
+  // automated browser here (confirmed live: the challenge's own "Verify you
+  // are human" checkbox was clicked and explicitly reverted to unverified,
+  // not just slow to load; plain curl gets a 403 too). Verified instead via
+  // external research, since guessing wasn't an option: a 2024/2025
+  // leetcode.com/discuss thread ("[Ctrl]+[Enter] hotkey annoyed") describes
+  // real users hitting accidental submissions from Ctrl+Enter while typing -
+  // i.e. LeetCode's own site currently binds native Ctrl+Enter to Submit,
+  // not Run - and the well-established third-party "LeetCode Shortcuts"
+  // Chrome extension (built specifically to restore the shortcut LeetCode's
+  // own site removed in September 2019) uses Ctrl+' for Run and Ctrl+Enter
+  // for Submit. The original task brief had this mapping backwards; this is
+  // the corrected one, confirmed by Thomson.
+  //
+  // Because Ctrl+Enter is believed to already be LeetCode's own native
+  // Submit action, this listener deliberately never calls preventDefault()
+  // or stopPropagation() on either shortcut - doing so on Ctrl+Enter would
+  // risk suppressing that real submission, which needs to happen exactly as
+  // it would from a real click. The listener is purely additive, exactly
+  // like handleDelegatedClick above: it only calls sendCapture(), and relies
+  // on sendCapture's own dedup guard (isDuplicateCapture, above) to collapse
+  // this into exactly one capture if LeetCode's native handler also ends up
+  // triggering handleDelegatedClick through some internal mechanism.
+  function isShortcutModifierPressed(event) {
+    // Ctrl on Windows/Linux, Cmd on Mac - matching the "Ctrl/Cmd" convention
+    // used by both LeetCode's own former native binding and the "LeetCode
+    // Shortcuts" extension this mapping was verified against above.
+    // Shift/Alt are excluded so this doesn't also match an unrelated combo
+    // that happens to hold Ctrl/Cmd down, e.g. Ctrl+Shift+Enter.
+    return (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
+  }
+
+  function matchesRunShortcut(event) {
+    // event.code === "Quote" is a fallback for keyboard layouts where the
+    // physical apostrophe key doesn't produce event.key === "'".
+    return isShortcutModifierPressed(event) && (event.key === "'" || event.code === "Quote");
+  }
+
+  function matchesSubmitShortcut(event) {
+    return isShortcutModifierPressed(event) && event.key === "Enter";
+  }
+
+  // Bound on `document` in the capture phase - same as handleDelegatedClick
+  // above, and for the same reason: capture-phase listeners run top-down
+  // (document first), so a document-level capture listener always observes
+  // the keydown event ahead of anything bound deeper in the DOM (e.g.
+  // Monaco's own internal keybinding service), regardless of whether that
+  // inner code later calls stopPropagation(). This is what makes the
+  // shortcut work the same whether focus is inside the Monaco editor or
+  // elsewhere on the page. Reasoned from standard DOM event-flow semantics
+  // and live-verified against a local page with a nested contenteditable
+  // element that calls stopPropagation() on its own keydown handler,
+  // standing in for Monaco's real instance, which real leetcode.com being
+  // Cloudflare-blocked (above) ruled out testing directly - confirm live
+  // against the real page if this project ever regains access to it.
+  function handleShortcutKeydown(event) {
+    if (matchesRunShortcut(event)) {
+      sendCapture("run");
+    } else if (matchesSubmitShortcut(event)) {
+      sendCapture("submit");
+    }
+  }
+
   // Test-only hook: exposes the button matchers and the model-read
   // message-passing logic to content.test.js via plain CommonJS require(),
   // so they're unit-testable with simple mocks (no jsdom, no build step)
@@ -309,11 +408,19 @@
   // script - `module` is undefined in the browser, so this is a no-op
   // there.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { matchesRunButton, matchesSubmitButton, requestModelCode };
+    module.exports = {
+      matchesRunButton,
+      matchesSubmitButton,
+      requestModelCode,
+      matchesRunShortcut,
+      matchesSubmitShortcut,
+      isDuplicateCapture,
+    };
     return;
   }
 
   document.addEventListener("click", handleDelegatedClick, true);
+  document.addEventListener("keydown", handleShortcutKeydown, true);
 
   console.log("[leetcode-capture] content script active");
 })();
