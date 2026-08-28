@@ -146,6 +146,44 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   naming) was not independently confirmed live - if it turns out different, the aria-label/icon
   fallbacks still cover it, but confirm the real value with a live DOM inspection if this ever needs
   revisiting.
+- Keyboard-shortcut support for Run/Submit captures: Ctrl/Cmd+' for Run, Ctrl/Cmd+Enter for
+  Submit - the reverse of an early draft of this feature. Real leetcode.com couldn't be reached to
+  verify directly: Cloudflare's Turnstile bot challenge blocks the automated browser here even after
+  upgrading `chrome-devtools-axi` 0.1.29 -> 0.1.32, which was itself required first - 0.1.29's
+  `open`/`newpage`/`selectpage` never returned a usable `pageId`, so every `snapshot`/`eval` call
+  failed outright, a tool bug unrelated to leetcode.com. Confirmed instead via external research: a
+  2024/2025 leetcode.com/discuss thread ("[Ctrl]+[Enter] hotkey annoyed") describes real users
+  hitting accidental submissions from Ctrl+Enter while typing (LeetCode's own native Submit
+  binding), and the well-established third-party "LeetCode Shortcuts" Chrome extension (built to
+  restore what LeetCode's own site removed in Sept 2019) uses Ctrl+' for Run. `matchesRunShortcut`/
+  `matchesSubmitShortcut` in `content.js` mirror `matchesRunButton`/`matchesSubmitButton`'s
+  testable-pure-function style. The keydown listener is bound on `document` in the capture phase
+  (same as the click listener) so it observes the event before Monaco's own internal keybinding
+  service can `stopPropagation()` it - live-verified against a local page with a nested element
+  doing exactly that. Because Ctrl+Enter is believed to already be LeetCode's own native Submit
+  action, the listener never calls `preventDefault()`/`stopPropagation()` on either shortcut - it's
+  purely additive, like the click listener. The resulting double-capture risk (LeetCode's native
+  Ctrl+Enter handler possibly performing a real synthetic click on the Submit button internally,
+  which would then also match `matchesSubmitButton` and fire a second capture) is closed by
+  `isDuplicateCapture`, a mechanism-agnostic 300ms per-trigger dedup guard inside `sendCapture`
+  itself, rather than by trying to detect LeetCode's actual internal mechanism, which couldn't be
+  confirmed live either. Live end-to-end verification used this project's established local-fake-page
+  fallback (see the WAR/matches bullet above): a static page under a `/problems/<slug>/` path (so
+  `getProblemSlug()` resolves) served over `python3 -m http.server`, the unmodified `content.js`
+  loaded via `<script src>`, a `.monaco-editor`/`.view-lines` DOM fake, and a nested focusable
+  element with its own capture-phase `stopPropagation()` keydown listener standing in for Monaco -
+  confirmed via a real relay server receiving exactly one correctly-shaped capture per shortcut
+  press with focus both inside and outside that element, and confirmed the dedup guard collapses a
+  simulated native-handler synthetic click into exactly one capture rather than two.
+  A second, initially-missed double-capture path: browsers fire repeated `keydown` events
+  (`event.repeat === true`) for as long as a key combo is held - an initial ~500ms delay, then
+  repeats every ~30-50ms - and that first repeat lands *outside* `isDuplicateCapture`'s 300ms
+  window (which only catches the fast repeats once they start), so briefly holding Ctrl+Enter/Ctrl+'
+  down produced a second real capture. Fixed by excluding `event.repeat` directly in
+  `matchesRunShortcut`/`matchesSubmitShortcut`, so only the genuine initial press ever matches.
+  Live-confirmed both ways with a simulated held-key sequence (real timing: initial press, then
+  repeats starting at 500ms): reverting the `!event.repeat` check reliably reproduced 2 captures
+  from one held-down press, restoring it brought it back to 1, for both shortcuts.
 
 - `companion/terminal-format.js` owns companion.js's CLI-look styling: a `>` prompt marker, a `•`
   marker opening a tutor reply turn (`turnMarker`, replacing an earlier "tutor" role-label/framing-rule
