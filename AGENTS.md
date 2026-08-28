@@ -14,8 +14,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   silently truncates anything beyond a screenful - confirmed live: a 156-line solution showed only 10
   `.view-line` elements in the DOM but the model always has the full text. `extension/inject.js` is injected
   as a real `<script>` tag (not a declarative MV3 `"world": "MAIN"` content script - Firefox only gained
-  reliable support for that in Firefox 128, after this extension's `strict_min_version: 109`) so it runs in
-  the page's MAIN world where `monaco` lives, and talks back to `content.js`'s isolated world over
+  reliable support for that in Firefox 128; this extension's `strict_min_version` was 109 at the time this
+  was written, since raised to 140 for the AMO submission prep below, which happens to clear that
+  threshold too - the injection approach was deliberately *not* rearchitected to match, since it's the
+  same proven, live-verified mechanism on both browsers and a version bump elsewhere is no reason to
+  rewrite working code) so it runs in the page's MAIN world where `monaco` lives, and talks back to
+  `content.js`'s isolated world over
   `CustomEvent`s on `document` (`leetcode-capture:request-code` / `leetcode-capture:code-response`, matched
   by a request id) - both worlds share the same DOM, so no `postMessage` is needed.
   `getEditorCode()` in `content.js` awaits that round-trip (500ms timeout) and falls back to the old

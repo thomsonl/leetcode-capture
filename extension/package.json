@@ -2,8 +2,10 @@
   "name": "leetcode-capture-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "MV3 content script that captures LeetCode Run/Submit attempts - no build step, no dependencies. This package.json exists only to run content.test.js.",
+  "description": "MV3 content script that captures LeetCode Run/Submit attempts - no build step, no dependencies. This package.json exists to run content.test.js and to alias the web-ext (AMO tooling) commands in AMO_SUBMISSION_CHECKLIST.md - web-ext itself is fetched on demand via npx, not a declared dependency, so this stays dependency-free.",
   "scripts": {
-    "test": "node --test content.test.js"
+    "test": "node --test content.test.js",
+    "lint:amo": "npx --yes web-ext lint --source-dir . --ignore-files \"content.test.js\" \"package.json\" \"AMO_SUBMISSION_CHECKLIST.md\" \"PRIVACY_POLICY.md\" \"web-ext-artifacts/**\"",
+    "build:amo": "npx --yes web-ext build --source-dir . --overwrite-dest --ignore-files \"content.test.js\" \"package.json\" \"AMO_SUBMISSION_CHECKLIST.md\" \"PRIVACY_POLICY.md\" \"web-ext-artifacts/**\""
   }
 }
