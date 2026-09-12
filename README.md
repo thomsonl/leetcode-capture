@@ -29,7 +29,7 @@ irm https://claude.ai/install.ps1 | iex
 Then load the browser extension.
 
 **Chrome:** open `chrome://extensions`, enable "Developer mode", click "Load unpacked", and select the `extension/` folder.
-**Firefox / Zen:** open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on", and select `extension/manifest.json`.
+**Firefox:** open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on", and select `extension/manifest.json`.
 
 Open any `leetcode.com/problems/<slug>/` page to confirm it loaded.
 
@@ -61,5 +61,5 @@ Optional shortcut: symlink the launcher once (`ln -s "$(pwd)/bin/leetcode" ~/.lo
 - **Obsidian vault integration (experimental).**
   Logs your attempts as notes into an Obsidian vault.
   Run `vault-tool/log-session.js` to manually log a past session, or set `VAULT_AUTO_SUMMARY=1` to have the companion turn every Submit into a vault note automatically as you go.
-  Point either at your own vault via `vault.config.json` (copy `vault.config.example.json`) or the `VAULT_PATH`/`VAULT_ALGORITHMS_SUBFOLDER` env vars; without either, it defaults to Thomson's own vault setup.
-  These features are experimental: the star ratings and proficiency scores they write are LLM judgment calls, not verified facts.
+  Point either at your own vault via `vault.config.json` (copy `vault.config.example.json`) or the `VAULT_PATH`/`VAULT_ALGORITHMS_SUBFOLDER` env vars.
+  These features are experimental: the star ratings and proficiency scores they write are LLM assumptions.
