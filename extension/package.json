@@ -1,6 +1,6 @@
 {
   "name": "leetcode-capture-extension",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "MV3 content script that captures LeetCode Run/Submit attempts - no build step, no dependencies. This package.json exists to run content.test.js and to alias the web-ext (AMO tooling) commands in AMO_SUBMISSION_CHECKLIST.md - web-ext itself is fetched on demand via npx, not a declared dependency, so this stays dependency-free.",
   "scripts": {
