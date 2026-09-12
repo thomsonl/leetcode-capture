@@ -1,41 +1,39 @@
 # leetcode-capture
 
-A browser extension that captures your LeetCode attempts and connects them to an LLM of your choice, giving you a personal tutor that oversees your learning process.
+A browser extension that captures your LeetCode Run and Submit attempts as you work, not just your final solution.
+It streams each attempt to a companion terminal chat backed by an LLM of your choice, acting as a personal tutor that reviews your code live.
+Optional add-ons can also log your progress as notes into an Obsidian vault.
 
-## Requirements
+## Install
 
-- **Node.js**
-  - macOS: `brew install node`
-  - Linux: use your distro's package manager (e.g. `sudo apt install nodejs npm` on Debian/Ubuntu) or https://nodejs.org
-  - Windows: `winget install OpenJS.NodeJS.LTS` or the installer from https://nodejs.org
-- **Claude Code** (the `claude` CLI) - the companion's default backend uses the Claude Agent SDK, which relies on an installed, logged-in `claude` CLI.
-  - macOS/Linux: `curl -fsSL https://claude.ai/install.sh | bash`
-  - Windows (PowerShell): `irm https://claude.ai/install.ps1 | iex`
-  - Or via npm on any OS: `npm install -g @anthropic-ai/claude-code`
-- **Ollama** (optional, only for the local backend, `COMPANION_BACKEND=local`)
-  - macOS: `brew install ollama` or https://ollama.com/download
-  - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
-  - Windows: installer from https://ollama.com/download
+Pick your OS, then run its commands.
 
-## Setup
+**macOS**
+```sh
+brew install node
+curl -fsSL https://claude.ai/install.sh | bash
+```
 
-### 1. Load the extension
+**Linux**
+```sh
+sudo apt install nodejs npm   # or your distro's package manager
+curl -fsSL https://claude.ai/install.sh | bash
+```
 
-Chrome:
+**Windows (PowerShell)**
+```powershell
+winget install OpenJS.NodeJS.LTS
+irm https://claude.ai/install.ps1 | iex
+```
 
-1. Open `chrome://extensions`.
-2. Enable "Developer mode".
-3. Click "Load unpacked" and select the `extension/` directory.
+Then load the browser extension.
 
-Firefox or Zen Browser:
-
-1. Open `about:debugging#/runtime/this-firefox`.
-2. Click "Load Temporary Add-on".
-3. Select `extension/manifest.json`.
+**Chrome:** open `chrome://extensions`, enable "Developer mode", click "Load unpacked", and select the `extension/` folder.
+**Firefox:** open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on", and select `extension/manifest.json`.
 
 Open any `leetcode.com/problems/<slug>/` page to confirm it loaded.
 
-### 2. Install and run the companion
+## Start the companion
 
 ```sh
 cd companion
@@ -43,53 +41,25 @@ npm install
 node companion.js
 ```
 
-This starts the relay server automatically and drops you into a chat.
-Run/Submit clicks on a LeetCode problem page are injected into the chat as they happen.
-`/exit` or `/quit` (or Ctrl+C) ends the session.
+That's it.
+It starts a local relay server automatically and drops you into a chat.
+Your Run/Submit clicks on LeetCode show up in that chat as they happen.
+Type `/exit` (or press Ctrl+C) to quit.
 
-### 3. (optional) Install the `leetcode` launcher
+Optional shortcut: symlink the launcher once (`ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode`), then just run `leetcode` from anywhere instead of the three commands above.
 
-```sh
-mkdir -p ~/.local/bin
-ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode
-```
+## Optional features
 
-```sh
-leetcode         # Claude backend (default)
-leetcode -local  # local backend
-```
+- **Local model backend.**
+  Run entirely against a local Ollama model instead of Claude: install Ollama, `ollama pull <model>`, then run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `leetcode -local` with the launcher).
+  A handful of env vars (`COMPANION_LOCAL_MAX_HISTORY_TURNS`, `COMPANION_LOCAL_NUM_CTX`, `COMPANION_LOCAL_RESERVE_TOKENS`, `COMPANION_LOCAL_API`) tune context-window limits for smaller local models; the defaults work for most.
 
-### Configure the vault
+- **Auto-clear context on problem switch.**
+  On by default: starting a new problem resets the tutor's memory so an old problem doesn't linger as context forever.
+  Disable with `COMPANION_AUTO_CLEAR_CONTEXT=0`.
 
-`vault-tool/log-session.js` and the companion's vault auto-summary feature (`VAULT_AUTO_SUMMARY=1`, see below) both write into an Obsidian vault.
-By default they use Thomson's own vault, at `~/Documents/My Brain`, with algorithm notes under its `Study/Algorithms` subfolder - no configuration is needed to reproduce that setup.
-
-To point either tool at a different vault, copy `vault.config.example.json` to `vault.config.json` at the repo root (gitignored, since it holds a personal absolute path) and fill in your own values:
-
-```json
-{
-  "vaultPath": "/absolute/path/to/your/vault",
-  "algorithmsSubfolder": "Study/Algorithms"
-}
-```
-
-Both keys are optional; a missing key falls back to the next source below.
-Precedence, highest first:
-
-1. Environment variables: `VAULT_PATH` and `VAULT_ALGORITHMS_SUBFOLDER`.
-2. `vault.config.json`'s `vaultPath` and `algorithmsSubfolder`.
-3. Built-in defaults (Thomson's own vault and subfolder, above).
-
-`log-session.js`'s `--vault <path>` CLI flag outranks all of the above for that one invocation.
-
-If the resolved vault path doesn't exist, both tools fail with a clear error naming the exact path instead of silently creating a new folder tree there.
-
-### Configure the local model
-
-Before using the local backend, set `COMPANION_MODEL` to a model you've already pulled (`ollama pull <model>`, `ollama list` to check).
-
-macOS/Linux (bash/zsh): `export COMPANION_MODEL=llama3.2`
-
-Windows PowerShell: `$env:COMPANION_MODEL="llama3.2"`
-
-Windows cmd: `set COMPANION_MODEL=llama3.2`
+- **Obsidian vault integration (experimental).**
+  Logs your attempts as notes into an Obsidian vault.
+  Run `vault-tool/log-session.js` to manually log a past session, or set `VAULT_AUTO_SUMMARY=1` to have the companion turn every Submit into a vault note automatically as you go.
+  Point either at your own vault via `vault.config.json` (copy `vault.config.example.json`) or the `VAULT_PATH`/`VAULT_ALGORITHMS_SUBFOLDER` env vars.
+  These features are experimental: the star ratings and proficiency scores they write are LLM assumptions.
