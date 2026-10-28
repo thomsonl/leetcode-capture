@@ -1,0 +1,169 @@
+// Tests for codex-backend.js against a fake `codex` executable.
+//
+// The real Codex CLI isn't available in CI, so the fake follows OpenAI's
+// documented non-interactive contract (prompt on stdin when the argument is
+// "-", JSON Lines events on stdout, `login status` exit code) and records what
+// it was invoked with. This proves the invocation and parsing; it can't prove
+// a real ChatGPT sign-in works, which has to be checked by hand with a real
+// account.
+//
+// Run with: node --test codex-backend.test.js
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { CodexBackend, buildCodexArgs, checkCodexLogin, codexSubscriptionEnv, parseCodexOutput } from './codex-backend.js';
+
+const FAKE = `
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const mode = process.env.FAKE_CODEX_MODE || 'ok';
+if (args[0] === 'login') {
+  console.log(process.env.FAKE_CODEX_LOGIN === 'no' ? 'Not logged in' : 'Logged in using ChatGPT');
+  process.exit(process.env.FAKE_CODEX_LOGIN === 'no' ? 1 : 0);
+}
+let prompt = '';
+process.stdin.on('data', (c) => (prompt += c));
+process.stdin.on('end', () => {
+  const rec = process.env.FAKE_CODEX_RECORD;
+  const calls = fs.existsSync(rec) ? JSON.parse(fs.readFileSync(rec, 'utf8')) : [];
+  calls.push({ args, prompt, hasCodexKey: 'CODEX_API_KEY' in process.env, hasOpenaiKey: 'OPENAI_API_KEY' in process.env });
+  fs.writeFileSync(rec, JSON.stringify(calls));
+  if (mode === 'hang') return setTimeout(() => {}, 60000);
+  if (mode === 'silent') { console.error('boom: not authenticated'); process.exit(1); }
+  const emit = (e) => console.log(JSON.stringify(e));
+  emit({ type: 'thread.started', thread_id: 't1' });
+  emit({ type: 'turn.started' });
+  if (mode === 'fail') {
+    emit({ type: 'error', message: 'stream error' });
+    emit({ type: 'turn.failed', error: { message: 'You are not logged in' } });
+    process.exit(1);
+  }
+  emit({ type: 'item.completed', item: { id: 'i0', type: 'reasoning', text: 'thinking about it' } });
+  emit({ type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: 'FAKE-REPLY-' + calls.length } });
+  emit({ type: 'turn.completed', usage: {} });
+});
+`;
+
+function setup(t, extra = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-codex-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const script = path.join(dir, 'fake-codex.cjs');
+  fs.writeFileSync(script, FAKE);
+  const record = path.join(dir, 'record.json');
+  const env = { ...process.env, FAKE_CODEX_RECORD: record, CODEX_API_KEY: 'k1', OPENAI_API_KEY: 'k2', ...(extra.env || {}) };
+  const backend = new CodexBackend({
+    model: extra.model === undefined ? 'gpt-5-codex' : extra.model,
+    cwd: path.join(dir, 'scratch'),
+    systemPrompt: 'You are a patient coding tutor.',
+    command: process.execPath,
+    commandArgs: [script],
+    env,
+    ...(extra.backend || {}),
+  });
+  const calls = () => (fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : []);
+  return { backend, calls, script, env, dir };
+}
+
+test('buildCodexArgs follows the documented non-interactive flags and reads the prompt from stdin', () => {
+  assert.deepEqual(buildCodexArgs({ model: 'm1', cwd: '/s' }), [
+    'exec', '--json', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '-C', '/s', '-m', 'm1', '-',
+  ]);
+  assert.ok(!buildCodexArgs({ model: null, cwd: '/s' }).includes('-m'));
+});
+
+test('parseCodexOutput takes the last agent message and reports failures', () => {
+  const ok = ['{"type":"turn.started"}', '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}', 'garbage', '{"type":"item.completed","item":{"type":"agent_message","text":"final"}}'].join('\n');
+  assert.deepEqual(parseCodexOutput(ok), { text: 'final', error: null });
+  assert.equal(parseCodexOutput('{"type":"turn.failed","error":{"message":"nope"}}').error, 'nope');
+  assert.equal(parseCodexOutput('{"type":"error","message":"stream died"}').error, 'stream died');
+  assert.deepEqual(parseCodexOutput(''), { text: null, error: null });
+});
+
+test('the subscription environment drops API keys so a ChatGPT sign-in is never swapped for billing', () => {
+  const env = codexSubscriptionEnv({ PATH: '/bin', CODEX_API_KEY: 'a', OPENAI_API_KEY: 'b', HOME: '/h' });
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/h' });
+});
+
+test('a turn spawns codex with the right arguments, the prompt on stdin, and no API keys in its environment', async (t) => {
+  const { backend, calls } = setup(t);
+  const reply = await backend.sendMessage('Why is my loop slow?', {
+    problemContext: { title: 'Two Sum', slug: 'two-sum', description: 'Given nums and a target...' },
+  });
+  assert.equal(reply, 'FAKE-REPLY-1');
+  const [call] = calls();
+  assert.deepEqual(call.args.slice(0, 7), ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '-C']);
+  assert.ok(call.args.includes('gpt-5-codex'));
+  assert.equal(call.args.at(-1), '-');
+  assert.equal(call.hasCodexKey, false);
+  assert.equal(call.hasOpenaiKey, false);
+  assert.match(call.prompt, /patient coding tutor/);
+  assert.match(call.prompt, /Problem currently being discussed: Two Sum \(two-sum\)/);
+  assert.match(call.prompt, /Given nums and a target/);
+  assert.match(call.prompt, /Student: Why is my loop slow\?/);
+});
+
+test('later turns carry the conversation so far; resetContext clears it', async (t) => {
+  const { backend, calls } = setup(t);
+  await backend.sendMessage('first question');
+  await backend.sendMessage('second question');
+  const [, second] = calls();
+  assert.match(second.prompt, /Student: first question\n\nTutor: FAKE-REPLY-1/);
+  assert.match(second.prompt, /Student: second question/);
+  backend.resetContext();
+  await backend.sendMessage('fresh start');
+  assert.ok(!calls()[2].prompt.includes('first question'));
+});
+
+test('history is bounded so a long session cannot grow the prompt forever', async (t) => {
+  const { backend, calls } = setup(t, { backend: { maxHistoryTurns: 2 } });
+  for (let i = 1; i <= 5; i += 1) await backend.sendMessage(`question ${i}`);
+  const last = calls()[4].prompt;
+  assert.ok(last.includes('question 4') && last.includes('question 3'));
+  assert.ok(!last.includes('question 2'), 'older turns are dropped');
+});
+
+test('without a model flag configured, codex uses its own default', async (t) => {
+  const { backend, calls } = setup(t, { model: null });
+  await backend.sendMessage('hi');
+  assert.ok(!calls()[0].args.includes('-m'));
+});
+
+test('a failed turn surfaces codex\'s own message', async (t) => {
+  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'fail' } });
+  await assert.rejects(backend.sendMessage('hi'), /codex: You are not logged in/);
+});
+
+test('an exit with no reply points at "codex login" and includes the stderr tail', async (t) => {
+  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'silent' } });
+  await assert.rejects(backend.sendMessage('hi'), /exited with code 1.*boom: not authenticated.*codex login/s);
+});
+
+test('a missing codex binary gives an install hint instead of a stack trace', async (t) => {
+  const { backend } = setup(t, { backend: { command: '/nonexistent/codex-binary', commandArgs: [] } });
+  await assert.rejects(backend.sendMessage('hi'), /Codex CLI was not found.*npm install -g @openai\/codex/s);
+});
+
+test('a hung codex is killed after the timeout', async (t) => {
+  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'hang' }, backend: { timeoutMs: 400 } });
+  await assert.rejects(backend.sendMessage('hi'), /did not answer within/);
+});
+
+test('a failed turn does not poison the history', async (t) => {
+  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'fail' } });
+  await assert.rejects(backend.sendMessage('lost question'));
+  assert.deepEqual(backend.history, []);
+});
+
+test('checkCodexLogin reports the sign-in state and a missing binary', async (t) => {
+  const { script, env } = setup(t);
+  assert.equal((await checkCodexLogin({ command: process.execPath, commandArgs: [script], env })).ok, true);
+  const no = await checkCodexLogin({ command: process.execPath, commandArgs: [script], env: { ...env, FAKE_CODEX_LOGIN: 'no' } });
+  assert.equal(no.ok, false);
+  assert.match(no.message, /Not logged in/);
+  const missing = await checkCodexLogin({ command: '/nonexistent/codex-binary' });
+  assert.equal(missing.ok, false);
+  assert.match(missing.message, /not found/);
+});
