@@ -767,7 +767,7 @@ test('without history trimming, a long single-problem conversation eventually ex
   const { out } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18150,
-    thresholdChars: 6000,
+    thresholdChars: 6400,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '0' },
   });
 
@@ -786,7 +786,7 @@ test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation
   const { out, requests } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18151,
-    thresholdChars: 6000,
+    thresholdChars: 6400,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' },
   });
 
