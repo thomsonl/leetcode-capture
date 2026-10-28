@@ -5,7 +5,11 @@
 // streams them out over Server-Sent Events and posts typed messages back.
 // This module only brokers: it never calls an LLM, and it keeps everything in
 // memory (a bounded event buffer), so a relay restart simply starts the panel
-// transcript fresh.
+// transcript fresh. Sequence numbers restart at 1 with it, so every event
+// (and the status event) carries this run's random `epoch`: a panel that
+// reconnects with `?after=<seq>&epoch=<old>` gets the whole new buffer
+// instead of having it filtered against a counter from a previous run, and
+// it resets its own `lastSeq` when it sees a new epoch.
 //
 // Routes (all under /panel/):
 //   GET  /panel/events?after=<seq>  panel     SSE stream of tutor events (replays the buffer after <seq>)
@@ -23,21 +27,61 @@
 //   - Origin must be absent or exactly https://leetcode.com. Browsers always
 //     send Origin on a CORS request and on any POST, and a page cannot forge
 //     it, so every other website is rejected.
-// The two companion-only routes (publish, inbox) additionally require NO
-// Origin header at all, so even a script running on leetcode.com can neither
-// forge tutor replies nor eavesdrop on the inbox; it can only read events and
-// post messages.
+// The companion-only routes (publish, inbox) additionally go through
+// companionOnlyRejection below. A missing Origin alone is NOT proof of the
+// companion: a page's `fetch(url, { mode: "no-cors" })` GET carries no Origin
+// either. What a browser page cannot do is add a custom header without a CORS
+// preflight, and that preflight carries an Origin and is refused (and even
+// leetcode.com's preflight is never told this header is allowed). So these
+// routes require COMPANION_HEADER, no Origin, and no cross-site Sec-Fetch-Site.
+// A script on leetcode.com can therefore only read events and post messages.
+//
+// Text in a typed message ends up printed in the student's terminal by the
+// companion, so C0/C1 control characters (escape sequences that could recolor
+// the terminal, retitle the window, or worse) are stripped at this boundary.
+// The companion strips them again before printing anything untrusted.
+//
+// The number of open panel streams is capped: any page can open a no-cors GET
+// to /panel/events (it cannot read the response, but it holds a socket).
 
 "use strict";
 
+const crypto = require("crypto");
+
 const PANEL_ORIGIN = "https://leetcode.com";
+// Sent by companion/panel-bridge.js on every companion-only request.
+const COMPANION_HEADER = "x-lc-companion";
 
 const MAX_BUFFERED_EVENTS = 2000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_PUBLISH_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 200_000;
 const MAX_MESSAGE_CHARS = 8000;
+const MAX_PANEL_STREAMS = 20;
 const HEARTBEAT_MS = 15_000;
+
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/i;
+
+// Everything in C0 except tab and newline, plus DEL and all of C1 (which some
+// terminals honor as 8-bit CSI/OSC introducers).
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+
+function stripControlChars(text) {
+  return text.replace(CONTROL_CHARS_RE, "");
+}
+
+// Returns null when the request plausibly comes from the local companion
+// process, or a reason string for the 403. Shared by every companion-only
+// route; add new ones to COMPANION_ONLY_ROUTES rather than re-deriving this.
+function companionOnlyRejection(req) {
+  if (req.headers.origin !== undefined) return "this route is for the companion only";
+  const site = req.headers["sec-fetch-site"];
+  if (site !== undefined && site !== "none") return "this route is for the companion only";
+  if (req.headers[COMPANION_HEADER] !== "1") return `this route is for the companion only (missing ${COMPANION_HEADER})`;
+  return null;
+}
+
+const COMPANION_ONLY_ROUTES = new Set(["POST /panel/publish", "GET /panel/inbox"]);
 
 const EVENT_TYPES = new Set(["user", "capture", "turn-start", "chunk", "turn-end", "notice"]);
 
@@ -86,6 +130,8 @@ function sanitizeEvent(raw) {
 function createPanelBroker({ port }) {
   const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 
+  // Identifies this run of the relay; see the file header.
+  const epoch = crypto.randomBytes(8).toString("hex");
   let nextSeq = 1;
   let events = []; // bounded, oldest first
   const panelClients = new Set(); // SSE responses for panels
@@ -119,7 +165,7 @@ function createPanelBroker({ port }) {
   }
 
   function statusEvent() {
-    return { type: "status", companionOnline: consumers.size > 0 };
+    return { type: "status", companionOnline: consumers.size > 0, epoch };
   }
 
   function broadcastStatus() {
@@ -127,7 +173,7 @@ function createPanelBroker({ port }) {
   }
 
   function addEvent(event) {
-    const stored = { ...event, seq: nextSeq++ };
+    const stored = { ...event, seq: nextSeq++, epoch };
     // A turn-end carries the turn's full authoritative text, so the chunks
     // that led up to it are dead weight for anyone replaying the buffer.
     if (stored.type === "turn-end" && stored.turnId) {
@@ -211,16 +257,26 @@ function createPanelBroker({ port }) {
     }
 
     const route = `${req.method} ${url.pathname}`;
-    const companionOnly = route === "POST /panel/publish" || route === "GET /panel/inbox";
-    if (companionOnly && origin !== undefined) {
-      sendJson(req, res, 403, { error: "this route is for the companion only" });
-      return true;
+    if (COMPANION_ONLY_ROUTES.has(route)) {
+      const rejection = companionOnlyRejection(req);
+      if (rejection) {
+        sendJson(req, res, 403, { error: rejection });
+        return true;
+      }
     }
 
     if (route === "GET /panel/events") {
+      if (panelClients.size >= MAX_PANEL_STREAMS) {
+        sendJson(req, res, 503, { error: "too many open panel streams" });
+        return true;
+      }
       const lastEventId = Number(req.headers["last-event-id"]);
       const afterParam = Number(url.searchParams.get("after"));
-      const after = Number.isFinite(lastEventId) && lastEventId > 0 ? lastEventId : Number.isFinite(afterParam) ? afterParam : 0;
+      let after = Number.isFinite(lastEventId) && lastEventId > 0 ? lastEventId : Number.isFinite(afterParam) ? afterParam : 0;
+      // A client counting from a previous run of the relay must get the whole
+      // buffer: its `after` is meaningless against this run's numbering.
+      const clientEpoch = url.searchParams.get("epoch");
+      if (clientEpoch && clientEpoch !== epoch) after = 0;
       openStream(req, res, () => panelClients.delete(res));
       for (const event of events) {
         if (event.seq > after) sseWrite(res, { id: event.seq, data: event });
@@ -242,10 +298,10 @@ function createPanelBroker({ port }) {
 
     if (route === "POST /panel/message") {
       readBody(req, res, MAX_MESSAGE_BYTES, (body) => {
-        const text = body && typeof body.text === "string" ? body.text.trim() : "";
+        const text = body && typeof body.text === "string" ? stripControlChars(body.text).trim() : "";
         const slug = body && body.problemSlug;
-        if (!text || text.length > MAX_MESSAGE_CHARS || !isShortString(slug, 200) || !slug) {
-          sendJson(req, res, 400, { error: "text (1-8000 chars) and problemSlug are required" });
+        if (!text || text.length > MAX_MESSAGE_CHARS || typeof slug !== "string" || !SLUG_RE.test(slug)) {
+          sendJson(req, res, 400, { error: "text (1-8000 chars) and a valid problemSlug are required" });
           return;
         }
         if (consumers.size === 0) {
@@ -280,4 +336,4 @@ function createPanelBroker({ port }) {
   return { handle };
 }
 
-module.exports = { createPanelBroker, sanitizeEvent, PANEL_ORIGIN };
+module.exports = { createPanelBroker, sanitizeEvent, stripControlChars, companionOnlyRejection, PANEL_ORIGIN, COMPANION_HEADER };
