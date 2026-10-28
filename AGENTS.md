@@ -769,6 +769,30 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   All three closed-loop-verified against the real, locally-running `gemma4:26b` (never a stub) in a
   real `tmux` pty session, per this file's own established bar - not just the piped test suite.
 
+- The in-page Tutor tab (`extension/panel.js`, `relay-server/panel-broker.js`, `companion/panel-bridge.js`) mirrors
+  the companion chat into the leetcode.com tab strip. The companion publishes events to the relay (`POST
+  /panel/publish`), the panel streams them over SSE (`GET /panel/events`) and posts typed messages (`POST
+  /panel/message`), which reach the companion over its own SSE (`GET /panel/inbox`); the terminal chat stays the
+  source of truth and every publish is best effort. Sharp edges, all found live against the real page:
+  - The `/panel/` routes can *read* the student's code back, so unlike `/capture` they are not CORS `*`: Host must be
+    the relay's own loopback address (DNS rebinding) and Origin must be absent or exactly `https://leetcode.com`;
+    publish and inbox additionally require *no* Origin, so a script on leetcode.com can neither forge tutor replies
+    nor eavesdrop on the inbox. `relay-server/panel-broker.test.js` covers each rule.
+  - Streams must send `Cache-Control: no-store` (and the client `cache: 'no-store'`): Chrome's HTTP cache takes a lock
+    on a never-ending response, and a second identical GET (another tab asking for `/panel/events?after=0`) queued
+    behind it forever while a different URL on the same host answered instantly.
+  - LeetCode's tab strip is flexlayout-react. Tabs select on *mousedown*, then re-render under the pointer so no
+    `click` ever reaches the cloned Tutor button - it activates on `pointerdown`. Each tab label is rendered twice
+    (a bold visible copy and an absolutely positioned regular-weight copy), so `textContent` reads
+    "descriptiondescription"; match on the first leaf element instead. The tab *content* elements are absolutely
+    positioned siblings of the tabsets under `.flexlayout__layout`, not children of the tabset, so the panel is
+    placed over the tabset's `.flexlayout__tabset_content` rect.
+  - Chrome may show a one-time "local network access" prompt for leetcode.com on the first request to `localhost`;
+    until it is answered the request just hangs. Keyboard input in the panel is stopped at its shadow host, and
+    `content.js`'s Ctrl/Cmd+Enter shortcut ignores events whose composed path includes `#lc-tutor-panel-host`.
+  - To test against the real page without loading the unpacked extension, run the relay + companion (with a stub
+    model) and inject `panel.js` by `new Function(code)()` through the browser tool; leetcode's CSP allows it.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

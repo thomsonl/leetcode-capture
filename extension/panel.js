@@ -421,62 +421,67 @@
     }
   `;
 
+  // Metrics below were measured on LeetCode's own Description pane (dark
+  // theme): scroll area padding 20px 16px, title 24px/32px weight 600, body
+  // 14px/21px, 16px between blocks, inline code chips 12px/16px with 2px
+  // padding, a 5px radius and a 1px border, and the browser's default
+  // (non-thin) scrollbar.
   const PANEL_CSS = `
     :host { display: none; position: absolute; z-index: 20; box-sizing: border-box; }
     :host([data-active]) { display: block; }
     * { box-sizing: border-box; }
     .wrap {
       position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden;
-      border-radius: 0 0 8px 8px; background: var(--bg); color: var(--fg);
-      font: 400 14px/1.5 var(--font);
+      border-radius: 0 0 8px 8px; background: var(--bg); color: var(--body);
+      font: 400 14px/21px var(--font);
     }
-    .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 8px; }
-    .title { margin: 0; font-size: 20px; font-weight: 600; line-height: 28px; }
-    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-    .status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-    .status[data-ok] { color: var(--green); }
-    .status[data-ok] i { background: var(--green); }
-    .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 20px 16px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-    .feed { display: flex; flex-direction: column; gap: 14px; }
-    .empty, .banner { color: var(--muted); font-size: 14px; }
-    .banner { margin: 0 20px 8px; padding: 10px 12px; border-radius: 8px; background: var(--fill); }
-    .banner code { font-size: 12px; }
-    .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; color: var(--muted); }
+    .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 16px; color-scheme: var(--scheme); }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
+    .title { margin: 0; font-size: 24px; font-weight: 600; line-height: 32px; color: var(--fg); }
+    .status { display: flex; align-items: center; gap: 4px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
+    .status svg { width: 14px; height: 14px; flex: none; }
+    .status[data-ok] svg { color: var(--green); }
+    .feed { display: flex; flex-direction: column; gap: 16px; }
+    .banner { margin: 0 16px 12px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
+    .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 56px 24px 0; color: var(--muted); text-align: center; }
+    .empty svg { width: 32px; height: 32px; opacity: 0.6; }
+    .empty p { margin: 0; max-width: 300px; }
+    .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
     .chip b { font-weight: 500; color: var(--fg); }
-    .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+    .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; overflow-wrap: anywhere; }
     .tutor { overflow-wrap: anywhere; }
     .tutor > :first-child { margin-top: 0; }
     .tutor > :last-child { margin-bottom: 0; }
-    .tutor p { margin: 0 0 12px; }
-    .tutor .h { font-weight: 600; margin: 16px 0 8px; }
-    .tutor .h1 { font-size: 16px; } .tutor .h2 { font-size: 15px; }
-    .tutor ul, .tutor ol { margin: 0 0 12px; padding-left: 20px; }
+    .tutor p { margin: 0 0 16px; }
+    .tutor .h { font-weight: 600; margin: 20px 0 8px; color: var(--fg); }
+    .tutor .h1 { font-size: 18px; line-height: 26px; } .tutor .h2 { font-size: 16px; line-height: 24px; }
+    .tutor ul, .tutor ol { margin: 0 0 16px; padding-left: 20px; }
     .tutor li { margin: 2px 0; }
     .tutor strong { font-weight: 600; }
-    .tutor a { color: #4b9bff; text-decoration: none; }
+    .tutor a { color: var(--link); text-decoration: none; }
     .tutor a:hover { text-decoration: underline; }
-    .tutor code { font: 12px/1.5 Menlo, Monaco, Consolas, "Courier New", monospace; padding: 1px 6px; border-radius: 4px; background: var(--fill); }
-    .tutor pre { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--fill); overflow-x: auto; scrollbar-width: thin; }
-    .tutor pre code { padding: 0; background: none; white-space: pre; }
-    .tutor blockquote { margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--muted); }
-    .tutor hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+    code { font: 12px/16px Menlo, Menlo-fallback, sans-serif; padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--chip-line); color: color-mix(in srgb, var(--fg) 75%, transparent); }
+    .tutor pre { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: var(--fill); border: 1px solid var(--chip-line); overflow-x: auto; scrollbar-width: thin; }
+    .tutor pre code { padding: 0; border: 0; background: none; white-space: pre; font-size: 12px; line-height: 20px; color: var(--body); }
+    .tutor blockquote { margin: 0 0 16px; padding-left: 16px; border-left: 2px solid var(--line-strong); color: var(--muted); }
+    .tutor hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
     .err { color: var(--red); }
     .dots { display: inline-flex; gap: 4px; padding: 6px 0; }
     .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite ease-in-out; }
     .dots i:nth-child(2) { animation-delay: 0.15s; } .dots i:nth-child(3) { animation-delay: 0.3s; }
     @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
-    .composer { padding: 0 20px 16px; }
+    .composer { padding: 0 16px 16px; }
     .box { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--fill); }
     .box:focus-within { box-shadow: 0 0 0 1px var(--line-strong); }
-    textarea { flex: 1; min-height: 28px; max-height: 140px; margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--fg); font: inherit; }
+    textarea { flex: 1; min-height: 28px; max-height: 140px; margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--body); font: inherit; }
     textarea::placeholder { color: var(--muted); }
     textarea:disabled { cursor: not-allowed; }
     button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--green); cursor: pointer; }
     button:hover:not(:disabled) { background: var(--fill); }
     button:disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
-    .hint { margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
+    .hint { margin: 6px 2px 0; font-size: 12px; line-height: 16px; color: var(--muted); }
   `;
 
   function el(tag, className, text) {
@@ -509,6 +514,13 @@
     return null;
   }
 
+  // Relative luminance below 0.5 is a dark surface.
+  function isLight(cssColor) {
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(cssColor);
+    if (!m) return false;
+    return (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255 > 0.5;
+  }
+
   // The colors are read from LeetCode's own rendered elements rather than
   // hardcoded, so the panel follows whatever theme the page is in.
   function sampleTheme(m) {
@@ -526,11 +538,24 @@
     style.setProperty("--bg", pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
     style.setProperty("--fg", fg);
     style.setProperty("--muted", muted);
+    // Body copy in the Description pane is pure white while its title and the
+    // tab labels are 245; keep that distinction.
+    const nativePane = [...m.layout.querySelectorAll(".flexlayout__tab")].find((t) => t !== m.host);
+    style.setProperty("--body", pick(nativePane, "color", fg));
+    style.setProperty("--scheme", getComputedStyle(document.documentElement).colorScheme || "dark");
     style.setProperty("--font", getComputedStyle(document.body).fontFamily);
     style.setProperty("--fill", "color-mix(in srgb, var(--fg) 7%, transparent)");
     style.setProperty("--line", "color-mix(in srgb, var(--fg) 10%, transparent)");
     style.setProperty("--line-strong", "color-mix(in srgb, var(--fg) 24%, transparent)");
-    style.setProperty("--green", "#2cbb5d");
+    style.setProperty("--chip-line", "color-mix(in srgb, var(--fg) 12%, transparent)");
+    // Accent colors come from the page too (its own Submit button green and
+    // description links), so a light theme gets its own, darker shades. The
+    // fallbacks are for a page that has neither on screen yet.
+    const light = isLight(pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
+    const submit = document.querySelector('[data-e2e-locator="console-submit-button"]');
+    const link = [...m.layout.querySelectorAll(".flexlayout__tab a")].find((a) => !m.host.contains(a));
+    style.setProperty("--green", pick(submit, "color", light ? "#0e8a3a" : "#2cbb5d"));
+    style.setProperty("--link", pick(link, "color", light ? "#0b63e5" : "#4b9bff"));
     style.setProperty("--red", "#ef4743");
     document.documentElement.style.setProperty("--lc-tutor-muted", muted);
   }
@@ -585,6 +610,29 @@
 
   // ---- the panel -------------------------------------------------------
 
+  function svgIcon(pathData, size) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", String(size));
+    svg.setAttribute("height", String(size));
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", pathData);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  // Circle with a check, the same idea as the native "Solved" mark.
+  function statusIcon() {
+    return svgIcon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.3 14.7-4-4 1.4-1.4 2.6 2.6 5.2-5.2 1.4 1.4-6.6 6.6z", 14);
+  }
+
+  function chatBubbleIcon(size) {
+    return svgIcon("M5 3h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7.2L6 21.5V17H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z", size);
+  }
+
   function buildPanel() {
     const host = document.createElement("div");
     host.id = HOST_ID;
@@ -593,12 +641,15 @@
     style.textContent = PANEL_CSS;
 
     const wrap = el("div", "wrap");
+    wrap.setAttribute("role", "tabpanel");
+    wrap.setAttribute("aria-label", "Tutor");
+    // The title row scrolls away with the content, like the Description pane's.
     const head = el("div", "head");
     head.appendChild(el("h2", "title", "Tutor"));
     const status = el("div", "status");
-    status.appendChild(document.createElement("i"));
     const statusText = el("span", "", "Connecting");
     status.appendChild(statusText);
+    status.appendChild(statusIcon());
     head.appendChild(status);
 
     const banner = el("div", "banner");
@@ -606,7 +657,7 @@
 
     const scroll = el("div", "scroll");
     const feed = el("div", "feed");
-    scroll.appendChild(feed);
+    scroll.append(head, feed);
 
     const composer = el("div", "composer");
     const box = el("div", "box");
@@ -627,7 +678,7 @@
     hint.hidden = true;
     composer.appendChild(hint);
 
-    wrap.append(head, banner, scroll, composer);
+    wrap.append(banner, scroll, composer);
     root.append(style, wrap);
 
     // LeetCode binds many single-key shortcuts on the page, and this script's
@@ -712,13 +763,15 @@
     p.input.placeholder = canSend ? "Ask the tutor about this problem" : "Start the companion to chat";
 
     if (!active) return;
-    const stick = p.scroll.scrollHeight - p.scroll.scrollTop - p.scroll.clientHeight < 80;
+    const stick =
+      Date.now() < mounted.stickUntil || p.scroll.scrollHeight - p.scroll.scrollTop - p.scroll.clientHeight < 80;
     const items = (slug && state.byProblem.get(slug)) || [];
     p.feed.textContent = "";
     if (items.length === 0) {
-      p.feed.appendChild(
-        el("div", "empty", "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below.")
-      );
+      const empty = el("div", "empty");
+      empty.appendChild(chatBubbleIcon(32));
+      empty.appendChild(el("p", "", "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below."));
+      p.feed.appendChild(empty);
     }
     for (const item of items) p.feed.appendChild(renderItem(item));
     if (stick) p.scroll.scrollTop = p.scroll.scrollHeight;
@@ -759,17 +812,32 @@
   function activate() {
     if (!mounted || active) return;
     active = true;
-    mounted.selectedAtActivation = selectedRealButton(mounted);
+    // Remember the page's own selection by label, not node: React can swap
+    // the node out for the same tab (seen right after load) and that must not
+    // read as the page having moved to another tab.
+    const selected = selectedRealButton(mounted);
+    mounted.selectedAtActivation = selected ? labelOf(selected) : null;
     sampleTheme(mounted);
     syncRect();
     mounted.host.setAttribute("data-active", "");
     mounted.tab.classList.remove("flexlayout__tab_button--unselected");
     mounted.tab.classList.add("flexlayout__tab_button--selected");
+    mounted.tab.setAttribute("aria-selected", "true");
     document.body.setAttribute(ACTIVE_ATTR, "");
+    // The native pane stays mounted behind the panel; keep keyboard focus out
+    // of it.
+    mounted.inertPane = [...mounted.layout.querySelectorAll(".flexlayout__tab")].find(
+      (t) => t !== mounted.host && t.getBoundingClientRect().width > 0
+    );
+    if (mounted.inertPane) mounted.inertPane.inert = true;
     setUnread(false);
     render();
     mounted.panel.scroll.scrollTop = mounted.panel.scroll.scrollHeight;
-    if (!mounted.panel.input.disabled) mounted.panel.input.focus({ preventScroll: true });
+    // After the browser's own mousedown focus handling, which would otherwise
+    // move focus to the tab button we are being activated from.
+    setTimeout(() => {
+      if (active && mounted && !mounted.panel.input.disabled) mounted.panel.input.focus({ preventScroll: true });
+    }, 0);
   }
 
   function deactivate() {
@@ -778,7 +846,10 @@
     mounted.host.removeAttribute("data-active");
     mounted.tab.classList.remove("flexlayout__tab_button--selected");
     mounted.tab.classList.add("flexlayout__tab_button--unselected");
+    mounted.tab.setAttribute("aria-selected", "false");
     document.body.removeAttribute(ACTIVE_ATTR);
+    if (mounted.inertPane) mounted.inertPane.inert = false;
+    mounted.inertPane = null;
   }
 
   function teardown() {
@@ -803,7 +874,11 @@
     const panel = buildPanel();
     layout.appendChild(panel.host);
 
-    const m = { tabset, container, layout, tab, divider, host: panel.host, panel, selectedAtActivation: null, cleanup: null };
+    const m = {
+      tabset, container, layout, tab, divider, host: panel.host, panel,
+      selectedAtActivation: null, inertPane: null, stickUntil: 0, cleanup: null,
+    };
+    tab.setAttribute("aria-selected", "false");
     mounted = m;
     sampleTheme(m);
     syncRect();
@@ -828,7 +903,9 @@
     // panel only covers a tab it didn't select, so when the page's own
     // selection moves, ours steps aside.
     const strip = new MutationObserver(() => {
-      if (active && selectedRealButton(m) !== m.selectedAtActivation) deactivate();
+      if (!active) return;
+      const now = selectedRealButton(m);
+      if ((now ? labelOf(now) : null) !== m.selectedAtActivation) deactivate();
     });
     strip.observe(container, { subtree: true, attributes: true, attributeFilter: ["class"] });
 
@@ -842,6 +919,7 @@
 
     const theme = new MutationObserver(() => mounted && sampleTheme(mounted));
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
+    theme.observe(document.body, { attributes: true, attributeFilter: ["class", "data-theme"] });
 
     panel.input.addEventListener("input", () => {
       panel.input.style.height = "auto";
@@ -906,10 +984,18 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, problemSlug: slug }),
+        cache: "no-store",
+        // A send must never hang the composer: the browser queues a request
+        // behind its per-host connection limit, so give up and say so.
+        signal: AbortSignal.timeout(8000),
       });
       if (res.status === 202) {
         p.input.value = "";
         p.input.style.height = "auto";
+        // Their own message and the reply should come into view even if they
+        // had scrolled up to reread something.
+        mounted.stickUntil = Date.now() + 4000;
+        p.scroll.scrollTop = p.scroll.scrollHeight;
       } else if (res.status === 503) {
         state.companionOnline = false;
         p.hint.textContent = "The tutor went offline. Your message wasn't sent.";
@@ -919,8 +1005,10 @@
         p.hint.hidden = false;
       }
     } catch {
-      relayReachable = false;
-      p.hint.textContent = "Couldn't reach the relay server.";
+      // Deliberately does not touch relayReachable: that is the event
+      // stream's to report. One slow or aborted POST says nothing about
+      // whether the stream is healthy.
+      p.hint.textContent = "Couldn't reach the relay server. Try again.";
       p.hint.hidden = false;
     }
     scheduleRender();
@@ -929,15 +1017,45 @@
 
   // ---- event stream ------------------------------------------------------
 
+  // One open stream per *visible* tab. The browser allows only six
+  // connections per host, and every leetcode tab with this script would
+  // otherwise hold one for its whole life, starving captures and sends from
+  // the tabs you are actually using. A hidden tab drops its stream and
+  // reconnects on return, replaying what it missed from state.lastSeq.
+  let streamAbort = null;
+  const visibleWaiters = [];
+
+  function whenVisible() {
+    if (!document.hidden) return Promise.resolve();
+    return new Promise((resolve) => visibleWaiters.push(resolve));
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (streamAbort) streamAbort.abort();
+    } else {
+      for (const resolve of visibleWaiters.splice(0)) resolve();
+    }
+  });
+
   async function streamLoop() {
     let delay = 1000;
     for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      await whenVisible();
+      const abort = new AbortController();
+      streamAbort = abort;
+      // A first connection replays history, which is not news; only what
+      // arrives after a reconnect (state.lastSeq > 0) can be unread. The relay
+      // sends a status event once the replay is done.
+      let suppressUnread = state.lastSeq === 0;
       try {
         // no-store: see panel-broker.js; two tabs must never queue behind
         // each other's open stream through the HTTP cache.
         const res = await fetch(`${RELAY_BASE}/panel/events?after=${state.lastSeq}`, {
           headers: { Accept: "text/event-stream" },
           cache: "no-store",
+          signal: abort.signal,
         });
         if (!res.ok || !res.body) throw new Error(`relay answered ${res.status}`);
         relayReachable = true;
@@ -946,8 +1064,9 @@
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         const push = createSseParser((event) => {
+          if (event.type === "status") suppressUnread = false;
           const affected = applyEvent(state, event);
-          if (event.type === "turn-end" && !active && affected === currentSlug()) setUnread(true);
+          if (event.type === "turn-end" && !suppressUnread && !active && affected === currentSlug()) setUnread(true);
           scheduleRender();
         });
         for (;;) {
@@ -957,8 +1076,10 @@
           push(decoder.decode(value, { stream: true }));
         }
       } catch {
-        // Fall through to the reconnect wait.
+        // Fall through: either we hid the tab on purpose, or the relay is gone.
       }
+      // Hiding the tab on purpose is not an outage.
+      if (abort.signal.aborted) continue;
       relayReachable = false;
       state.companionOnline = null;
       scheduleRender();

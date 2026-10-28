@@ -48,6 +48,24 @@ Type `/exit` (or press Ctrl+C) to quit.
 
 Optional shortcut: symlink the launcher once (`ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode`), then just run `leetcode` from anywhere instead of the three commands above.
 
+## Tutor tab on LeetCode
+
+With the companion running, the extension adds a **Tutor** tab to the left tab strip on every problem page, next to Description, Submissions, Editorial, and Solutions.
+It mirrors the same conversation you see in the terminal: your Run and Submit attempts show up as they happen, the tutor's replies stream in, and you can type to it from the page.
+The terminal chat keeps working exactly as before, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
+
+Each problem has its own transcript.
+If you ask a question on a problem the tutor hasn't seen an attempt for yet, it is told which problem you are looking at, and the tutor session resets first if `COMPANION_AUTO_CLEAR_CONTEXT` is on.
+If the companion isn't running, the tab says so instead of failing silently.
+Set `COMPANION_PANEL=0` to turn the bridge off.
+
+The first time the page talks to the relay, Chrome may ask whether leetcode.com can connect to devices on your local network.
+Allow it, since the relay is on your own machine (`localhost:8135`).
+Nothing is sent anywhere else.
+
+The relay's panel routes only answer requests whose `Host` is its own loopback address and whose `Origin` is `https://leetcode.com`, because unlike capture ingestion they can read your code back.
+Only the companion can publish tutor replies to them.
+
 ## Optional features
 
 - **Local model backend.**
