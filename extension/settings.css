@@ -1,0 +1,128 @@
+/* LeetCode Capture options page.
+ *
+ * Uses LeetCode's own palette (dark #1a1a1a page, #262626 surfaces, 7% white
+ * fills, the Submit green) and follows the system color scheme, since an
+ * extension page can't see which theme leetcode.com is using. */
+
+:root {
+  --page: #f0f0f0;
+  --surface: #ffffff;
+  --text: #262626;
+  --muted: rgba(0, 0, 0, 0.55);
+  --line: rgba(0, 0, 0, 0.1);
+  --line-strong: rgba(0, 0, 0, 0.28);
+  --fill: rgba(0, 0, 0, 0.05);
+  --green: #00b328;
+  --green-text: #0e8a3a;
+  --red: #ef4743;
+  --amber-bg: rgba(255, 161, 22, 0.14);
+  --focus: #1a73e8;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #1a1a1a;
+    --surface: #262626;
+    --text: #f5f5f5;
+    --muted: rgba(255, 255, 255, 0.6);
+    --line: rgba(255, 255, 255, 0.1);
+    --line-strong: rgba(255, 255, 255, 0.28);
+    --fill: rgba(255, 255, 255, 0.07);
+    --green: #2cbb5d;
+    --green-text: #2cbb5d;
+    --amber-bg: rgba(255, 161, 22, 0.16);
+    --focus: #6aa7ff;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 400 14px/21px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.page-head img { border-radius: 8px; }
+h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; }
+.sub { margin: 0; color: var(--muted); }
+.connection { margin: 0 0 0 auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; line-height: 16px; white-space: nowrap; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.connection[data-ok] .dot { background: var(--green); }
+.connection[data-ok] { color: var(--green-text); }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+h2 { margin: 0 0 4px; font-size: 16px; line-height: 24px; font-weight: 600; }
+.help { margin: 0 0 16px; color: var(--muted); }
+
+.notice { border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; }
+.notice.warn { background: var(--amber-bg); }
+.notice code, .help code, .foot code, .hint code { font: 12px/16px Menlo, Menlo-fallback, sans-serif; padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--line); }
+
+.providers { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.provider { border: 1px solid var(--line); border-radius: 8px; background: transparent; }
+.provider[data-selected] { border-color: var(--line-strong); background: var(--fill); }
+.provider-head { display: flex; gap: 12px; padding: 12px; cursor: pointer; }
+.provider-head input { margin: 3px 0 0; accent-color: var(--green); }
+.provider-title { font-weight: 500; }
+.provider-hint { color: var(--muted); }
+.tag { margin-left: 6px; padding: 0 6px; border-radius: 10px; background: var(--fill); color: var(--muted); font-size: 12px; line-height: 18px; vertical-align: 1px; }
+.fields { display: none; padding: 0 12px 12px 40px; gap: 12px; }
+.provider[data-selected] .fields { display: grid; }
+
+.field { display: grid; gap: 4px; }
+.field label { font-weight: 500; }
+.field .opt { font-weight: 400; color: var(--muted); }
+.row { display: flex; gap: 8px; }
+.row input { flex: 1; min-width: 0; }
+input[type="text"], input[type="password"], input[type="number"], input[type="url"] {
+  width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--surface); color: var(--text); font: inherit;
+}
+input::placeholder { color: var(--muted); }
+input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
+.hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 16px; }
+.hint.locked { color: var(--text); }
+.keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--focus); font: inherit; cursor: pointer; text-decoration: underline; }
+
+.toggle { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.toggle:first-child { border-top: 0; padding-top: 0; }
+.toggle input { margin: 3px 0 0; accent-color: var(--green); grid-row: span 2; }
+.toggle label { font-weight: 500; }
+.toggle .hint { grid-column: 2; }
+.toggle.number { grid-template-columns: 1fr 96px; }
+.toggle.number .hint { grid-column: 1; }
+.toggle.number input { grid-row: span 2; margin: 0; }
+
+.btn { height: 32px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: var(--text); font: 500 14px/20px inherit; font-family: inherit; cursor: pointer; }
+.btn:hover:not(:disabled) { background: var(--fill); }
+.btn.primary { background: var(--green); border-color: transparent; color: #fff; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.06); background: var(--green); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.result { margin: 0; color: var(--muted); min-height: 21px; }
+.result[data-kind="ok"] { color: var(--green-text); }
+.result[data-kind="error"] { color: var(--red); }
+
+.savebar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 12px 0; background: linear-gradient(to top, var(--page) 70%, transparent); }
+.savebar .result { flex: 1; text-align: right; }
+
+.foot { color: var(--muted); font-size: 12px; line-height: 16px; }
+
+form[data-disabled] .card, form[data-disabled] .savebar { opacity: 0.55; pointer-events: none; }
+
+@media (max-width: 520px) {
+  .fields { padding-left: 12px; }
+  .page-head { flex-wrap: wrap; }
+}

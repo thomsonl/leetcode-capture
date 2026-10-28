@@ -50,7 +50,7 @@ export const PROVIDERS = {
   },
   chatgpt: {
     label: 'ChatGPT subscription',
-    hint: 'Uses your Codex CLI sign-in (ChatGPT Plus, Pro, Business). Run "codex login" once. Experimental.',
+    hint: 'Uses your Codex CLI sign-in (ChatGPT Plus, Pro, Business). Run "codex login" once.',
     fields: ['model'],
     requires: [],
   },

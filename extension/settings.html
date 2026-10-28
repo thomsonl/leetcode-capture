@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeetCode Capture settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main>
+    <header class="page-head">
+      <img src="icons/icon-48.png" width="32" height="32" alt="">
+      <div>
+        <h1>LeetCode Capture</h1>
+        <p class="sub">Tutor settings</p>
+      </div>
+      <p id="connection" class="connection" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting</span></p>
+    </header>
+
+    <div id="offline" class="notice warn" role="alert" hidden></div>
+
+    <form id="form" novalidate>
+      <section class="card" aria-labelledby="model-heading">
+        <h2 id="model-heading">Tutor model</h2>
+        <p class="help">Choose what answers when you run or submit code, or ask a question in the Tutor tab.</p>
+        <fieldset id="providers" class="providers">
+          <legend class="sr-only">Provider</legend>
+        </fieldset>
+        <div class="actions">
+          <button type="button" id="test" class="btn">Test connection</button>
+          <span id="test-result" class="result" role="status" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="behavior-heading">
+        <h2 id="behavior-heading">Behavior</h2>
+        <div id="behavior"></div>
+      </section>
+
+      <div class="savebar">
+        <p id="save-result" class="result" role="status" aria-live="polite"></p>
+        <button type="submit" id="save" class="btn primary">Save</button>
+      </div>
+    </form>
+
+    <p class="foot">Settings are stored in <code id="path">your config folder</code>, readable only by you. API keys never leave your computer except to the provider you choose.</p>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>
