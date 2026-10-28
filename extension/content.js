@@ -235,6 +235,10 @@
     }
     lastCaptureAt[trigger] = now;
 
+    // Lets panel.js (the in-page Tutor tab) step aside so LeetCode's own
+    // result tab is visible, whichever tab was underneath it.
+    document.dispatchEvent(new Event("leetcode-capture:capture-start"));
+
     const code = await getEditorCode();
     if (code === null) {
       console.warn("[leetcode-capture] editor content not found, skipping capture");

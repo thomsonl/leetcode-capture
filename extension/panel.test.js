@@ -127,6 +127,47 @@ test("block markdown: paragraphs, lists, headings, quotes, rules", () => {
   assert.equal(blocks[3].ordered, true);
 });
 
+test("nested lists nest: sub-bullets do not become numbered steps of the parent", () => {
+  const [list] = parseBlocks("1. a\n   - b\n   - c\n2. d");
+  assert.equal(list.t, "list");
+  assert.equal(list.ordered, true);
+  assert.deepEqual(list.items.map((i) => i.c[0].v), ["a", "d"]);
+  const [sub] = list.items[0].sub;
+  assert.equal(sub.ordered, false);
+  assert.deepEqual(sub.items.map((i) => i.c[0].v), ["b", "c"]);
+  assert.equal(list.items[1].sub.length, 0);
+});
+
+test("a numbered sub-list inside bullets stays numbered, and a marker change at one level starts a new list", () => {
+  const [bullets] = parseBlocks("- a\n  1. x\n  2. y\n- b");
+  assert.equal(bullets.ordered, false);
+  assert.equal(bullets.items[0].sub[0].ordered, true);
+  const split = parseBlocks("- a\n- b\n1. c\n2. d");
+  assert.deepEqual(split.map((b) => [b.t, b.ordered]), [["list", false], ["list", true]]);
+});
+
+test("a numbered list keeps the number it starts at", () => {
+  const [list] = parseBlocks("3. c\n4. d");
+  assert.equal(list.start, 3);
+  assert.equal(parseBlocks("- a")[0].start, 1);
+});
+
+test("tables parse into a header and padded rows", () => {
+  const [table] = parseBlocks("| Name | Cost |\n| --- | :-: |\n| a | O(n) |\n| b |");
+  assert.equal(table.t, "table");
+  assert.deepEqual(table.header.map((c) => c[0].v), ["Name", "Cost"]);
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[0][1][0].v, "O(n)");
+  assert.deepEqual(table.rows[1][1], []); // missing cell is padded, not undefined
+  assert.equal(parseBlocks("a | b\nplain text")[0].t, "paragraph"); // a pipe alone is not a table
+});
+
+test("dunder identifiers are literal text, but ordinary double-underscore emphasis still works", () => {
+  assert.deepEqual(parseInline("use __init__ here"), [{ t: "text", v: "use __init__ here" }]);
+  assert.equal(parseInline("__very important__")[0].t, "strong");
+  assert.equal(parseInline("**init**")[0].t, "strong");
+});
+
 test("fenced code keeps its text verbatim, and an unclosed fence (mid-stream) still renders as code", () => {
   const closed = parseBlocks("```python\ndef f():\n    return 1\n```\nafter");
   assert.deepEqual([closed[0].t, closed[0].lang, closed[0].open, closed[1].t], ["code", "python", false, "paragraph"]);

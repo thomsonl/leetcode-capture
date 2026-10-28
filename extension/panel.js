@@ -180,7 +180,11 @@
       if (text.startsWith("**", i) || text.startsWith("__", i)) {
         const marker = text.slice(i, i + 2);
         const end = text.indexOf(marker, i + 2);
-        if (end > i + 2 && !/^\s/.test(text[i + 2]) && !/\s$/.test(text.slice(i + 2, end))) {
+        const inner = end > i + 2 ? text.slice(i + 2, end) : "";
+        // `__init__` / `__main__` are identifiers, not emphasis (CommonMark
+        // would bold them, but a coding tutor mentions them constantly).
+        const isDunder = marker === "__" && /^\w+$/.test(inner);
+        if (end > i + 2 && !isDunder && !/^\s/.test(inner) && !/\s$/.test(inner)) {
           flush();
           nodes.push({ t: "strong", c: parseInline(text.slice(i + 2, end)) });
           i = end + 2;
@@ -230,6 +234,53 @@
   const HR_RE = /^\s*([-*_])(?:\s*\1){2,}\s*$/;
   const QUOTE_RE = /^\s*>\s?(.*)$/;
   const LIST_RE = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+
+  const TABLE_SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+  function splitTableRow(line) {
+    let row = line.trim();
+    if (row.startsWith("|")) row = row.slice(1);
+    if (row.endsWith("|")) row = row.slice(0, -1);
+    return row.split("|").map((cell) => cell.trim());
+  }
+
+  // Turns a run of list lines into real nested lists. Indentation decides
+  // nesting; a change of marker kind (bullet vs number) at the same level
+  // starts a new list instead of continuing the old one, and a numbered list
+  // keeps the number it started at.
+  function buildLists(entries) {
+    const out = [];
+    const newList = (e) => ({ t: "list", ordered: e.ordered, start: e.ordered && Number.isFinite(e.start) ? e.start : 1, items: [] });
+    let stack = [];
+    for (const e of entries) {
+      while (stack.length > 1 && e.indent < stack[stack.length - 1].indent) stack.pop();
+      let top = stack[stack.length - 1];
+      if (top && e.indent > top.indent && top.list.items.length) {
+        const list = newList(e);
+        top.list.items[top.list.items.length - 1].sub.push(list);
+        top = { indent: e.indent, list };
+        stack.push(top);
+      } else if (top && e.ordered !== top.list.ordered) {
+        const list = newList(e);
+        if (stack.length === 1) {
+          out.push(list);
+          stack = [{ indent: e.indent, list }];
+        } else {
+          const parent = stack[stack.length - 2];
+          parent.list.items[parent.list.items.length - 1].sub.push(list);
+          stack[stack.length - 1] = { indent: e.indent, list };
+        }
+        top = stack[stack.length - 1];
+      } else if (!top) {
+        const list = newList(e);
+        out.push(list);
+        top = { indent: e.indent, list };
+        stack.push(top);
+      }
+      top.list.items.push({ c: parseInline(e.text), sub: [] });
+    }
+    return out;
+  }
 
   function startsBlock(line) {
     return FENCE_RE.test(line) || HEADING_RE.test(line) || HR_RE.test(line) || QUOTE_RE.test(line) || LIST_RE.test(line);
@@ -283,23 +334,35 @@
         continue;
       }
       if (LIST_RE.test(line)) {
-        const first = LIST_RE.exec(line);
-        const ordered = /\d/.test(first[2]);
-        const baseIndent = first[1].length;
-        const items = [];
+        const entries = [];
         while (i < lines.length) {
           const m = LIST_RE.exec(lines[i]);
           if (m) {
-            items.push({ depth: Math.max(0, Math.min(3, Math.floor((m[1].length - baseIndent) / 2))), text: m[3] });
+            entries.push({ indent: m[1].length, ordered: /\d/.test(m[2]), start: parseInt(m[2], 10), text: m[3] });
             i += 1;
-          } else if (lines[i].trim() && /^\s+\S/.test(lines[i]) && items.length) {
-            items[items.length - 1].text += ` ${lines[i].trim()}`;
+          } else if (lines[i].trim() && /^\s+\S/.test(lines[i]) && entries.length) {
+            entries[entries.length - 1].text += ` ${lines[i].trim()}`;
             i += 1;
           } else {
             break;
           }
         }
-        blocks.push({ t: "list", ordered, items: items.map((it) => ({ depth: it.depth, c: parseInline(it.text) })) });
+        blocks.push(...buildLists(entries));
+        continue;
+      }
+      if (line.includes("|") && i + 1 < lines.length && TABLE_SEP_RE.test(lines[i + 1])) {
+        const header = splitTableRow(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].trim() && lines[i].includes("|")) {
+          rows.push(splitTableRow(lines[i]));
+          i += 1;
+        }
+        blocks.push({
+          t: "table",
+          header: header.map(parseInline),
+          rows: rows.map((r) => header.map((_, col) => parseInline(r[col] || ""))),
+        });
         continue;
       }
       const para = [];
@@ -337,6 +400,18 @@
     return frag;
   }
 
+  function renderList(block, doc) {
+    const list = doc.createElement(block.ordered ? "ol" : "ul");
+    if (block.ordered && block.start !== 1) list.start = block.start;
+    for (const item of block.items) {
+      const li = doc.createElement("li");
+      li.appendChild(renderInline(item.c, doc));
+      for (const sub of item.sub) li.appendChild(renderList(sub, doc));
+      list.appendChild(li);
+    }
+    return list;
+  }
+
   function renderBlocks(blocks, doc) {
     const frag = doc.createDocumentFragment();
     for (const block of blocks) {
@@ -362,14 +437,32 @@
         el.appendChild(renderBlocks(block.c, doc));
         frag.appendChild(el);
       } else if (block.t === "list") {
-        const list = doc.createElement(block.ordered ? "ol" : "ul");
-        for (const item of block.items) {
-          const li = doc.createElement("li");
-          if (item.depth) li.style.marginLeft = `${item.depth * 20}px`;
-          li.appendChild(renderInline(item.c, doc));
-          list.appendChild(li);
+        frag.appendChild(renderList(block, doc));
+      } else if (block.t === "table") {
+        const wrap = doc.createElement("div");
+        wrap.className = "table-wrap";
+        const table = doc.createElement("table");
+        const head = doc.createElement("thead");
+        const headRow = doc.createElement("tr");
+        for (const cell of block.header) {
+          const th = doc.createElement("th");
+          th.appendChild(renderInline(cell, doc));
+          headRow.appendChild(th);
         }
-        frag.appendChild(list);
+        head.appendChild(headRow);
+        const body = doc.createElement("tbody");
+        for (const row of block.rows) {
+          const tr = doc.createElement("tr");
+          for (const cell of row) {
+            const td = doc.createElement("td");
+            td.appendChild(renderInline(cell, doc));
+            tr.appendChild(td);
+          }
+          body.appendChild(tr);
+        }
+        table.append(head, body);
+        wrap.appendChild(table);
+        frag.appendChild(wrap);
       }
     }
     return frag;
@@ -400,6 +493,10 @@
   // ---------------------------------------------------------------------
   // Page integration (browser only below this line)
   // ---------------------------------------------------------------------
+
+  // Running twice in one document would build two tabs and two panels.
+  if (window.__lcTutorPanelLoaded) return;
+  window.__lcTutorPanelLoaded = true;
 
   const HOST_ID = "lc-tutor-panel-host";
   const TAB_ATTR = "data-lc-tutor-tab";
@@ -435,15 +532,15 @@
       border-radius: 0 0 8px 8px; background: var(--bg); color: var(--body);
       font: 400 14px/21px var(--font);
     }
-    .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 16px; color-scheme: var(--scheme); }
+    .scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 20px 16px; color-scheme: var(--scheme); }
     .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
     .title { margin: 0; font-size: 24px; font-weight: 600; line-height: 32px; color: var(--fg); }
     .status { display: flex; align-items: center; gap: 4px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
     .status svg { width: 14px; height: 14px; flex: none; }
     .status[data-ok] svg { color: var(--green); }
-    .feed { display: flex; flex-direction: column; gap: 16px; }
-    .banner { margin: 0 16px 12px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
-    .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 56px 24px 0; color: var(--muted); text-align: center; }
+    .feed { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .banner { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
+    .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; padding: 0 24px; color: var(--muted); text-align: center; }
     .empty svg { width: 32px; height: 32px; opacity: 0.6; }
     .empty p { margin: 0; max-width: 300px; }
     .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
@@ -456,9 +553,15 @@
     .tutor > :last-child { margin-bottom: 0; }
     .tutor p { margin: 0 0 16px; }
     .tutor .h { font-weight: 600; margin: 20px 0 8px; color: var(--fg); }
+    .tutor > .h:first-child { margin-top: 0; }
     .tutor .h1 { font-size: 18px; line-height: 26px; } .tutor .h2 { font-size: 16px; line-height: 24px; }
     .tutor ul, .tutor ol { margin: 0 0 16px; padding-left: 20px; }
     .tutor li { margin: 2px 0; }
+    .tutor li > ul, .tutor li > ol { margin: 4px 0 4px; }
+    .table-wrap { margin: 0 0 16px; overflow-x: auto; scrollbar-width: thin; }
+    .tutor table { border-collapse: collapse; }
+    .tutor th, .tutor td { padding: 6px 12px; border: 1px solid var(--chip-line); text-align: left; vertical-align: top; }
+    .tutor th { font-weight: 600; color: var(--fg); background: var(--fill); }
     .tutor strong { font-weight: 600; }
     .tutor a { color: var(--link); text-decoration: none; }
     .tutor a:hover { text-decoration: underline; }
@@ -472,9 +575,9 @@
     .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite ease-in-out; }
     .dots i:nth-child(2) { animation-delay: 0.15s; } .dots i:nth-child(3) { animation-delay: 0.3s; }
     @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
-    .composer { padding: 0 16px 16px; }
+    .composer { padding: 12px 16px 16px; border-top: 1px solid var(--line); }
     .box { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--fill); }
-    .box:focus-within { box-shadow: 0 0 0 1px var(--line-strong); }
+    .box:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 45%, transparent); }
     textarea { flex: 1; min-height: 28px; max-height: 140px; margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--body); font: inherit; }
     textarea::placeholder { color: var(--muted); }
     textarea:disabled { cursor: not-allowed; }
@@ -548,14 +651,16 @@
     style.setProperty("--line", "color-mix(in srgb, var(--fg) 10%, transparent)");
     style.setProperty("--line-strong", "color-mix(in srgb, var(--fg) 24%, transparent)");
     style.setProperty("--chip-line", "color-mix(in srgb, var(--fg) 12%, transparent)");
-    // Accent colors come from the page too (its own Submit button green and
-    // description links), so a light theme gets its own, darker shades. The
-    // fallbacks are for a page that has neither on screen yet.
+    // The status green comes from the page's own Submit button, so a light
+    // theme gets its own, darker shade; the fallback is for a page that has
+    // no such button on screen yet.
     const light = isLight(pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
     const submit = document.querySelector('[data-e2e-locator="console-submit-button"]');
-    const link = [...m.layout.querySelectorAll(".flexlayout__tab a")].find((a) => !m.host.contains(a));
     style.setProperty("--green", pick(submit, "color", light ? "#0e8a3a" : "#2cbb5d"));
-    style.setProperty("--link", pick(link, "color", light ? "#0b63e5" : "#4b9bff"));
+    // Not sampled: the first anchor in the native pane is a plain-text link
+    // (it came out near-black in light mode), so links get a fixed blue per
+    // surface instead.
+    style.setProperty("--link", light ? "#0b63e5" : "#4b9bff");
     style.setProperty("--red", "#ef4743");
     document.documentElement.style.setProperty("--lc-tutor-muted", muted);
   }
@@ -624,9 +729,14 @@
     return svg;
   }
 
-  // Circle with a check, the same idea as the native "Solved" mark.
+  // Outlined circle with a check, like the native "Solved" mark; with an
+  // exclamation mark instead when the tutor isn't reachable.
+  const RING = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 1.8a8.2 8.2 0 1 1 0 16.4 8.2 8.2 0 0 1 0-16.4z";
+  const STATUS_OK = `${RING}M10.6 15.8 7.2 12.4l1.2-1.2 2.2 2.2 5-5 1.2 1.2z`;
+  const STATUS_BAD = `${RING}M11.1 7h1.8v6.2h-1.8zm0 7.8h1.8v1.9h-1.8z`;
+
   function statusIcon() {
-    return svgIcon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.3 14.7-4-4 1.4-1.4 2.6 2.6 5.2-5.2 1.4 1.4-6.6 6.6z", 14);
+    return svgIcon(STATUS_BAD, 14);
   }
 
   function chatBubbleIcon(size) {
@@ -657,7 +767,7 @@
 
     const scroll = el("div", "scroll");
     const feed = el("div", "feed");
-    scroll.append(head, feed);
+    scroll.append(head, banner, feed);
 
     const composer = el("div", "composer");
     const box = el("div", "box");
@@ -678,7 +788,7 @@
     hint.hidden = true;
     composer.appendChild(hint);
 
-    wrap.append(banner, scroll, composer);
+    wrap.append(scroll, composer);
     root.append(style, wrap);
 
     // LeetCode binds many single-key shortcuts on the page, and this script's
@@ -753,6 +863,7 @@
     const slug = currentSlug();
     const conn = describeConnection();
     p.statusText.textContent = conn.label;
+    p.status.querySelector("path").setAttribute("d", conn.ok ? STATUS_OK : STATUS_BAD);
     if (conn.ok) p.status.setAttribute("data-ok", "");
     else p.status.removeAttribute("data-ok");
     renderBanner(p.banner, conn.banner);
@@ -1107,6 +1218,12 @@
       }, 250);
     }).observe(document.body, { childList: true, subtree: true });
     setInterval(ensureMounted, 2000);
+
+    // LeetCode shows the result of a Run or Submit in its own tab. When the
+    // student triggers one while the panel is open, step aside the same way,
+    // even in the case the page's own selection doesn't visibly change (the
+    // result tab was already the one underneath).
+    document.addEventListener("leetcode-capture:capture-start", () => deactivate());
 
     streamLoop();
   }
