@@ -1,0 +1,994 @@
+// LeetCode Capture - in-page tutor panel
+//
+// Adds a "Tutor" tab to the problem page's left tab strip (next to
+// Description, Submissions, Editorial, Solutions) that shows the companion's
+// live conversation and lets the student type to it. The tab and its content
+// are built to look and behave like LeetCode's own: the tab button is a clone
+// of a real one (so its classes, metrics and theme-following all come for
+// free), and the panel samples its colors from the page's own elements at
+// runtime instead of hardcoding a theme.
+//
+// All the intelligence stays in the local companion process. This script only
+// talks to the relay server on localhost:8135 (the same host the capture
+// script already uses): it streams events from GET /panel/events and posts
+// typed messages to POST /panel/message. See relay-server/panel-broker.js for
+// the protocol and its origin checks.
+//
+// Everything model-generated is untrusted text. It is only ever rendered with
+// createElement/textContent (never innerHTML), and links are limited to
+// http(s) URLs.
+
+(() => {
+  const RELAY_BASE = "http://localhost:8135";
+  const MAX_ITEMS_PER_PROBLEM = 300;
+
+  // ---------------------------------------------------------------------
+  // Streaming transport
+  // ---------------------------------------------------------------------
+
+  // Parses one SSE block ("id: 3\ndata: {...}") into its JSON payload, or
+  // null for a comment, keep-alive or malformed block.
+  function parseSseBlock(block) {
+    const data = block
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).replace(/^ /, ""))
+      .join("\n");
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+
+  // Feeds raw text chunks in, calls onEvent for every complete SSE event.
+  function createSseParser(onEvent) {
+    let buffer = "";
+    return function push(text) {
+      buffer += text;
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const event = parseSseBlock(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 2);
+        if (event) onEvent(event);
+      }
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // Transcript state
+  // ---------------------------------------------------------------------
+  //
+  // One transcript per problem slug, rebuilt purely from the relay's event
+  // stream, so a reload or a late-opened tab replays into the same state.
+
+  function createState() {
+    return {
+      companionOnline: null, // null until the first status event
+      lastSeq: 0,
+      byProblem: new Map(), // slug -> items[]
+      turnProblem: new Map(), // turnId -> slug, so a chunk (which has no slug) finds its turn
+    };
+  }
+
+  function itemsFor(state, slug) {
+    const key = slug || "";
+    let items = state.byProblem.get(key);
+    if (!items) {
+      items = [];
+      state.byProblem.set(key, items);
+    }
+    return items;
+  }
+
+  function findTurn(state, turnId) {
+    const slug = state.turnProblem.get(turnId);
+    if (slug === undefined) return null;
+    return itemsFor(state, slug).find((item) => item.kind === "tutor" && item.turnId === turnId) || null;
+  }
+
+  // Applies one relay event. Returns the problem slug it affected (or null),
+  // so the caller can re-render only when that problem is on screen.
+  function applyEvent(state, event) {
+    if (event.type === "status") {
+      state.companionOnline = Boolean(event.companionOnline);
+      return null;
+    }
+    // Replays after a reconnect can overlap what we already have.
+    if (typeof event.seq === "number") {
+      if (event.seq <= state.lastSeq) return null;
+      state.lastSeq = event.seq;
+    }
+    const slug = event.problemSlug || "";
+    switch (event.type) {
+      case "user":
+        itemsFor(state, slug).push({ kind: "user", text: event.text || "" });
+        break;
+      case "capture":
+        itemsFor(state, slug).push({
+          kind: "capture",
+          trigger: event.trigger,
+          attemptSeq: event.attemptSeq,
+          title: event.problemTitle || null,
+        });
+        break;
+      case "notice":
+        itemsFor(state, slug).push({ kind: "notice", text: event.text || "" });
+        break;
+      case "turn-start":
+        if (state.turnProblem.has(event.turnId)) return null;
+        state.turnProblem.set(event.turnId, slug);
+        itemsFor(state, slug).push({ kind: "tutor", turnId: event.turnId, text: "", pending: true, error: null });
+        break;
+      case "chunk": {
+        const turn = findTurn(state, event.turnId);
+        if (!turn) return null;
+        turn.text += event.text || "";
+        return state.turnProblem.get(event.turnId);
+      }
+      case "turn-end": {
+        let turn = findTurn(state, event.turnId);
+        if (!turn) {
+          // Joined after the turn started and its start was already trimmed.
+          state.turnProblem.set(event.turnId, slug);
+          turn = { kind: "tutor", turnId: event.turnId, text: "", pending: true, error: null };
+          itemsFor(state, slug).push(turn);
+        }
+        if (typeof event.text === "string") turn.text = event.text;
+        turn.error = event.error || null;
+        turn.pending = false;
+        return state.turnProblem.get(event.turnId);
+      }
+      default:
+        return null;
+    }
+    const items = itemsFor(state, slug);
+    if (items.length > MAX_ITEMS_PER_PROBLEM) items.splice(0, items.length - MAX_ITEMS_PER_PROBLEM);
+    return slug;
+  }
+
+  // ---------------------------------------------------------------------
+  // Markdown (just what a tutor reply uses)
+  // ---------------------------------------------------------------------
+
+  function parseInline(text) {
+    const nodes = [];
+    let buf = "";
+    let i = 0;
+    const flush = () => {
+      if (buf) nodes.push({ t: "text", v: buf });
+      buf = "";
+    };
+    const isWordChar = (c) => c !== undefined && /[A-Za-z0-9]/.test(c);
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === "\\" && i + 1 < text.length && /[\\`*_{}[\]()#+\-.!>~|]/.test(text[i + 1])) {
+        buf += text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        const end = text.indexOf("`", i + 1);
+        if (end > i + 1) {
+          flush();
+          nodes.push({ t: "code", v: text.slice(i + 1, end) });
+          i = end + 1;
+          continue;
+        }
+      }
+      if (text.startsWith("**", i) || text.startsWith("__", i)) {
+        const marker = text.slice(i, i + 2);
+        const end = text.indexOf(marker, i + 2);
+        if (end > i + 2 && !/^\s/.test(text[i + 2]) && !/\s$/.test(text.slice(i + 2, end))) {
+          flush();
+          nodes.push({ t: "strong", c: parseInline(text.slice(i + 2, end)) });
+          i = end + 2;
+          continue;
+        }
+      }
+      if ((ch === "*" || ch === "_") && text[i + 1] !== ch && text[i + 1] !== undefined && !/\s/.test(text[i + 1])) {
+        // Underscore emphasis only at word boundaries, so snake_case survives.
+        const boundaryOk = ch === "*" || !isWordChar(text[i - 1]);
+        if (boundaryOk) {
+          let end = i + 1;
+          while (end < text.length) {
+            end = text.indexOf(ch, end);
+            if (end === -1) break;
+            if (text[end + 1] === ch || text[end - 1] === ch) {
+              end += 1;
+              continue;
+            }
+            break;
+          }
+          if (end > i + 1 && !/\s/.test(text[end - 1]) && (ch === "*" || !isWordChar(text[end + 1]))) {
+            flush();
+            nodes.push({ t: "em", c: parseInline(text.slice(i + 1, end)) });
+            i = end + 1;
+            continue;
+          }
+        }
+      }
+      if (ch === "[") {
+        const match = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/.exec(text.slice(i));
+        if (match) {
+          flush();
+          nodes.push({ t: "link", href: match[2], c: parseInline(match[1]) });
+          i += match[0].length;
+          continue;
+        }
+      }
+      buf += ch;
+      i += 1;
+    }
+    flush();
+    return nodes;
+  }
+
+  const FENCE_RE = /^\s*```\s*([\w+#.-]*)\s*$/;
+  const HEADING_RE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+  const HR_RE = /^\s*([-*_])(?:\s*\1){2,}\s*$/;
+  const QUOTE_RE = /^\s*>\s?(.*)$/;
+  const LIST_RE = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+
+  function startsBlock(line) {
+    return FENCE_RE.test(line) || HEADING_RE.test(line) || HR_RE.test(line) || QUOTE_RE.test(line) || LIST_RE.test(line);
+  }
+
+  function parseBlocks(text) {
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    const blocks = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) {
+        i += 1;
+        continue;
+      }
+      const fence = FENCE_RE.exec(line);
+      if (fence) {
+        const code = [];
+        i += 1;
+        let closed = false;
+        while (i < lines.length) {
+          if (/^\s*```\s*$/.test(lines[i])) {
+            closed = true;
+            i += 1;
+            break;
+          }
+          code.push(lines[i]);
+          i += 1;
+        }
+        blocks.push({ t: "code", lang: fence[1] || "", v: code.join("\n"), open: !closed });
+        continue;
+      }
+      const heading = HEADING_RE.exec(line);
+      if (heading) {
+        blocks.push({ t: "heading", level: heading[1].length, c: parseInline(heading[2]) });
+        i += 1;
+        continue;
+      }
+      if (HR_RE.test(line)) {
+        blocks.push({ t: "hr" });
+        i += 1;
+        continue;
+      }
+      if (QUOTE_RE.test(line)) {
+        const quoted = [];
+        while (i < lines.length && QUOTE_RE.test(lines[i])) {
+          quoted.push(QUOTE_RE.exec(lines[i])[1]);
+          i += 1;
+        }
+        blocks.push({ t: "quote", c: parseBlocks(quoted.join("\n")) });
+        continue;
+      }
+      if (LIST_RE.test(line)) {
+        const first = LIST_RE.exec(line);
+        const ordered = /\d/.test(first[2]);
+        const baseIndent = first[1].length;
+        const items = [];
+        while (i < lines.length) {
+          const m = LIST_RE.exec(lines[i]);
+          if (m) {
+            items.push({ depth: Math.max(0, Math.min(3, Math.floor((m[1].length - baseIndent) / 2))), text: m[3] });
+            i += 1;
+          } else if (lines[i].trim() && /^\s+\S/.test(lines[i]) && items.length) {
+            items[items.length - 1].text += ` ${lines[i].trim()}`;
+            i += 1;
+          } else {
+            break;
+          }
+        }
+        blocks.push({ t: "list", ordered, items: items.map((it) => ({ depth: it.depth, c: parseInline(it.text) })) });
+        continue;
+      }
+      const para = [];
+      while (i < lines.length && lines[i].trim() && (para.length === 0 || !startsBlock(lines[i]))) {
+        para.push(lines[i].trim());
+        i += 1;
+      }
+      blocks.push({ t: "paragraph", c: parseInline(para.join(" ")) });
+    }
+    return blocks;
+  }
+
+  function renderInline(nodes, doc) {
+    const frag = doc.createDocumentFragment();
+    for (const node of nodes) {
+      if (node.t === "text") {
+        frag.appendChild(doc.createTextNode(node.v));
+      } else if (node.t === "code") {
+        const el = doc.createElement("code");
+        el.textContent = node.v;
+        frag.appendChild(el);
+      } else if (node.t === "strong" || node.t === "em") {
+        const el = doc.createElement(node.t === "strong" ? "strong" : "em");
+        el.appendChild(renderInline(node.c, doc));
+        frag.appendChild(el);
+      } else if (node.t === "link") {
+        const el = doc.createElement("a");
+        el.href = node.href;
+        el.target = "_blank";
+        el.rel = "noopener noreferrer";
+        el.appendChild(renderInline(node.c, doc));
+        frag.appendChild(el);
+      }
+    }
+    return frag;
+  }
+
+  function renderBlocks(blocks, doc) {
+    const frag = doc.createDocumentFragment();
+    for (const block of blocks) {
+      if (block.t === "paragraph") {
+        const el = doc.createElement("p");
+        el.appendChild(renderInline(block.c, doc));
+        frag.appendChild(el);
+      } else if (block.t === "heading") {
+        const el = doc.createElement("p");
+        el.className = `h h${Math.min(block.level, 3)}`;
+        el.appendChild(renderInline(block.c, doc));
+        frag.appendChild(el);
+      } else if (block.t === "code") {
+        const pre = doc.createElement("pre");
+        const code = doc.createElement("code");
+        code.textContent = block.v;
+        pre.appendChild(code);
+        frag.appendChild(pre);
+      } else if (block.t === "hr") {
+        frag.appendChild(doc.createElement("hr"));
+      } else if (block.t === "quote") {
+        const el = doc.createElement("blockquote");
+        el.appendChild(renderBlocks(block.c, doc));
+        frag.appendChild(el);
+      } else if (block.t === "list") {
+        const list = doc.createElement(block.ordered ? "ol" : "ul");
+        for (const item of block.items) {
+          const li = doc.createElement("li");
+          if (item.depth) li.style.marginLeft = `${item.depth * 20}px`;
+          li.appendChild(renderInline(item.c, doc));
+          list.appendChild(li);
+        }
+        frag.appendChild(list);
+      }
+    }
+    return frag;
+  }
+
+  function problemSlugFromPath(pathname) {
+    const match = /\/problems\/([^/]+)/.exec(pathname);
+    return match ? match[1] : null;
+  }
+
+  // Test-only hook (same pattern as content.js): `module` is undefined in a
+  // real content script, so this is a no-op in the browser.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      parseSseBlock,
+      createSseParser,
+      createState,
+      applyEvent,
+      itemsFor,
+      parseInline,
+      parseBlocks,
+      renderBlocks,
+      problemSlugFromPath,
+    };
+    return;
+  }
+
+  // ---------------------------------------------------------------------
+  // Page integration (browser only below this line)
+  // ---------------------------------------------------------------------
+
+  const HOST_ID = "lc-tutor-panel-host";
+  const TAB_ATTR = "data-lc-tutor-tab";
+  const ACTIVE_ATTR = "data-lc-tutor-active";
+  const TUTOR_COLOR = "rgb(150, 115, 255)";
+
+  const state = createState();
+  let relayReachable = null; // null until the first connect attempt settles
+  let active = false;
+  let unread = false;
+  let mounted = null; // { tabset, container, tab, divider, host, layout, ... }
+  let renderQueued = false;
+
+  const PAGE_CSS = `
+    [${TAB_ATTR}] .lc-tutor-dot { display: none; width: 6px; height: 6px; margin-left: 2px; border-radius: 50%; background: #ef4743; }
+    [${TAB_ATTR}][data-unread] .lc-tutor-dot { display: block; }
+    body[${ACTIVE_ATTR}] .flexlayout__tabset:has([${TAB_ATTR}]) .flexlayout__tab_button--selected:not([${TAB_ATTR}]) {
+      color: var(--lc-tutor-muted, rgba(255, 255, 255, 0.6));
+    }
+  `;
+
+  const PANEL_CSS = `
+    :host { display: none; position: absolute; z-index: 20; box-sizing: border-box; }
+    :host([data-active]) { display: block; }
+    * { box-sizing: border-box; }
+    .wrap {
+      position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden;
+      border-radius: 0 0 8px 8px; background: var(--bg); color: var(--fg);
+      font: 400 14px/1.5 var(--font);
+    }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 8px; }
+    .title { margin: 0; font-size: 20px; font-weight: 600; line-height: 28px; }
+    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+    .status[data-ok] { color: var(--green); }
+    .status[data-ok] i { background: var(--green); }
+    .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 20px 16px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+    .feed { display: flex; flex-direction: column; gap: 14px; }
+    .empty, .banner { color: var(--muted); font-size: 14px; }
+    .banner { margin: 0 20px 8px; padding: 10px 12px; border-radius: 8px; background: var(--fill); }
+    .banner code { font-size: 12px; }
+    .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; color: var(--muted); }
+    .chip b { font-weight: 500; color: var(--fg); }
+    .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+    .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+    .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .tutor { overflow-wrap: anywhere; }
+    .tutor > :first-child { margin-top: 0; }
+    .tutor > :last-child { margin-bottom: 0; }
+    .tutor p { margin: 0 0 12px; }
+    .tutor .h { font-weight: 600; margin: 16px 0 8px; }
+    .tutor .h1 { font-size: 16px; } .tutor .h2 { font-size: 15px; }
+    .tutor ul, .tutor ol { margin: 0 0 12px; padding-left: 20px; }
+    .tutor li { margin: 2px 0; }
+    .tutor strong { font-weight: 600; }
+    .tutor a { color: #4b9bff; text-decoration: none; }
+    .tutor a:hover { text-decoration: underline; }
+    .tutor code { font: 12px/1.5 Menlo, Monaco, Consolas, "Courier New", monospace; padding: 1px 6px; border-radius: 4px; background: var(--fill); }
+    .tutor pre { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--fill); overflow-x: auto; scrollbar-width: thin; }
+    .tutor pre code { padding: 0; background: none; white-space: pre; }
+    .tutor blockquote { margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--muted); }
+    .tutor hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+    .err { color: var(--red); }
+    .dots { display: inline-flex; gap: 4px; padding: 6px 0; }
+    .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite ease-in-out; }
+    .dots i:nth-child(2) { animation-delay: 0.15s; } .dots i:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+    .composer { padding: 0 20px 16px; }
+    .box { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--fill); }
+    .box:focus-within { box-shadow: 0 0 0 1px var(--line-strong); }
+    textarea { flex: 1; min-height: 28px; max-height: 140px; margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--fg); font: inherit; }
+    textarea::placeholder { color: var(--muted); }
+    textarea:disabled { cursor: not-allowed; }
+    button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--green); cursor: pointer; }
+    button:hover:not(:disabled) { background: var(--fill); }
+    button:disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
+    .hint { margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
+  `;
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  // ---- finding LeetCode's own elements --------------------------------
+
+  // LeetCode renders every label twice inside a tab button (a bold visible
+  // copy and an absolutely-positioned regular-weight copy that reserves the
+  // width), so a button's textContent reads "descriptiondescription". The
+  // label is the text of its first leaf element.
+  function labelLeaves(button) {
+    return [...button.querySelectorAll("*")].filter((n) => n.children.length === 0 && (n.textContent || "").trim());
+  }
+
+  function labelOf(button) {
+    const leaf = labelLeaves(button)[0];
+    return leaf ? leaf.textContent.trim().toLowerCase() : "";
+  }
+
+  function findTabset() {
+    for (const button of document.querySelectorAll(".flexlayout__tab_button")) {
+      if (button.hasAttribute(TAB_ATTR)) continue;
+      if (labelOf(button) === "description") return button.closest(".flexlayout__tabset");
+    }
+    return null;
+  }
+
+  // The colors are read from LeetCode's own rendered elements rather than
+  // hardcoded, so the panel follows whatever theme the page is in.
+  function sampleTheme(m) {
+    const pick = (node, prop, fallback) => {
+      if (!node) return fallback;
+      const value = getComputedStyle(node)[prop];
+      return value && value !== "rgba(0, 0, 0, 0)" && value !== "transparent" ? value : fallback;
+    };
+    const buttons = [...m.container.querySelectorAll(".flexlayout__tab_button")].filter((b) => !b.hasAttribute(TAB_ATTR));
+    const selected = buttons.find((b) => b.classList.contains("flexlayout__tab_button--selected"));
+    const unselected = buttons.find((b) => b.classList.contains("flexlayout__tab_button--unselected"));
+    const fg = pick(selected || unselected, "color", "rgb(245, 245, 245)");
+    const muted = pick(unselected, "color", "rgba(255, 255, 255, 0.6)");
+    const style = m.host.style;
+    style.setProperty("--bg", pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
+    style.setProperty("--fg", fg);
+    style.setProperty("--muted", muted);
+    style.setProperty("--font", getComputedStyle(document.body).fontFamily);
+    style.setProperty("--fill", "color-mix(in srgb, var(--fg) 7%, transparent)");
+    style.setProperty("--line", "color-mix(in srgb, var(--fg) 10%, transparent)");
+    style.setProperty("--line-strong", "color-mix(in srgb, var(--fg) 24%, transparent)");
+    style.setProperty("--green", "#2cbb5d");
+    style.setProperty("--red", "#ef4743");
+    document.documentElement.style.setProperty("--lc-tutor-muted", muted);
+  }
+
+  // ---- the tab button --------------------------------------------------
+
+  function chatIcon(template) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    // Same classes and size model as LeetCode's own icons (absolutely centered
+    // in a fixed box), so spacing matches exactly.
+    svg.setAttribute("class", template && template.getAttribute("class") ? template.getAttribute("class") : "");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "1em");
+    svg.setAttribute("height", "1em");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.color = TUTOR_COLOR;
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", "M5 3h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7.2L6 21.5V17H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function buildTab(container) {
+    const buttons = [...container.querySelectorAll(".flexlayout__tab_button")].filter((b) => !b.hasAttribute(TAB_ATTR));
+    const template = buttons[buttons.length - 1];
+    if (!template) return null;
+    const tab = template.cloneNode(true);
+    tab.setAttribute(TAB_ATTR, "");
+    tab.removeAttribute("data-layout-path");
+    tab.removeAttribute("id");
+    // LeetCode's tab buttons are draggable (to rearrange panels); ours has no
+    // layout node behind it, so it must not start a drag.
+    tab.removeAttribute("draggable");
+    tab.setAttribute("role", "tab");
+    tab.classList.remove("flexlayout__tab_button--selected");
+    tab.classList.add("flexlayout__tab_button--unselected");
+    for (const trailing of tab.querySelectorAll(".flexlayout__tab_button_trailing")) trailing.remove();
+
+    const leaves = labelLeaves(tab).filter((n) => !n.closest("svg"));
+    for (const leaf of leaves) leaf.textContent = "Tutor";
+    const row = leaves.length ? leaves[0].closest(".flexlayout__tab_button_content") : null;
+    if (row && row.firstElementChild) row.firstElementChild.appendChild(el("span", "lc-tutor-dot"));
+    const oldIcon = tab.querySelector("svg");
+    if (oldIcon) oldIcon.replaceWith(chatIcon(oldIcon));
+
+    const dividerTemplate = container.querySelector(".flexlayout__tabset_tab_divider");
+    const divider = dividerTemplate ? dividerTemplate.cloneNode(true) : null;
+    return { tab, divider };
+  }
+
+  // ---- the panel -------------------------------------------------------
+
+  function buildPanel() {
+    const host = document.createElement("div");
+    host.id = HOST_ID;
+    const root = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = PANEL_CSS;
+
+    const wrap = el("div", "wrap");
+    const head = el("div", "head");
+    head.appendChild(el("h2", "title", "Tutor"));
+    const status = el("div", "status");
+    status.appendChild(document.createElement("i"));
+    const statusText = el("span", "", "Connecting");
+    status.appendChild(statusText);
+    head.appendChild(status);
+
+    const banner = el("div", "banner");
+    banner.hidden = true;
+
+    const scroll = el("div", "scroll");
+    const feed = el("div", "feed");
+    scroll.appendChild(feed);
+
+    const composer = el("div", "composer");
+    const box = el("div", "box");
+    const input = document.createElement("textarea");
+    input.rows = 1;
+    input.placeholder = "Ask the tutor about this problem";
+    input.setAttribute("aria-label", "Message the tutor");
+    const send = document.createElement("button");
+    send.type = "button";
+    send.setAttribute("aria-label", "Send");
+    send.title = "Send (Enter)";
+    send.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12 2-12 2z"/></svg>';
+    box.appendChild(input);
+    box.appendChild(send);
+    composer.appendChild(box);
+    const hint = el("div", "hint", "");
+    hint.hidden = true;
+    composer.appendChild(hint);
+
+    wrap.append(head, banner, scroll, composer);
+    root.append(style, wrap);
+
+    // LeetCode binds many single-key shortcuts on the page, and this script's
+    // sibling (content.js) binds Ctrl/Cmd+Enter to a Submit capture. Typing
+    // here must trigger neither, so keys stop at the host.
+    for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
+
+    return { host, status, statusText, banner, scroll, feed, input, send, hint };
+  }
+
+  function currentSlug() {
+    return problemSlugFromPath(location.pathname);
+  }
+
+  function describeConnection() {
+    if (relayReachable === false) {
+      return {
+        label: "Offline",
+        ok: false,
+        banner: "Can't reach the relay server on localhost:8135. Start the companion with `leetcode`, or run `node companion.js` in the project's companion folder.",
+      };
+    }
+    if (state.companionOnline === false) {
+      return {
+        label: "Tutor offline",
+        ok: false,
+        banner: "The relay is running but the tutor isn't. Start the companion with `leetcode` to chat and get your attempts reviewed here.",
+      };
+    }
+    if (state.companionOnline === null) return { label: "Connecting", ok: false, banner: null };
+    return { label: "Connected", ok: true, banner: null };
+  }
+
+  function renderBanner(node, text) {
+    node.textContent = "";
+    if (!text) {
+      node.hidden = true;
+      return;
+    }
+    node.hidden = false;
+    // Backticked words become <code>, nothing else is interpreted.
+    text.split(/(`[^`]+`)/).forEach((part) => {
+      if (part.startsWith("`") && part.endsWith("`")) node.appendChild(el("code", "", part.slice(1, -1)));
+      else node.appendChild(document.createTextNode(part));
+    });
+  }
+
+  function renderItem(item) {
+    if (item.kind === "capture") {
+      const chip = el("div", "chip");
+      chip.appendChild(el("b", "", item.trigger === "submit" ? "Submit" : "Run"));
+      if (item.attemptSeq) chip.appendChild(document.createTextNode(`Attempt ${item.attemptSeq}`));
+      return chip;
+    }
+    if (item.kind === "notice") return el("div", "notice", item.text);
+    if (item.kind === "user") return el("div", "user", item.text);
+    const wrap = el("div", "tutor");
+    if (item.text) wrap.appendChild(renderBlocks(parseBlocks(item.text), document));
+    if (item.error) wrap.appendChild(el("p", "err", item.error));
+    if (item.pending && !item.text) {
+      const dots = el("div", "dots");
+      for (let i = 0; i < 3; i += 1) dots.appendChild(document.createElement("i"));
+      wrap.appendChild(dots);
+    }
+    return wrap;
+  }
+
+  function render() {
+    renderQueued = false;
+    if (!mounted) return;
+    const p = mounted.panel;
+    const slug = currentSlug();
+    const conn = describeConnection();
+    p.statusText.textContent = conn.label;
+    if (conn.ok) p.status.setAttribute("data-ok", "");
+    else p.status.removeAttribute("data-ok");
+    renderBanner(p.banner, conn.banner);
+
+    const canSend = conn.ok && Boolean(slug);
+    p.input.disabled = !canSend;
+    p.send.disabled = !canSend || !p.input.value.trim();
+    p.input.placeholder = canSend ? "Ask the tutor about this problem" : "Start the companion to chat";
+
+    if (!active) return;
+    const stick = p.scroll.scrollHeight - p.scroll.scrollTop - p.scroll.clientHeight < 80;
+    const items = (slug && state.byProblem.get(slug)) || [];
+    p.feed.textContent = "";
+    if (items.length === 0) {
+      p.feed.appendChild(
+        el("div", "empty", "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below.")
+      );
+    }
+    for (const item of items) p.feed.appendChild(renderItem(item));
+    if (stick) p.scroll.scrollTop = p.scroll.scrollHeight;
+  }
+
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(render);
+  }
+
+  // ---- placement, activation ------------------------------------------
+
+  function syncRect() {
+    if (!mounted) return;
+    const content = mounted.tabset.querySelector(".flexlayout__tabset_content");
+    if (!content) return;
+    const layoutRect = mounted.layout.getBoundingClientRect();
+    const rect = content.getBoundingClientRect();
+    const s = mounted.host.style;
+    s.left = `${rect.left - layoutRect.left}px`;
+    s.top = `${rect.top - layoutRect.top}px`;
+    s.width = `${rect.width}px`;
+    s.height = `${rect.height}px`;
+  }
+
+  function selectedRealButton(m) {
+    return [...m.container.querySelectorAll(".flexlayout__tab_button--selected")].find((b) => !b.hasAttribute(TAB_ATTR)) || null;
+  }
+
+  function setUnread(on) {
+    unread = on;
+    if (!mounted) return;
+    if (on) mounted.tab.setAttribute("data-unread", "");
+    else mounted.tab.removeAttribute("data-unread");
+  }
+
+  function activate() {
+    if (!mounted || active) return;
+    active = true;
+    mounted.selectedAtActivation = selectedRealButton(mounted);
+    sampleTheme(mounted);
+    syncRect();
+    mounted.host.setAttribute("data-active", "");
+    mounted.tab.classList.remove("flexlayout__tab_button--unselected");
+    mounted.tab.classList.add("flexlayout__tab_button--selected");
+    document.body.setAttribute(ACTIVE_ATTR, "");
+    setUnread(false);
+    render();
+    mounted.panel.scroll.scrollTop = mounted.panel.scroll.scrollHeight;
+    if (!mounted.panel.input.disabled) mounted.panel.input.focus({ preventScroll: true });
+  }
+
+  function deactivate() {
+    if (!mounted || !active) return;
+    active = false;
+    mounted.host.removeAttribute("data-active");
+    mounted.tab.classList.remove("flexlayout__tab_button--selected");
+    mounted.tab.classList.add("flexlayout__tab_button--unselected");
+    document.body.removeAttribute(ACTIVE_ATTR);
+  }
+
+  function teardown() {
+    if (!mounted) return;
+    deactivate();
+    mounted.cleanup();
+    mounted = null;
+  }
+
+  function mount() {
+    const tabset = findTabset();
+    if (!tabset) return;
+    const container = tabset.querySelector(".flexlayout__tabset_tabbar_inner_tab_container");
+    const layout = tabset.parentElement;
+    if (!container || !layout) return;
+    const built = buildTab(container);
+    if (!built) return;
+    const { tab, divider } = built;
+    if (divider) container.appendChild(divider);
+    container.appendChild(tab);
+
+    const panel = buildPanel();
+    layout.appendChild(panel.host);
+
+    const m = { tabset, container, layout, tab, divider, host: panel.host, panel, selectedAtActivation: null, cleanup: null };
+    mounted = m;
+    sampleTheme(m);
+    syncRect();
+
+    // LeetCode selects a tab on mousedown, not click: by the time the mouse
+    // is released its own handlers have already re-rendered under the pointer,
+    // and the browser never delivers a click to our button (observed live).
+    // So ours follows the same rule, on pointerdown. A real click is still
+    // handled too, for keyboard activation and synthetic clicks; activating
+    // twice is harmless. Pressing any other tab in this strip closes ours.
+    const onStripPress = (event) => {
+      if (event.type === "pointerdown" && event.button !== 0) return;
+      const button = event.target.closest && event.target.closest(".flexlayout__tab_button");
+      if (!button) return;
+      if (button === tab) activate();
+      else deactivate();
+    };
+    container.addEventListener("pointerdown", onStripPress, true);
+    container.addEventListener("click", onStripPress, true);
+
+    // LeetCode itself switches tabs (e.g. to Test Result after a Run). The
+    // panel only covers a tab it didn't select, so when the page's own
+    // selection moves, ours steps aside.
+    const strip = new MutationObserver(() => {
+      if (active && selectedRealButton(m) !== m.selectedAtActivation) deactivate();
+    });
+    strip.observe(container, { subtree: true, attributes: true, attributeFilter: ["class"] });
+
+    const rects = new MutationObserver(syncRect);
+    rects.observe(tabset, { attributes: true, attributeFilter: ["style"] });
+    const resize = new ResizeObserver(syncRect);
+    resize.observe(layout);
+    const content = tabset.querySelector(".flexlayout__tabset_content");
+    if (content) resize.observe(content);
+    window.addEventListener("resize", syncRect);
+
+    const theme = new MutationObserver(() => mounted && sampleTheme(mounted));
+    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
+
+    panel.input.addEventListener("input", () => {
+      panel.input.style.height = "auto";
+      panel.input.style.height = `${Math.min(panel.input.scrollHeight, 140)}px`;
+      panel.send.disabled = panel.input.disabled || !panel.input.value.trim();
+    });
+    panel.input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendTyped();
+      }
+    });
+    panel.send.addEventListener("click", sendTyped);
+
+    m.cleanup = () => {
+      container.removeEventListener("pointerdown", onStripPress, true);
+      container.removeEventListener("click", onStripPress, true);
+      strip.disconnect();
+      rects.disconnect();
+      resize.disconnect();
+      theme.disconnect();
+      window.removeEventListener("resize", syncRect);
+      tab.remove();
+      if (divider) divider.remove();
+      panel.host.remove();
+    };
+    setUnread(unread);
+    render();
+  }
+
+  // Keeps the tab present across LeetCode's own re-renders and SPA
+  // navigation, and drops it if the layout it lived in is gone.
+  let lastSlug = null;
+  function ensureMounted() {
+    if (mounted && (!document.contains(mounted.tab) || !document.contains(mounted.host))) teardown();
+    if (!mounted) {
+      mount();
+    } else if (mounted.container.lastElementChild !== mounted.tab) {
+      // React appended something after us; keep Tutor last.
+      mounted.container.appendChild(mounted.tab);
+    }
+    const slug = currentSlug();
+    if (slug !== lastSlug) {
+      lastSlug = slug;
+      if (mounted) {
+        deactivate();
+        scheduleRender();
+      }
+    }
+  }
+
+  async function sendTyped() {
+    if (!mounted) return;
+    const p = mounted.panel;
+    const text = p.input.value.trim();
+    const slug = currentSlug();
+    if (!text || !slug || p.input.disabled) return;
+    p.send.disabled = true;
+    p.hint.hidden = true;
+    try {
+      const res = await fetch(`${RELAY_BASE}/panel/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, problemSlug: slug }),
+      });
+      if (res.status === 202) {
+        p.input.value = "";
+        p.input.style.height = "auto";
+      } else if (res.status === 503) {
+        state.companionOnline = false;
+        p.hint.textContent = "The tutor went offline. Your message wasn't sent.";
+        p.hint.hidden = false;
+      } else {
+        p.hint.textContent = "Couldn't send that message.";
+        p.hint.hidden = false;
+      }
+    } catch {
+      relayReachable = false;
+      p.hint.textContent = "Couldn't reach the relay server.";
+      p.hint.hidden = false;
+    }
+    scheduleRender();
+    p.input.focus({ preventScroll: true });
+  }
+
+  // ---- event stream ------------------------------------------------------
+
+  async function streamLoop() {
+    let delay = 1000;
+    for (;;) {
+      try {
+        // no-store: see panel-broker.js; two tabs must never queue behind
+        // each other's open stream through the HTTP cache.
+        const res = await fetch(`${RELAY_BASE}/panel/events?after=${state.lastSeq}`, {
+          headers: { Accept: "text/event-stream" },
+          cache: "no-store",
+        });
+        if (!res.ok || !res.body) throw new Error(`relay answered ${res.status}`);
+        relayReachable = true;
+        delay = 1000;
+        scheduleRender();
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        const push = createSseParser((event) => {
+          const affected = applyEvent(state, event);
+          if (event.type === "turn-end" && !active && affected === currentSlug()) setUnread(true);
+          scheduleRender();
+        });
+        for (;;) {
+          // eslint-disable-next-line no-await-in-loop
+          const { done, value } = await reader.read();
+          if (done) break;
+          push(decoder.decode(value, { stream: true }));
+        }
+      } catch {
+        // Fall through to the reconnect wait.
+      }
+      relayReachable = false;
+      state.companionOnline = null;
+      scheduleRender();
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, 10000);
+    }
+  }
+
+  function start() {
+    const pageStyle = document.createElement("style");
+    pageStyle.textContent = PAGE_CSS;
+    document.head.appendChild(pageStyle);
+
+    ensureMounted();
+    // LeetCode builds its layout after document_idle and swaps it on
+    // navigation, so keep checking; each check is a couple of DOM lookups.
+    let pending = false;
+    new MutationObserver(() => {
+      if (pending) return;
+      pending = true;
+      setTimeout(() => {
+        pending = false;
+        ensureMounted();
+      }, 250);
+    }).observe(document.body, { childList: true, subtree: true });
+    setInterval(ensureMounted, 2000);
+
+    streamLoop();
+  }
+
+  start();
+})();

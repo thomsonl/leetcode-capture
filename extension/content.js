@@ -404,6 +404,13 @@
   // Cloudflare-blocked (above) ruled out testing directly - confirm live
   // against the real page if this project ever regains access to it.
   function handleShortcutKeydown(event) {
+    // Typing in the in-page tutor panel (panel.js) must never fire a capture:
+    // Ctrl/Cmd+Enter is a natural "send" gesture in a chat box. The panel
+    // lives in a shadow root, so the host element shows up in the event's
+    // composed path even though event.target is retargeted to it.
+    if (event.composedPath && event.composedPath().some((node) => node && node.id === "lc-tutor-panel-host")) {
+      return;
+    }
     if (matchesRunShortcut(event)) {
       sendCapture("run");
     } else if (matchesSubmitShortcut(event)) {

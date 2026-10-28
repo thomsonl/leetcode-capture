@@ -50,6 +50,7 @@ import {
 } from './terminal-format.js';
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
 import { estimateMessagesTokens, buildMessages as buildLocalMessages } from './context-budget.js';
+import { createPanelBridge } from './panel-bridge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -191,6 +192,11 @@ const AUTO_CLEAR_CONTEXT = !/^(0|false|no)$/i.test(process.env.COMPANION_AUTO_CL
 // entirely, restoring the old unbounded behavior - not the default, since
 // that's exactly the failure mode this exists to prevent.
 const LOCAL_MAX_HISTORY_TURNS = Number(process.env.COMPANION_LOCAL_MAX_HISTORY_TURNS || 6);
+// In-page tutor panel (the extension's "Tutor" tab on leetcode.com): mirrors
+// this conversation to the browser through the relay server and accepts
+// messages typed there. On by default; COMPANION_PANEL=0 turns the bridge off
+// and leaves the terminal chat exactly as it was. See panel-bridge.js.
+const PANEL_ENABLED = !/^(0|false|no)$/i.test(process.env.COMPANION_PANEL || '');
 
 const { vaultPath: VAULT_PATH, algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER } = resolveVaultConfig();
 // Fail loudly at startup, not on the first Submit - a wrong or unset vault
@@ -989,6 +995,29 @@ function stopRelayServerIfOwned() {
 // instance start the server, and if so, stop it."
 process.on('exit', stopRelayServerIfOwned);
 
+// --- in-page panel bridge ----------------------------------------------------
+//
+// Everything printed to the terminal for the tutor conversation is also
+// published as small structured events (user message, capture, turn
+// start/chunk/end, notice) so the panel can render the same conversation in
+// the browser. The terminal path stays the source of truth: every publish is
+// fire-and-forget through panelPublish, and a missing/slow relay can never
+// block or alter what the terminal does.
+let panelBridge = null;
+// The problem the conversation is currently about, as the panel's own
+// per-problem transcript key. Updated by captures and by panel messages.
+let panelProblemSlug = null;
+let panelTurnCounter = 0;
+
+function panelPublish(event) {
+  if (panelBridge) panelBridge.publish(event);
+}
+
+function newPanelTurnId() {
+  panelTurnCounter += 1;
+  return `t${Date.now().toString(36)}-${panelTurnCounter}`;
+}
+
 // --- capture formatting (adapted from the old watch.js) --------------------
 
 function triggerLabel(trigger) {
@@ -1555,7 +1584,7 @@ function startSpinner() {
 // before it ever reaches the terminal. That stripping can only happen once
 // the reply is complete, so a turn with onReply set never streams - see the
 // non-streaming branch below.
-function sendAndPrint(label, text, { onReply, problemContext, captureMeta } = {}) {
+function sendAndPrint(label, text, { onReply, problemContext, captureMeta, panelMeta } = {}) {
   // Same reasoning as handleCaptureLine's own call to this: a typed
   // message is new activity too, so it always returns the view to the
   // live bottom first if the user was scrolled up reading history.
@@ -1563,14 +1592,22 @@ function sendAndPrint(label, text, { onReply, problemContext, captureMeta } = {}
   return enqueue(async () => {
     turnActive = true;
     try {
-      await sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta });
+      await sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta, panelMeta });
     } finally {
       turnActive = false;
     }
   });
 }
 
-async function sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta } = {}) {
+async function sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta, panelMeta } = {}) {
+  // Mirrors this turn to the in-page panel (see "in-page panel bridge"
+  // above): a start marker, each streamed chunk, then one end event carrying
+  // the authoritative full text (or the error), so a panel that connects
+  // mid-turn or reloads still ends up with the right transcript.
+  const panelTurnId = newPanelTurnId();
+  const panelSlug = (panelMeta && panelMeta.problemSlug) || panelProblemSlug;
+  panelPublish({ type: 'turn-start', turnId: panelTurnId, problemSlug: panelSlug });
+  const panelEnd = (fields) => panelPublish({ type: 'turn-end', turnId: panelTurnId, problemSlug: panelSlug, ...fields });
   const separator = consumeTurnBoundary();
   if (label) printAboveInput(separator + label);
   else if (separator) printAboveInput(''); // separator alone - printAboveInput('') is exactly one blank line
@@ -1630,6 +1667,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
       reply = await backend.sendMessage(text, {
         onChunk: (chunk) => {
           anyChunk = true;
+          panelPublish({ type: 'chunk', turnId: panelTurnId, text: chunk });
           writeReplyPiece(streamer.push(chunk));
         },
         problemContext,
@@ -1643,6 +1681,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
       process.stdout.write(errorLine);
       drawBox();
       turnBoundaryPending = true;
+      panelEnd({ error: `Error talking to the backend (${BACKEND}): ${err.message}` });
       return;
     }
 
@@ -1664,6 +1703,9 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
       recordHistory(warningLine);
       process.stdout.write(warningLine);
       drawBox();
+      panelEnd({ error: 'The backend returned an empty reply.' });
+    } else {
+      panelEnd({ text: reply });
     }
     turnBoundaryPending = true;
     return;
@@ -1683,6 +1725,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
     process.stdout.write(errorLine);
     drawBox();
     turnBoundaryPending = true;
+    panelEnd({ error: `Error talking to the backend (${BACKEND}): ${err.message}` });
     return;
   }
   stopSpinner();
@@ -1702,6 +1745,8 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
   process.stdout.write(fullBody);
   drawBox();
   turnBoundaryPending = true;
+  if (isEmpty) panelEnd({ error: 'The backend returned an empty reply.' });
+  else panelEnd({ text: displayText });
 }
 
 rl.on('line', (line) => {
@@ -1763,6 +1808,7 @@ rl.on('line', (line) => {
   // history/showHistory's benefit, since readline's echo never goes
   // through printAboveInput or anything else that records it.
   if (process.stdout.isTTY) recordHistory(`${promptString()}${text}\n`);
+  panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
   sendAndPrint(null, text);
 });
 
@@ -1826,6 +1872,14 @@ async function handleCaptureLine(line) {
   const label = dim(
     `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`
   );
+  if (capture.problemSlug) panelProblemSlug = capture.problemSlug;
+  panelPublish({
+    type: 'capture',
+    problemSlug: capture.problemSlug || null,
+    problemTitle: capture.problemTitle || null,
+    trigger: capture.trigger,
+    attemptSeq: Number.isInteger(capture.attemptSeq) ? capture.attemptSeq : null,
+  });
 
   // Detected and (if AUTO_CLEAR_CONTEXT is on) acted on before anything else
   // for this capture, so a reset - if one happens - is this turn's true
@@ -1836,6 +1890,11 @@ async function handleCaptureLine(line) {
   if (resetNotice) {
     printAboveInput(turnPrefix + resetNotice);
     turnPrefix = '';
+    panelPublish({
+      type: 'notice',
+      problemSlug: capture.problemSlug || null,
+      text: 'New problem detected. Started a fresh tutor session.',
+    });
   }
 
   // Print an instant, local, non-LLM acknowledgement before the backend call
@@ -1899,7 +1958,36 @@ async function handleCaptureLine(line) {
     // itself whether it's actually new information worth including.
     problemContext: captureProblemContext(capture),
     captureMeta: { code, headerLine },
+    panelMeta: { problemSlug: capture.problemSlug || null },
   });
+}
+
+// A message typed into the in-page panel (delivered by panel-bridge.js). It
+// joins the same queue as terminal-typed messages and captures, and is echoed
+// in the terminal under a [panel] label so the two views never diverge.
+function handlePanelMessage({ text, problemSlug }) {
+  resetScrollIfNeeded();
+  let outgoing = text;
+  // The tutor only learns a problem's description from captures, so a panel
+  // question about a problem it hasn't seen an attempt for would otherwise
+  // be answered against whatever it discussed last. Treat a switch the same
+  // way a capture for a new problem is treated (see
+  // maybeResetContextForCapture) and tell it which problem is on screen.
+  if (problemSlug && problemSlug !== panelProblemSlug) {
+    if (panelProblemSlug !== null && AUTO_CLEAR_CONTEXT) {
+      backend.resetContext();
+      panelPublish({
+        type: 'notice',
+        problemSlug,
+        text: 'New problem detected. Started a fresh tutor session.',
+      });
+    }
+    panelProblemSlug = problemSlug;
+    currentProblemId = problemSlug;
+    outgoing = `(The student is now looking at the LeetCode problem "${problemSlug}" and has not run any code for it yet.)\n\n${text}`;
+  }
+  panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
+  sendAndPrint(dim(`[panel] ${text}`), outgoing, { panelMeta: { problemSlug: panelProblemSlug } });
 }
 
 async function poll() {
@@ -2148,6 +2236,26 @@ if (process.stdout.isTTY) {
 }
 
 await ensureRelayServer();
+
+if (PANEL_ENABLED) {
+  let announced = false;
+  panelBridge = createPanelBridge({
+    baseUrl: `http://${RELAY_HOST}:${RELAY_PORT}`,
+    onMessage: handlePanelMessage,
+    onState: (state) => {
+      if (state === 'connected' && !announced) {
+        announced = true;
+        printAboveInput(dim('companion: in-page panel connected (the Tutor tab on leetcode.com)'));
+      } else if (state === 'unsupported') {
+        printAboveInput(
+          dim('companion: warning: the running relay server predates the in-page panel; restart it to enable the Tutor tab')
+        );
+      }
+    },
+  });
+  panelBridge.start();
+  process.on('exit', () => panelBridge.stop());
+}
 
 printBanner(dim(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`));
 printBanner(dim(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`));

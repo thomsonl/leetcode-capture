@@ -10,6 +10,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { createPanelBroker } = require("./panel-broker");
 
 const HOST = "127.0.0.1";
 const PORT = process.env.CAPTURE_PORT ? Number(process.env.CAPTURE_PORT) : 8135;
@@ -92,7 +93,14 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+// The in-page tutor panel's broker (see panel-broker.js). Its routes do their
+// own, much stricter origin checks, so they run before the permissive
+// /capture handling below.
+const panelBroker = createPanelBroker({ port: PORT });
+
 const server = http.createServer((req, res) => {
+  if (panelBroker.handle(req, res)) return;
+
   if (req.method === "OPTIONS" && req.url === "/capture") {
     res.writeHead(204, CORS_HEADERS);
     res.end();
