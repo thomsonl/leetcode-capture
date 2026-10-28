@@ -14,6 +14,18 @@
 // relay without booting companion.js.
 
 const FLUSH_MS = 40;
+// A relay that accepts a publish but never answers must not stall the flush
+// chain (and with it every later publish) forever.
+const PUBLISH_TIMEOUT_MS = 5000;
+// While a publish is slow the queue keeps growing; past this many events the
+// oldest are dropped. Losing them is fine (the panel tolerates a missing
+// turn-start, and a turn-end carries the full text), running out of memory is
+// not.
+const MAX_QUEUED_EVENTS = 1000;
+// The relay's companion-only routes require this header; a browser page cannot
+// send it without a CORS preflight, which the relay refuses (see
+// relay-server/panel-broker.js, companionOnlyRejection).
+const COMPANION_HEADERS = { 'X-LC-Companion': '1' };
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 
@@ -33,7 +45,14 @@ export function parseSseBlock(block) {
   }
 }
 
-export function createPanelBridge({ baseUrl, onMessage, onState, fetchImpl = fetch, flushMs = FLUSH_MS }) {
+export function createPanelBridge({
+  baseUrl,
+  onMessage,
+  onState,
+  fetchImpl = fetch,
+  flushMs = FLUSH_MS,
+  publishTimeoutMs = PUBLISH_TIMEOUT_MS,
+}) {
   let stopped = false;
   let queue = [];
   let flushTimer = null;
@@ -58,6 +77,7 @@ export function createPanelBridge({ baseUrl, onMessage, onState, fetchImpl = fet
       last.text += event.text;
     } else {
       queue.push({ ...event });
+      if (queue.length > MAX_QUEUED_EVENTS) queue.splice(0, queue.length - MAX_QUEUED_EVENTS);
     }
     if (!flushTimer) {
       flushTimer = setTimeout(() => {
@@ -75,8 +95,9 @@ export function createPanelBridge({ baseUrl, onMessage, onState, fetchImpl = fet
     try {
       await fetchImpl(`${baseUrl}/panel/publish`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...COMPANION_HEADERS },
         body: JSON.stringify({ events }),
+        signal: AbortSignal.timeout(publishTimeoutMs),
       });
     } catch {
       // Best effort - see the file header.
@@ -88,7 +109,10 @@ export function createPanelBridge({ baseUrl, onMessage, onState, fetchImpl = fet
       inboxAbort = new AbortController();
       try {
         // eslint-disable-next-line no-await-in-loop
-        const res = await fetchImpl(`${baseUrl}/panel/inbox`, { signal: inboxAbort.signal });
+        const res = await fetchImpl(`${baseUrl}/panel/inbox`, {
+          headers: COMPANION_HEADERS,
+          signal: inboxAbort.signal,
+        });
         if (res.status === 404) {
           // A relay server started before this feature existed.
           setState('unsupported');

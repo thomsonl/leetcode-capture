@@ -141,6 +141,40 @@ test('a chunk is never merged across a turn boundary', async (t) => {
   );
 });
 
+test('every relay request carries the companion header, and a relay that never answers cannot stall publishing', async (t) => {
+  const seen = [];
+  let stall = true;
+  const server = http.createServer((req, res) => {
+    seen.push({ url: req.url, header: req.headers['x-lc-companion'] });
+    if (req.url === '/panel/publish' && stall) return; // accept, never answer
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(req.url === '/panel/inbox' ? 404 : 200);
+      res.end('{}');
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const bridge = createPanelBridge({
+    baseUrl: `http://127.0.0.1:${server.address().port}`,
+    onMessage: () => {},
+    publishTimeoutMs: 200,
+  });
+  t.after(() => bridge.stop());
+  bridge.start();
+  bridge.publish({ type: 'notice', text: 'first' });
+  await bridge.drain(); // resolves through the timeout instead of hanging
+  stall = false;
+  bridge.publish({ type: 'notice', text: 'second' });
+  await bridge.drain();
+  await until(() => seen.some((r) => r.url === '/panel/inbox'), 3000, 'inbox request');
+  assert.equal(seen.filter((r) => r.url === '/panel/publish').length, 2);
+  assert.ok(seen.every((r) => r.header === '1'), JSON.stringify(seen));
+});
+
 test('a dead relay never throws out of publish or drain', async () => {
   const bridge = createPanelBridge({ baseUrl: 'http://127.0.0.1:1', onMessage: () => {} });
   bridge.publish({ type: 'notice', text: 'nobody home' });
