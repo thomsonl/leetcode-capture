@@ -1,0 +1,55 @@
+// companion/sanitize.js - makes untrusted text safe to print in the terminal.
+//
+// Several things the companion prints come from outside this process:
+// messages typed into the in-page panel, and every field of a capture. The
+// relay's /capture route is CORS `*` by design (see relay-server/server.js),
+// so ANY website the student visits can post a capture whose problemTitle or
+// trigger carries an escape sequence. Written to a terminal unchanged, that
+// sequence can recolor or clear the screen, retitle the window, or (on some
+// terminals) do worse. The relay strips control characters from panel
+// messages too, but the companion must not depend on that: it is the one
+// writing to the terminal.
+//
+// The rule matches relay-server/panel-broker.js's stripControlChars: every C0
+// control except newline and tab, DEL, and every C1 control (U+0080 to U+009F,
+// which some terminals treat as 8-bit escape introducers, e.g. U+009B as CSI).
+
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+
+// Multi-line text (a typed message, a problem description): keeps newlines
+// and tabs, drops every other control character.
+export function stripControlChars(text) {
+  if (text === null || text === undefined) return '';
+  return String(text).replace(CONTROL_CHARS_RE, '');
+}
+
+// A value shown inside a one-line label (a problem title, a slug, a trigger):
+// control characters dropped and any run of whitespace, newlines included,
+// collapsed to one space, so it can neither inject escapes nor break the
+// label across lines.
+export function oneLine(text) {
+  return stripControlChars(text).replace(/\s+/g, ' ').trim();
+}
+
+// Normalizes a parsed capture in place of the raw one: every string field
+// that reaches the terminal, the panel or the model's prompt label is made
+// safe once, here, so no call site has to remember to. The student's code is
+// left exactly as captured (it only goes to the model and is never printed).
+export function sanitizeCapture(capture) {
+  if (!capture || typeof capture !== 'object' || Array.isArray(capture)) return {};
+  const out = { ...capture };
+  for (const field of ['problemTitle', 'problemSlug', 'trigger', 'language']) {
+    if (out[field] === undefined || out[field] === null) continue;
+    out[field] = oneLine(out[field]) || null;
+  }
+  if (out.problemDescription !== undefined && out.problemDescription !== null) {
+    out.problemDescription = stripControlChars(out.problemDescription);
+  }
+  if (Array.isArray(out.problemTags)) {
+    out.problemTags = out.problemTags.filter((tag) => typeof tag === 'string').map(oneLine).filter(Boolean);
+  }
+  // The relay assigns attemptSeq, but the log file is just JSON lines: never
+  // print a non-integer.
+  if (out.attemptSeq !== undefined && !Number.isInteger(out.attemptSeq)) out.attemptSeq = null;
+  return out;
+}

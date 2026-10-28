@@ -51,6 +51,7 @@ import {
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
 import { estimateMessagesTokens, buildMessages as buildLocalMessages } from './context-budget.js';
 import { createPanelBridge } from './panel-bridge.js';
+import { stripControlChars, oneLine, sanitizeCapture } from './sanitize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -1008,9 +1009,22 @@ let panelBridge = null;
 // per-problem transcript key. Updated by captures and by panel messages.
 let panelProblemSlug = null;
 let panelTurnCounter = 0;
+// Every problem this process has seen a capture for, with the context the
+// tutor needs to discuss it (see captureProblemContext). A panel message about
+// one of these must not claim the student "has not run any code", and can hand
+// the description back to a backend whose context was reset in between.
+const capturedProblems = new Map(); // slug -> captureProblemContext(capture)
 
 function panelPublish(event) {
-  if (panelBridge) panelBridge.publish(event);
+  if (!panelBridge) return;
+  // The panel keeps one transcript per problem and only shows the one for the
+  // page it is on, so an event that belongs to no problem (a message typed in
+  // the terminal before any capture, say) would be stored under an empty key
+  // that no page ever displays: dead weight in the relay's replay buffer and
+  // in every panel. Not sending it is the honest outcome. Chunks carry no slug
+  // of their own; sendAndPrintTurn skips those for such a turn.
+  if ('problemSlug' in event && !event.problemSlug) return;
+  panelBridge.publish(event);
 }
 
 function newPanelTurnId() {
@@ -1023,7 +1037,10 @@ function newPanelTurnId() {
 function triggerLabel(trigger) {
   if (trigger === 'run') return 'Run';
   if (trigger === 'submit') return 'Submit';
-  return trigger || 'unknown trigger';
+  // Anything else came from whoever posted the capture (any website can), so
+  // it is printed only after sanitizing, even if handleCaptureLine already
+  // did that.
+  return oneLine(trigger) || 'unknown trigger';
 }
 
 function languageFenceHint(language) {
@@ -1157,7 +1174,7 @@ function maybeResetContextForCapture(capture) {
   if (previousId === null || problemId === previousId) return null;
   if (!AUTO_CLEAR_CONTEXT) return null;
   backend.resetContext();
-  return dim(`companion: new problem detected (${problemId || 'unknown'}) - clearing tutor context`);
+  return dim(`companion: new problem detected (${oneLine(problemId) || 'unknown'}) - clearing tutor context`);
 }
 
 // --- vault auto-summary (VAULT_AUTO_SUMMARY) --------------------------------
@@ -1606,6 +1623,8 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
   // mid-turn or reloads still ends up with the right transcript.
   const panelTurnId = newPanelTurnId();
   const panelSlug = (panelMeta && panelMeta.problemSlug) || panelProblemSlug;
+  // No problem, no panel transcript to put this turn in (see panelPublish).
+  const mirrorChunks = Boolean(panelSlug);
   panelPublish({ type: 'turn-start', turnId: panelTurnId, problemSlug: panelSlug });
   const panelEnd = (fields) => panelPublish({ type: 'turn-end', turnId: panelTurnId, problemSlug: panelSlug, ...fields });
   const separator = consumeTurnBoundary();
@@ -1667,7 +1686,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
       reply = await backend.sendMessage(text, {
         onChunk: (chunk) => {
           anyChunk = true;
-          panelPublish({ type: 'chunk', turnId: panelTurnId, text: chunk });
+          if (mirrorChunks) panelPublish({ type: 'chunk', turnId: panelTurnId, text: chunk });
           writeReplyPiece(streamer.push(chunk));
         },
         problemContext,
@@ -1864,9 +1883,14 @@ async function handleCaptureLine(line) {
   if (!trimmed) return;
   let capture;
   try {
-    capture = JSON.parse(trimmed);
+    // Every capture field that gets printed, published to the panel or put
+    // in the model's prompt label is attacker-controlled: /capture is CORS
+    // `*`, so any website can post one. Sanitized once, here (see
+    // sanitize.js).
+    capture = sanitizeCapture(JSON.parse(trimmed));
   } catch (err) {
-    printAboveInput(dim(`companion: warning: skipping malformed capture JSON: ${err.message}`));
+    // V8's JSON.parse message quotes part of the input, escapes included.
+    printAboveInput(dim(`companion: warning: skipping malformed capture JSON: ${oneLine(err.message)}`));
     return;
   }
   const label = dim(
@@ -1886,6 +1910,7 @@ async function handleCaptureLine(line) {
   // first output rather than something that shows up after the ack line
   // below. See "automatic context reset on problem switch" above.
   const resetNotice = maybeResetContextForCapture(capture);
+  if (capture.problemSlug) capturedProblems.set(capture.problemSlug, captureProblemContext(capture));
   let turnPrefix = consumeTurnBoundary();
   if (resetNotice) {
     printAboveInput(turnPrefix + resetNotice);
@@ -1965,29 +1990,49 @@ async function handleCaptureLine(line) {
 // A message typed into the in-page panel (delivered by panel-bridge.js). It
 // joins the same queue as terminal-typed messages and captures, and is echoed
 // in the terminal under a [panel] label so the two views never diverge.
-function handlePanelMessage({ text, problemSlug }) {
+function handlePanelMessage(message) {
   resetScrollIfNeeded();
+  // The relay already strips control characters from panel messages, but
+  // this process is the one writing to the terminal, so it does not rely on
+  // that (see sanitize.js).
+  const text = stripControlChars(message.text).trim();
+  const problemSlug = oneLine(message.problemSlug) || null;
+  if (!text) return;
   let outgoing = text;
+  let problemContext;
   // The tutor only learns a problem's description from captures, so a panel
-  // question about a problem it hasn't seen an attempt for would otherwise
-  // be answered against whatever it discussed last. Treat a switch the same
-  // way a capture for a new problem is treated (see
-  // maybeResetContextForCapture) and tell it which problem is on screen.
-  if (problemSlug && problemSlug !== panelProblemSlug) {
-    if (panelProblemSlug !== null && AUTO_CLEAR_CONTEXT) {
+  // question about another problem than the one its context is about would
+  // otherwise be answered against whatever it discussed last. Compared with
+  // currentProblemId (what the backend's context really is about, kept by
+  // captures too), not with the panel's own last slug: those differ after a
+  // capture without a slug, and a terminal message never moves either.
+  if (problemSlug && problemSlug !== currentProblemId) {
+    const previousId = currentProblemId;
+    currentProblemId = problemSlug;
+    if (previousId !== null && AUTO_CLEAR_CONTEXT) {
       backend.resetContext();
+      printAboveInput(consumeTurnBoundary() + dim(`companion: new problem detected (${problemSlug}) - clearing tutor context`));
       panelPublish({
         type: 'notice',
         problemSlug,
         text: 'New problem detected. Started a fresh tutor session.',
       });
     }
-    panelProblemSlug = problemSlug;
-    currentProblemId = problemSlug;
-    outgoing = `(The student is now looking at the LeetCode problem "${problemSlug}" and has not run any code for it yet.)\n\n${text}`;
+    const known = capturedProblems.get(problemSlug);
+    if (known) {
+      // Back on a problem the student already ran code for: say so instead
+      // of claiming they have not, and hand its description back, since a
+      // reset in between dropped it (each backend skips it if it still has
+      // it, see captureProblemContext).
+      problemContext = known;
+      outgoing = `(The student is now looking at the LeetCode problem "${problemSlug}" again; they ran code for it earlier in this session.)\n\n${text}`;
+    } else {
+      outgoing = `(The student is now looking at the LeetCode problem "${problemSlug}" and has not run any code for it yet.)\n\n${text}`;
+    }
   }
+  if (problemSlug) panelProblemSlug = problemSlug;
   panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
-  sendAndPrint(dim(`[panel] ${text}`), outgoing, { panelMeta: { problemSlug: panelProblemSlug } });
+  sendAndPrint(dim(`[panel] ${text}`), outgoing, { problemContext, panelMeta: { problemSlug: panelProblemSlug } });
 }
 
 async function poll() {

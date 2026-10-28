@@ -50,8 +50,11 @@ test('parseSseBlock extracts the JSON payload and ignores comments and junk', ()
 });
 
 // A stand-in relay: records /panel/publish bodies, and holds /panel/inbox
-// open so the test can push messages down it.
-function startStubRelay({ inboxStatus = 200 } = {}) {
+// open so the test can push messages down it. With a fixed `port` it can also
+// stand in for the relay a real companion.js expects: it answers the
+// companion's OPTIONS /capture health check, so the companion uses it instead
+// of spawning a relay of its own.
+function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
   const published = [];
   const inboxClients = new Set();
   let inboxConnections = 0;
@@ -64,6 +67,9 @@ function startStubRelay({ inboxStatus = 200 } = {}) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{"ok":true}');
       });
+    } else if (req.method === 'OPTIONS' && req.url === '/capture') {
+      res.writeHead(204);
+      res.end();
     } else if (req.method === 'GET' && req.url === '/panel/inbox') {
       inboxConnections += 1;
       if (inboxStatus !== 200) {
@@ -81,7 +87,7 @@ function startStubRelay({ inboxStatus = 200 } = {}) {
     }
   });
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () =>
+    server.listen(port, '127.0.0.1', () =>
       resolve({
         baseUrl: `http://127.0.0.1:${server.address().port}`,
         published,
@@ -93,6 +99,7 @@ function startStubRelay({ inboxStatus = 200 } = {}) {
           for (const res of inboxClients) res.destroy();
         },
         inboxConnections: () => inboxConnections,
+        inboxOpen: () => inboxClients.size,
         close: () => {
           for (const res of inboxClients) res.destroy();
           server.close();
@@ -376,4 +383,163 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
   assert.ok(!JSON.stringify(switched).includes('any hints?'), 'earlier problem history is cleared on a switch');
   assert.ok(JSON.stringify(switched).includes('valid-parentheses'), 'the tutor is told which problem is on screen');
   await until(() => panel.events.some((e) => e.type === 'notice' && /fresh tutor session/.test(e.text)), 5000, 'reset notice');
+});
+
+// ---- real companion.js against the stub relay ------------------------------
+//
+// No real relay here: the stub answers the health check on CAPTURE_PORT, so
+// the test controls exactly what arrives on the inbox and sees exactly what
+// the companion publishes.
+
+function spawnCompanion({ port, modelPort, scratch, extraEnv = {} }) {
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: `http://127.0.0.1:${modelPort}/v1`,
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: capturesPath,
+      // Keeps the test independent of whoever runs it.
+      COMPANION_AUTO_CLEAR_CONTEXT: '1',
+      VAULT_AUTO_SUMMARY: '0',
+      ...extraEnv,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const chunks = [];
+  child.stdout.on('data', (c) => chunks.push(c));
+  child.stderr.on('data', (c) => chunks.push(c));
+  return {
+    child,
+    // Raw bytes, so an escape byte cannot hide behind any decoding.
+    output: () => Buffer.concat(chunks),
+    text: () => Buffer.concat(chunks).toString('utf8'),
+    capture: (fields) =>
+      fs.appendFileSync(
+        capturesPath,
+        `${JSON.stringify({ language: 'python3', timestamp: new Date().toISOString(), code: 'pass', ...fields })}\n`
+      ),
+  };
+}
+
+test('end to end: untrusted text never reaches the terminal as escape sequences', async (t) => {
+  const ESC = 0x1b;
+  const PROBE = 'esc-probe \x1b[31mRED\x1b[0m \x1b]0;pwned-title\x07 end';
+  const relay = await startStubRelay({ port: 18196 });
+  const { server: model, requests } = await startStubModel(() => 'Noted.');
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-esc-'));
+  const companion = spawnCompanion({ port: 18196, modelPort: model.address().port, scratch });
+  t.after(() => {
+    companion.child.kill();
+    relay.close();
+    model.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  await until(() => relay.inboxOpen() > 0, 10000, 'the companion to open its inbox');
+  // Straight down the inbox, as if the relay had not stripped anything.
+  relay.send({ text: PROBE, problemSlug: 'two-sum' });
+  await until(() => companion.text().includes('[panel] esc-probe'), 10000, 'the panel message in the terminal');
+  await until(() => requests.length >= 1, 10000, 'the model request for the panel message');
+
+  // A capture any website could have posted to /capture: escapes in the
+  // title, an unknown trigger with an OSC sequence, and a C1 CSI.
+  companion.capture({
+    problemSlug: 'evil-problem',
+    problemTitle: 'Evil \x1b[2J\x1b[31mTitle\x9b0m',
+    trigger: 'hack\x1b]0;pwned\x07',
+    attemptSeq: 1,
+  });
+  await until(() => companion.text().includes('got your hack]0;pwned for Evil'), 10000, 'the capture acknowledgement');
+  await until(() => requests.length >= 2, 10000, 'the model request for the capture');
+  // The capture is for a new problem, so the reset notice (which prints the
+  // problem id) was on screen too.
+  await until(() => companion.text().includes('new problem detected (evil-problem)'), 10000, 'the reset notice');
+  await until(() => relay.flat().filter((e) => e.type === 'turn-end').length >= 2, 10000, 'both published turn-ends');
+
+  const out = companion.output();
+  const at = out.indexOf(ESC);
+  assert.equal(at, -1, `an ESC byte reached the terminal: ${JSON.stringify(out.subarray(Math.max(0, at - 40), at + 40).toString('utf8'))}`);
+  assert.ok(!out.includes(Buffer.from([0xc2, 0x9b])), 'a C1 CSI (U+009B) reached the terminal');
+  assert.ok(companion.text().includes('[panel] esc-probe [31mRED[0m ]0;pwned-title end'));
+  assert.ok(companion.text().includes('[capture] hack]0;pwned - Evil [2J[31mTitle0m (attempt 1)'));
+
+  // Nor the panel, nor the model's prompt.
+  const published = JSON.stringify(relay.flat());
+  assert.ok(!/\\u001b|\\u009b|\\u0007/.test(published), `published events carry control characters: ${published}`);
+  assert.ok(!/\\u001b|\\u009b|\\u0007/.test(JSON.stringify(requests)), 'the model prompt carries control characters');
+});
+
+test('end to end: switching problems in the panel tracks what the tutor has really seen', async (t) => {
+  const relay = await startStubRelay({ port: 18197 });
+  const { server: model, requests } = await startStubModel(() => 'Okay.');
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-switch-'));
+  const companion = spawnCompanion({ port: 18197, modelPort: model.address().port, scratch });
+  t.after(() => {
+    companion.child.kill();
+    relay.close();
+    model.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+  const lastPrompt = () => JSON.stringify(requests[requests.length - 1].messages);
+  const turnEnds = () => relay.flat().filter((e) => e.type === 'turn-end').length;
+  await until(() => relay.inboxOpen() > 0, 10000, 'the companion to open its inbox');
+
+  // 1. Typed in the terminal before any capture: answered there, but no
+  // problem to file it under, so nothing goes to the panel.
+  companion.child.stdin.write('hello from the terminal\n');
+  await until(() => requests.length === 1, 10000, 'the terminal message reaching the model');
+  await until(() => companion.text().includes('Okay.'), 10000, 'the reply in the terminal');
+
+  // 2. A Run on problem A.
+  companion.capture({
+    problemSlug: 'two-sum',
+    problemTitle: 'Two Sum',
+    problemDescription: 'TWO-SUM-DESCRIPTION-MARKER',
+    trigger: 'run',
+    attemptSeq: 1,
+  });
+  await until(() => requests.length === 2, 10000, 'the capture reaching the model');
+  await until(() => turnEnds() === 1, 10000, 'the capture turn-end');
+
+  // 3. A panel question on B: a new problem, never run.
+  relay.send({ text: 'what about brackets?', problemSlug: 'valid-parentheses' });
+  await until(() => requests.length === 3, 10000, 'the question on B');
+  assert.match(lastPrompt(), /valid-parentheses\\" and has not run any code for it yet/);
+  assert.ok(!lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's context is cleared on the switch");
+  await until(() => turnEnds() === 2, 10000, 'the B turn-end');
+
+  // 4. Back to A: the tutor's context is about B now, so it is reset again,
+  // but the student did run code on A, and A's description comes back.
+  relay.send({ text: 'back to two sum', problemSlug: 'two-sum' });
+  await until(() => requests.length === 4, 10000, 'the question back on A');
+  assert.doesNotMatch(lastPrompt(), /has not run any code/);
+  assert.match(lastPrompt(), /two-sum\\" again; they ran code for it earlier/);
+  assert.ok(lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's description is handed back");
+  await until(() => turnEnds() === 3, 10000, 'the second A turn-end');
+
+  // 5. Another question on A: same problem, no reset, no preamble.
+  relay.send({ text: 'and the edge cases?', problemSlug: 'two-sum' });
+  await until(() => requests.length === 5, 10000, 'the follow-up on A');
+  const lastMessages = requests[requests.length - 1].messages;
+  assert.equal(lastMessages[lastMessages.length - 1].content, 'and the edge cases?');
+  await until(() => turnEnds() === 4, 10000, 'the follow-up turn-end');
+
+  const events = relay.flat();
+  assert.ok(events.every((e) => !('problemSlug' in e) || e.problemSlug), 'no event is published without a problem');
+  assert.ok(!events.some((e) => e.type === 'user' && e.text === 'hello from the terminal'));
+  assert.deepEqual(
+    events.filter((e) => e.type === 'notice').map((e) => e.problemSlug),
+    ['valid-parentheses', 'two-sum']
+  );
+  // Every chunk belongs to a turn that was announced.
+  const started = new Set(events.filter((e) => e.type === 'turn-start').map((e) => e.turnId));
+  assert.ok(events.filter((e) => e.type === 'chunk').every((e) => started.has(e.turnId)));
 });
