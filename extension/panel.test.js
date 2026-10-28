@@ -175,3 +175,19 @@ test("fenced code keeps its text verbatim, and an unclosed fence (mid-stream) st
   const open = parseBlocks("Here:\n```js\nlet x = 1");
   assert.deepEqual([open[0].t, open[1].t, open[1].open, open[1].v], ["paragraph", "code", true, "let x = 1"]);
 });
+
+test("triple-asterisk runs are bold italic, not a stray star", () => {
+  const [node] = parseInline("***both***");
+  assert.equal(node.t, "strong");
+  assert.equal(node.c[0].t, "em");
+  assert.equal(node.c[0].c[0].v, "both");
+  assert.equal(parseInline("a *** b")[0].t, "text");
+});
+
+test("a pipe inside a code span or escaped with a backslash does not split a table cell", () => {
+  const [table] = parseBlocks("| Expr | Meaning |\n| --- | --- |\n| `x|y` | bitwise or |\n| a \\| b | escaped |");
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[0][0][0].v, "x|y");
+  assert.equal(table.rows[0][1][0].v, "bitwise or");
+  assert.equal(table.rows[1][0][0].v, "a | b");
+});

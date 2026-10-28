@@ -177,6 +177,16 @@
           continue;
         }
       }
+      if (text.startsWith("***", i)) {
+        const end = text.indexOf("***", i + 3);
+        const inner = end > i + 3 ? text.slice(i + 3, end) : "";
+        if (end > i + 3 && !/^\s/.test(inner) && !/\s$/.test(inner)) {
+          flush();
+          nodes.push({ t: "strong", c: [{ t: "em", c: parseInline(inner) }] });
+          i = end + 3;
+          continue;
+        }
+      }
       if (text.startsWith("**", i) || text.startsWith("__", i)) {
         const marker = text.slice(i, i + 2);
         const end = text.indexOf(marker, i + 2);
@@ -241,7 +251,26 @@
     let row = line.trim();
     if (row.startsWith("|")) row = row.slice(1);
     if (row.endsWith("|")) row = row.slice(0, -1);
-    return row.split("|").map((cell) => cell.trim());
+    const cells = [];
+    let cell = "";
+    let inCode = false;
+    for (let k = 0; k < row.length; k += 1) {
+      const ch = row[k];
+      if (ch === "\\" && row[k + 1] === "|") {
+        cell += "|";
+        k += 1;
+      } else if (ch === "`") {
+        inCode = !inCode;
+        cell += ch;
+      } else if (ch === "|" && !inCode) {
+        cells.push(cell.trim());
+        cell = "";
+      } else {
+        cell += ch;
+      }
+    }
+    cells.push(cell.trim());
+    return cells;
   }
 
   // Turns a run of list lines into real nested lists. Indentation decides
@@ -541,7 +570,6 @@
     .feed { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; }
     .banner { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
     .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; padding: 0 24px; color: var(--muted); text-align: center; }
-    .empty svg { width: 32px; height: 32px; opacity: 0.6; }
     .empty p { margin: 0; max-width: 300px; }
     .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
     .chip b { font-weight: 500; color: var(--fg); }
@@ -739,10 +767,6 @@
     return svgIcon(STATUS_BAD, 14);
   }
 
-  function chatBubbleIcon(size) {
-    return svgIcon("M5 3h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7.2L6 21.5V17H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z", size);
-  }
-
   function buildPanel() {
     const host = document.createElement("div");
     host.id = HOST_ID;
@@ -880,7 +904,6 @@
     p.feed.textContent = "";
     if (items.length === 0) {
       const empty = el("div", "empty");
-      empty.appendChild(chatBubbleIcon(32));
       empty.appendChild(el("p", "", "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below."));
       p.feed.appendChild(empty);
     }
