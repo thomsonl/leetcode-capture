@@ -19,6 +19,21 @@
 //   POST /panel/drop-problem        companion { problemSlug }: forget that problem's buffered events
 //   POST /panel/trim-captures       companion { before, path }: drop the capture log's first `before` bytes
 //   POST /panel/activity            companion { busy }: the tutor is working on (or has queued) a turn
+//   POST /panel/rpc-result          companion { id, response }: the answer to a settings call
+//   POST /settings/rpc              options   { method, params }: a settings call for the companion
+//
+// A `config` event (which provider and model the tutor uses, never a key) is
+// not buffered with the conversation: the newest one is kept on its own and
+// sent to every panel that connects, after the replay and before `status`.
+//
+// /settings/rpc is for the extension's own options page (extension/settings.js)
+// only: its Origin must be an extension origin (chrome-extension://<32 letters
+// a-p> or moz-extension://<uuid>), which a web page cannot send, plus the same
+// Host check. The call goes down the companion's inbox stream as
+// `{ type: "rpc", id, method, params }` and the request waits (up to
+// RPC_TIMEOUT_MS) for the companion's POST /panel/rpc-result. Settings carry
+// API keys, so leetcode.com (whose page scripts are not ours) is refused here
+// too. 503 when no companion is connected.
 //
 // Unlike /capture (which only ingests data, so a permissive CORS `*` is
 // harmless), these routes can READ tutor replies, which contain the student's
@@ -30,7 +45,7 @@
 //   - Origin must be absent or exactly https://leetcode.com. Browsers always
 //     send Origin on a CORS request and on any POST, and a page cannot forge
 //     it, so every other website is rejected.
-// The companion-only routes (publish, inbox, drop-problem, trim-captures, activity) additionally go through
+// The companion-only routes (publish, inbox, drop-problem, trim-captures, activity, rpc-result) additionally go through
 // companionOnlyRejection below. A missing Origin alone is NOT proof of the
 // companion: a page's `fetch(url, { mode: "no-cors" })` GET carries no Origin
 // either. What a browser page cannot do is add a custom header without a CORS
@@ -80,6 +95,17 @@ const HEARTBEAT_MS = 15_000;
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/i;
 
+// The options page's origin: Chrome's extension ids are 32 letters a-p,
+// Firefox's are a random UUID per install.
+const EXTENSION_ORIGIN_RE =
+  /^(chrome-extension:\/\/[a-p]{32}|moz-extension:\/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+// A connection test can wait on a slow model (settings-rpc.js gives it 90 s).
+const RPC_TIMEOUT_MS = 120_000;
+const MAX_RPC_BYTES = 64 * 1024;
+const MAX_RPC_RESULT_BYTES = 1024 * 1024;
+const MAX_PENDING_RPCS = 50;
+const RPC_METHOD_RE = /^[a-z][a-zA-Z]{0,39}$/;
+
 // Everything in C0 except tab and newline, plus DEL and all of C1 (which some
 // terminals honor as 8-bit CSI/OSC introducers), plus the invisible bidi and
 // zero-width formatting characters that make text read differently from what
@@ -110,6 +136,7 @@ const COMPANION_ONLY_ROUTES = new Set([
   "POST /panel/drop-problem",
   "POST /panel/trim-captures",
   "POST /panel/activity",
+  "POST /panel/rpc-result",
 ]);
 
 const EVENT_TYPES = new Set(["user", "capture", "turn-start", "chunk", "turn-end", "notice"]);
@@ -156,6 +183,19 @@ function sanitizeEvent(raw) {
   return event;
 }
 
+// The non-secret summary of the tutor's provider, as settings.js's
+// statusSummary makes it. Anything else is dropped.
+function sanitizeConfig(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.provider !== "string" || !/^[a-z]{1,40}$/.test(raw.provider)) return null;
+  if (!isShortString(raw.label, 100)) return null;
+  const config = { type: "config", provider: raw.provider, label: stripControlChars(raw.label) };
+  if (raw.model === null || raw.model === undefined) config.model = null;
+  else if (isShortString(raw.model, 200)) config.model = stripControlChars(raw.model);
+  else return null;
+  return config;
+}
+
 // The live editor code a panel message may carry (read by the extension at
 // send time), reduced to the fields the companion uses. Anything malformed
 // is dropped and the message goes without it: the companion then falls back
@@ -188,7 +228,7 @@ function sameFile(a, b) {
 
 // captureLog, when given, is { path, trim(before) } from server.js; without
 // it the trim route answers 404.
-function createPanelBroker({ port, captureLog = null }) {
+function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT_MS }) {
   const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 
   // Identifies this run of the relay; see the file header.
@@ -213,6 +253,10 @@ function createPanelBroker({ port, captureLog = null }) {
   // cleared when the last companion goes away, since nothing will clear it
   // then.
   let companionBusy = false;
+  // The newest config event from the companion (see the file header).
+  let latestConfig = null;
+  // Settings calls waiting for the companion's answer: id -> { req, res, timer }.
+  const pendingRpcs = new Map();
 
   function corsHeaders(req) {
     // Only ever echoed for the one allowed origin; a request with no Origin
@@ -230,8 +274,25 @@ function createPanelBroker({ port, captureLog = null }) {
     };
   }
 
+  // The options page's fetch: Chrome and Firefox skip CORS for an extension
+  // page with host permission for the relay, but answering the preflight and
+  // echoing the origin keeps it working either way.
+  function settingsCorsHeaders(req) {
+    const origin = req.headers.origin;
+    if (typeof origin !== "string" || !EXTENSION_ORIGIN_RE.test(origin)) return {};
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Max-Age": "600",
+      Vary: "Origin",
+    };
+  }
+
   function sendJson(req, res, status, body) {
-    res.writeHead(status, { "Content-Type": "application/json", ...corsHeaders(req) });
+    if (res.headersSent || res.writableEnded) return;
+    const cors = req.url.startsWith("/settings/") ? settingsCorsHeaders(req) : corsHeaders(req);
+    res.writeHead(status, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify(body));
   }
 
@@ -357,10 +418,79 @@ function createPanelBroker({ port, captureLog = null }) {
     req.on("error", () => {});
   }
 
-  // Returns true if the request was a /panel/ route (and has been handled),
-  // false if the caller should keep routing it.
+  // POST /settings/rpc from the extension's options page (see the file
+  // header). Returns true once handled.
+  function handleSettings(req, res, url) {
+    if (!allowedHosts.has(req.headers.host)) {
+      sendJson(req, res, 403, { error: "forbidden host" });
+      return true;
+    }
+    const origin = req.headers.origin;
+    if (typeof origin !== "string" || !EXTENSION_ORIGIN_RE.test(origin)) {
+      sendJson(req, res, 403, { error: "this route is for the extension's settings page only" });
+      return true;
+    }
+    const fetchMode = req.headers["sec-fetch-mode"];
+    if (fetchMode !== undefined && fetchMode !== "cors") {
+      sendJson(req, res, 403, { error: "only CORS requests are accepted" });
+      return true;
+    }
+    if (url.pathname !== "/settings/rpc") {
+      sendJson(req, res, 404, { error: "not found" });
+      return true;
+    }
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, settingsCorsHeaders(req));
+      res.end();
+      return true;
+    }
+    if (req.method !== "POST") {
+      sendJson(req, res, 404, { error: "not found" });
+      return true;
+    }
+    readBody(req, res, MAX_RPC_BYTES, (body) => {
+      const method = body && body.method;
+      const params = body && body.params;
+      if (typeof method !== "string" || !RPC_METHOD_RE.test(method) || (params !== undefined && (params === null || typeof params !== "object"))) {
+        sendJson(req, res, 400, { error: "a settings `method` and optional `params` object are required" });
+        return;
+      }
+      if (consumers.size === 0) {
+        sendJson(req, res, 503, { ok: false, error: { message: "The tutor isn't running." } });
+        return;
+      }
+      if (pendingRpcs.size >= MAX_PENDING_RPCS) {
+        sendJson(req, res, 503, { ok: false, error: { message: "Too many settings calls are waiting. Try again." } });
+        return;
+      }
+      const id = crypto.randomBytes(12).toString("hex");
+      const timer = setTimeout(() => {
+        pendingRpcs.delete(id);
+        sendJson(req, res, 504, {
+          ok: false,
+          error: { message: `The tutor did not answer within ${Math.round(rpcTimeoutMs / 1000)} seconds.` },
+        });
+      }, rpcTimeoutMs);
+      timer.unref();
+      pendingRpcs.set(id, { req, res, timer });
+      res.on("close", () => {
+        const pending = pendingRpcs.get(id);
+        if (pending && pending.res === res) {
+          clearTimeout(pending.timer);
+          pendingRpcs.delete(id);
+        }
+      });
+      const message = { type: "rpc", id, method, params: params || {} };
+      for (const consumer of consumers) sseWrite(consumer, { data: message });
+    });
+    return true;
+  }
+
+  // Returns true if the request was a /panel/ or /settings/ route (and has
+  // been handled), false if the caller should keep routing it.
   function handle(req, res) {
     const url = new URL(req.url, "http://relay.invalid");
+    if (url.pathname.startsWith("/settings/")) return handleSettings(req, res, url);
     if (!url.pathname.startsWith("/panel/")) return false;
 
     if (!allowedHosts.has(req.headers.host)) {
@@ -419,6 +549,7 @@ function createPanelBroker({ port, captureLog = null }) {
       for (const event of events) {
         if (event.seq > after) sseWrite(res, { id: event.seq, data: event });
       }
+      if (latestConfig) sseWrite(res, { data: latestConfig });
       sseWrite(res, { data: statusEvent() });
       panelClients.add(res);
       return true;
@@ -528,22 +659,55 @@ function createPanelBroker({ port, captureLog = null }) {
       return true;
     }
 
+    // The companion's answer to a settings call (see handleSettings). The
+    // first answer wins; a late or unknown one gets a 404.
+    if (route === "POST /panel/rpc-result") {
+      readBody(req, res, MAX_RPC_RESULT_BYTES, (body) => {
+        const id = body && body.id;
+        const response = body && body.response;
+        if (typeof id !== "string" || !response || typeof response !== "object" || typeof response.ok !== "boolean") {
+          sendJson(req, res, 400, { error: "an `id` and a `response` with a boolean `ok` are required" });
+          return;
+        }
+        const pending = pendingRpcs.get(id);
+        if (!pending) {
+          sendJson(req, res, 404, { error: "no settings call is waiting for that id" });
+          return;
+        }
+        pendingRpcs.delete(id);
+        clearTimeout(pending.timer);
+        sendJson(pending.req, pending.res, 200, response);
+        sendJson(req, res, 200, { ok: true });
+      });
+      return true;
+    }
+
     if (route === "POST /panel/publish") {
       readBody(req, res, MAX_PUBLISH_BYTES, (body) => {
         const rawEvents = body && Array.isArray(body.events) ? body.events : [body];
-        const clean = rawEvents.map(sanitizeEvent);
+        const clean = rawEvents.map((raw) => (raw && raw.type === "config" ? sanitizeConfig(raw) : sanitizeEvent(raw)));
         if (clean.length === 0 || clean.some((e) => e === null)) {
           sendJson(req, res, 400, { error: "invalid event" });
           return;
         }
-        const stored = clean.map((event) => addEvent(event));
+        // A config event replaces the previous one and goes straight to every
+        // panel; it is not part of the conversation buffer.
+        const stored = [];
+        for (const event of clean) {
+          if (event.type === "config") {
+            latestConfig = { ...event, epoch };
+            for (const client of panelClients) sseWrite(client, { data: latestConfig });
+          } else {
+            stored.push(addEvent(event));
+          }
+        }
         // A publish can land after the companion's inbox stream closed: a
         // companion that exits sends its last batch and drops its stream at
         // the same moment, in either order. With no companion connected
         // nothing will end what this batch started or continued, so it is
         // closed again right away.
         if (consumers.size === 0) closeOpenTurns();
-        sendJson(req, res, 200, { ok: true, lastSeq: stored[stored.length - 1].seq });
+        sendJson(req, res, 200, { ok: true, lastSeq: stored.length ? stored[stored.length - 1].seq : nextSeq - 1 });
       });
       return true;
     }
@@ -555,4 +719,13 @@ function createPanelBroker({ port, captureLog = null }) {
   return { handle };
 }
 
-module.exports = { createPanelBroker, sanitizeEvent, stripControlChars, companionOnlyRejection, PANEL_ORIGIN, COMPANION_HEADER };
+module.exports = {
+  createPanelBroker,
+  sanitizeEvent,
+  sanitizeConfig,
+  stripControlChars,
+  companionOnlyRejection,
+  EXTENSION_ORIGIN_RE,
+  PANEL_ORIGIN,
+  COMPANION_HEADER,
+};

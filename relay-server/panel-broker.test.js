@@ -742,3 +742,177 @@ test("the companion's busy flag reaches every panel in the status event, and cle
   assert.equal(lastStatus(gone).busy, false);
   panel.close();
 });
+
+// ---- the options page's settings calls and the config event ------------------
+//
+// These run the broker in-process (createPanelBroker behind a plain http
+// server on an ephemeral port), so the call timeout can be made short.
+
+const { createPanelBroker, sanitizeConfig, EXTENSION_ORIGIN_RE } = require("./panel-broker");
+
+const CHROME_EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+const FIREFOX_EXT = "moz-extension://0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e";
+
+async function startInProcess(t, options = {}) {
+  let broker;
+  const server = http.createServer((req, res) => {
+    if (!broker.handle(req, res)) {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  broker = createPanelBroker({ port, ...options });
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return port;
+}
+
+// Plays the companion: an open inbox stream and a way to answer settings calls.
+async function companionInbox(port) {
+  const inbox = openSse({ route: "/panel/inbox", headers: { ...COMPANION, "sec-fetch-mode": "cors" }, port });
+  await inbox.ready();
+  return {
+    inbox,
+    nextRpc: async (n = 1) => (await inbox.waitFor((evs) => evs.filter((e) => e.type === "rpc").length >= n)).filter((e) => e.type === "rpc")[n - 1],
+    answer: (id, response, headers = COMPANION) =>
+      request({ method: "POST", route: "/panel/rpc-result", headers, body: { id, response }, port }),
+  };
+}
+
+const rpcCall = (port, { origin = CHROME_EXT, body = { method: "get", params: {} }, headers = {}, timeout } = {}) =>
+  request({
+    method: "POST",
+    route: "/settings/rpc",
+    headers: { ...(origin ? { origin } : {}), "sec-fetch-mode": "cors", ...headers },
+    body,
+    port,
+    timeout,
+  });
+
+test("unit: the extension origin pattern and sanitizeConfig", () => {
+  assert.ok(EXTENSION_ORIGIN_RE.test(CHROME_EXT));
+  assert.ok(EXTENSION_ORIGIN_RE.test(FIREFOX_EXT));
+  for (const bad of [
+    "chrome-extension://abcdefghijklmnopabcdefghijklmnoq", // q is not a Chrome id letter
+    "chrome-extension://abcdefghijklmnop",
+    `${CHROME_EXT}.evil.com`,
+    "https://leetcode.com",
+    "null",
+    "moz-extension://not-a-uuid",
+  ]) {
+    assert.ok(!EXTENSION_ORIGIN_RE.test(bad), bad);
+  }
+  assert.deepEqual(sanitizeConfig({ type: "config", provider: "local", label: "Local model", model: "m", apiKey: "sk-x" }), {
+    type: "config",
+    provider: "local",
+    label: "Local model",
+    model: "m",
+  });
+  assert.equal(sanitizeConfig({ provider: "Local!", label: "x" }), null);
+  assert.equal(sanitizeConfig({ provider: "local" }), null);
+});
+
+test("settings calls: only an extension origin with the right Host may call, and 503 without a companion", async (t) => {
+  const port = await startInProcess(t);
+  for (const origin of [null, "https://leetcode.com", "https://evil.example", "null", "chrome-extension://short"]) {
+    const res = await rpcCall(port, { origin });
+    assert.equal(res.status, 403, `origin ${origin}`);
+    assert.equal(res.headers["access-control-allow-origin"], undefined);
+  }
+  const rebound = await rpcCall(port, { headers: { host: `evil.example:${port}` } });
+  assert.equal(rebound.status, 403, "a rebound Host is refused");
+  const noCors = await rpcCall(port, { headers: { "sec-fetch-mode": "no-cors" } });
+  assert.equal(noCors.status, 403);
+
+  const preflight = await request({
+    method: "OPTIONS",
+    route: "/settings/rpc",
+    headers: { origin: FIREFOX_EXT, "access-control-request-method": "POST", "sec-fetch-mode": "cors" },
+    port,
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers["access-control-allow-origin"], FIREFOX_EXT);
+  const foreignPreflight = await request({ method: "OPTIONS", route: "/settings/rpc", headers: { origin: "https://evil.example" }, port });
+  assert.equal(foreignPreflight.status, 403);
+
+  const offline = await rpcCall(port);
+  assert.equal(offline.status, 503);
+  assert.equal(JSON.parse(offline.body).ok, false);
+  assert.equal(offline.headers["access-control-allow-origin"], CHROME_EXT);
+
+  const bad = await rpcCall(port, { body: { method: "drop tables" } });
+  assert.equal(bad.status, 400);
+});
+
+test("settings calls reach the companion over its inbox and its answer comes back to the caller", async (t) => {
+  const port = await startInProcess(t);
+  const companion = await companionInbox(port);
+  t.after(() => companion.inbox.close());
+
+  const pending = rpcCall(port, { origin: FIREFOX_EXT, body: { method: "save", params: { patch: { provider: "local" } } } });
+  const call = await companion.nextRpc();
+  assert.equal(call.method, "save");
+  assert.deepEqual(call.params, { patch: { provider: "local" } });
+  assert.match(call.id, /^[0-9a-f]{24}$/);
+
+  // Only the companion may answer: a page (any Origin) or a request without
+  // the companion header is refused, and the caller keeps waiting.
+  assert.equal((await companion.answer(call.id, { ok: true, result: {} }, { origin: CHROME_EXT, ...COMPANION })).status, 403);
+  assert.equal((await companion.answer(call.id, { ok: true, result: {} }, {})).status, 403);
+  assert.equal((await companion.answer(call.id, "not an object")).status, 400);
+
+  const answered = await companion.answer(call.id, { ok: true, result: { saved: true } });
+  assert.equal(answered.status, 200);
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.body), { ok: true, result: { saved: true } });
+  assert.equal(res.headers["access-control-allow-origin"], FIREFOX_EXT);
+
+  assert.equal((await companion.answer(call.id, { ok: true })).status, 404, "a second answer has no one waiting");
+  assert.equal((await companion.answer("nope", { ok: true })).status, 404);
+});
+
+test("a settings call the companion never answers times out with a clear message", async (t) => {
+  const port = await startInProcess(t, { rpcTimeoutMs: 300 });
+  const companion = await companionInbox(port);
+  t.after(() => companion.inbox.close());
+  const res = await rpcCall(port, { body: { method: "test", params: { patch: {} } } });
+  assert.equal(res.status, 504);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, false);
+  assert.match(body.error.message, /did not answer/);
+  const call = await companion.nextRpc();
+  assert.equal((await companion.answer(call.id, { ok: true })).status, 404, "a late answer is dropped");
+});
+
+test("the newest config event goes to every panel, also to panels that connect later, and stays out of the buffer", async (t) => {
+  const port = await startInProcess(t);
+  const companion = await companionInbox(port);
+  t.after(() => companion.inbox.close());
+  const panelHeaders = { origin: LEETCODE, "sec-fetch-mode": "cors" };
+  const early = openSse({ route: "/panel/events?after=0", headers: panelHeaders, port });
+  t.after(() => early.close());
+  await early.ready();
+
+  const publish = (events) => request({ method: "POST", route: "/panel/publish", headers: COMPANION, body: { events }, port });
+  assert.equal((await publish([{ type: "config", provider: "local", label: "Local model", model: "m1" }])).status, 200);
+  assert.equal(
+    (await publish([{ type: "config", provider: "openai", label: "OpenAI API key", model: "gpt-x" }, { type: "notice", problemSlug: "two-sum", text: "hi" }])).status,
+    200
+  );
+  await early.waitFor((evs) => evs.filter((e) => e.type === "config").length === 2 && evs.some((e) => e.type === "notice"));
+  assert.equal(early.events.filter((e) => e.type === "config")[1].provider, "openai");
+  assert.ok(early.events.filter((e) => e.type === "config").every((e) => e.seq === undefined));
+  assert.equal((await publish([{ type: "config", provider: "local", label: "x", apiKey: 5, model: 7 }])).status, 400);
+
+  const late = openSse({ route: "/panel/events?after=0", headers: panelHeaders, port });
+  t.after(() => late.close());
+  const replay = await late.waitFor((evs) => evs.some((e) => e.type === "status"));
+  const types = replay.map((e) => e.type);
+  assert.deepEqual(types, ["notice", "config", "status"], "the replay, then the one newest config, then status");
+  assert.equal(replay[1].model, "gpt-x");
+});
