@@ -237,6 +237,40 @@ test("fenced code keeps its text verbatim, and an unclosed fence (mid-stream) st
   assert.deepEqual([open[0].t, open[1].t, open[1].open, open[1].v], ["paragraph", "code", true, "let x = 1"]);
 });
 
+test("fences: indentation, info strings, trailing spaces, tildes and longer runs", () => {
+  // Indented under a list item: the fence ends the list instead of joining
+  // the item's text, and the content loses the fence's own indentation.
+  const listed = parseBlocks("1. Walk the tree:\n   ```\n       1\n      / \\\n     2   3\n   ```  \n2. Next");
+  assert.deepEqual(listed.map((b) => b.t), ["list", "code", "list"]);
+  assert.equal(listed[0].items[0].c[0].v, "Walk the tree:");
+  assert.equal(listed[1].v, "    1\n   / \\\n  2   3");
+  assert.equal(listed[1].open, false);
+  assert.equal(listed[2].start, 2);
+  // An info string after the language, and trailing spaces on both fences.
+  const info = parseBlocks("```Python title=x   \nx = 1\n```   \nafter");
+  assert.deepEqual([info[0].lang, info[0].v, info[0].open, info[1].t], ["python", "x = 1", false, "paragraph"]);
+  // Tildes, and a closing run must be the same character and at least as long.
+  const tildes = parseBlocks("~~~\na\n```\n~~~\nafter");
+  assert.deepEqual([tildes[0].v, tildes[0].open, tildes[1].t], ["a\n```", false, "paragraph"]);
+  const four = parseBlocks("````\n```\ninner\n```\n````");
+  assert.deepEqual([four.length, four[0].v, four[0].open], [1, "```\ninner\n```", false]);
+  // Triple backticks inside a line are inline code, not a fence.
+  assert.equal(parseBlocks("use ```x``` here")[0].t, "paragraph");
+  // A bare fence, a "text" fence and a tab-indented diagram keep every space.
+  const bare = parseBlocks("```\n[1, 3, 5]\n ^     ^\n i     j\t|\n```");
+  assert.deepEqual([bare[0].lang, bare[0].v], ["", "[1, 3, 5]\n ^     ^\n i     j\t|"]);
+  assert.equal(parseBlocks("```text\na  b\n```")[0].lang, "text");
+});
+
+test("a streaming reply that ends inside a fence settles when the fence closes", () => {
+  const mid = parseBlocks("Trace:\n\n```\ni=0  [2, 7]\n     ^");
+  assert.deepEqual(mid.map((b) => [b.t, b.open]), [["paragraph", undefined], ["code", true]]);
+  const done = parseBlocks("Trace:\n\n```\ni=0  [2, 7]\n     ^\n```\n\nSo **i** moves.");
+  assert.deepEqual(done.map((b) => [b.t, b.open]), [["paragraph", undefined], ["code", false], ["paragraph", undefined]]);
+  assert.equal(done[1].v, mid[1].v);
+  assert.equal(done[2].c[1].t, "strong");
+});
+
 test("triple-asterisk runs are bold italic, not a stray star", () => {
   const [node] = parseInline("***both***");
   assert.equal(node.t, "strong");

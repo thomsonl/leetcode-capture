@@ -443,7 +443,17 @@
     return nodes;
   }
 
-  const FENCE_RE = /^\s*```\s*([\w+#.-]*)\s*$/;
+  // A fence opens with three or more backticks or tildes after up to three
+  // spaces (more inside a list item), then an optional info string whose
+  // first word is the language ("```python title=x" is python). It closes on
+  // a line of the same character, at least as long, and nothing after it but
+  // spaces.
+  const FENCE_RE = /^(\s*)(`{3,}|~{3,})[ \t]*([^`\s]*)[^`]*$/;
+  const PLAIN_LANGS = new Set(["", "text", "txt", "plain", "plaintext", "ascii"]);
+  function closesFence(line, fence) {
+    const m = /^\s*(`{3,}|~{3,})[ \t]*$/.exec(line);
+    return Boolean(m) && m[1][0] === fence[0] && m[1].length >= fence.length;
+  }
   // Up to three spaces of indentation, and a closing run of #s only counts
   // after whitespace, so "## Using C#" keeps its #.
   const HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
@@ -546,19 +556,25 @@
       }
       const fence = FENCE_RE.exec(line);
       if (fence) {
+        // Content lines lose as much leading space as the fence itself had
+        // (at most), so a block indented under a list item is not shifted.
+        const indent = fence[1].replace(/\t/g, "    ").length;
+        const strip = new RegExp(`^ {0,${indent}}`);
         const code = [];
         i += 1;
         let closed = false;
         while (i < lines.length) {
-          if (/^\s*```\s*$/.test(lines[i])) {
+          if (closesFence(lines[i], fence[2])) {
             closed = true;
             i += 1;
             break;
           }
-          code.push(lines[i]);
+          code.push(lines[i].replace(strip, ""));
           i += 1;
         }
-        blocks.push({ t: "code", lang: fence[1] || "", v: code.join("\n"), open: !closed });
+        // A reply still streaming may end inside a fence: the block renders
+        // open (marked so) and settles once the closing fence arrives.
+        blocks.push({ t: "code", lang: fence[3].toLowerCase(), v: code.join("\n"), open: !closed });
         continue;
       }
       const heading = HEADING_RE.exec(line);
@@ -588,7 +604,9 @@
           if (m) {
             entries.push({ indent: m[1].length, ordered: /\d/.test(m[2]), start: parseInt(m[2], 10), text: m[3] });
             i += 1;
-          } else if (lines[i].trim() && /^\s+\S/.test(lines[i]) && entries.length) {
+          } else if (lines[i].trim() && /^\s+\S/.test(lines[i]) && entries.length && !FENCE_RE.test(lines[i])) {
+            // An indented continuation joins the item, but an indented fence
+            // starts a code block of its own (a diagram under a step).
             entries[entries.length - 1].text += ` ${lines[i].trim()}`;
             i += 1;
           } else {
@@ -676,6 +694,11 @@
         frag.appendChild(el);
       } else if (block.t === "code") {
         const pre = doc.createElement("pre");
+        // A block with no language (or a plain-text one) is how the tutor
+        // draws diagrams and traces: it gets the tight line height that makes
+        // box-drawing lines meet.
+        if (PLAIN_LANGS.has(block.lang)) pre.className = "plain";
+        if (block.open) pre.setAttribute("data-open", "");
         const code = doc.createElement("code");
         code.textContent = block.v;
         pre.appendChild(code);
@@ -885,21 +908,36 @@
   // it (white at 10% in the dark theme).
   const PANEL_CSS = `
     :host { display: none; position: absolute; z-index: 20; box-sizing: border-box; }
+    /* LeetCode's own code font first, then monospace faces that carry the
+       box-drawing and arrow glyphs on each platform, then whatever monospace
+       face the system has (never a proportional one: diagrams need columns). */
+    :host { --mono: Menlo, Menlo-fallback, "SF Mono", ui-monospace, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Segoe UI Symbol", monospace; }
     :host([data-active]) { display: block; }
     * { box-sizing: border-box; }
     .wrap {
       position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden;
       border-radius: 0 0 8px 8px; background: var(--bg); color: var(--body);
       font: 400 14px/21px var(--font);
+      /* Text wraps anywhere rather than run past the pane: a long URL, a long
+         identifier or inline code breaks onto the next line. Code blocks and
+         table cells opt out below. The container lets the composer size
+         itself by the pane's height. */
+      overflow-wrap: anywhere; container-type: size;
     }
-    .scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 20px 16px; color-scheme: var(--scheme); }
+    /* Only ever scrolls vertically: wide code blocks and tables scroll inside
+       their own boxes. The panel keeps its own scroll anchor across resizes
+       (see keepScrollAnchor), so the browser's is switched off. */
+    .scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 20px 16px; color-scheme: var(--scheme); }
     .head {
       flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
       height: 32px; margin: 0 1px; padding: 0 12px; border-bottom: 1px solid var(--head-line); color: var(--muted);
     }
+    /* In a narrow pane the model label gives way first (the right side only
+       takes the room the status leaves), then the status text; both end in
+       an ellipsis. The light and the gear always stay. */
     .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .head-left { flex: none; }
-    .head-right { flex: 0 1 auto; gap: 4px; }
+    .head-left { flex: 0 1 auto; min-width: 8px; }
+    .head-right { flex: 1 1 0; justify-content: flex-end; gap: 4px; min-width: 24px; }
     /* Which model the tutor uses: the same muted secondary text as the
        status, cut with an ellipsis when the pane is narrow (the full name is
        in the tooltip). */
@@ -911,7 +949,8 @@
     button.gear { flex: none; width: 24px; height: 24px; margin-right: -4px; border-radius: 4px; color: var(--muted); }
     button.gear:hover { color: var(--fg); background: var(--fill); }
     button.gear:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
-    .status { display: flex; align-items: center; gap: 6px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
+    .status { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
+    .status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     /* The status light: neutral (the text color) while connecting or with
        the tutor offline, red with no relay, green idle, yellow working. The
        text next to it always says the same, for anyone who cannot tell the
@@ -928,8 +967,8 @@
     .chip b { font-weight: 500; color: var(--fg); }
     .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-    .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; overflow-wrap: anywhere; }
-    .tutor { overflow-wrap: anywhere; }
+    .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; }
+    .tutor { min-width: 0; }
     .tutor > :first-child { margin-top: 0; }
     .tutor > :last-child { margin-bottom: 0; }
     .tutor p { margin: 0 0 16px; }
@@ -943,14 +982,16 @@
     .tutor li li { margin-bottom: 4px; }
     .tutor li li:last-child { margin-bottom: 0; }
     .table-wrap { margin: 0 0 16px; overflow-x: auto; }
+    /* Cells wrap between words but never inside one, so a table too wide for
+       the pane keeps readable columns and scrolls in its wrapper. */
     .tutor table { border-collapse: collapse; }
-    .tutor th, .tutor td { padding: 6px 12px; border: 1px solid var(--chip-line); text-align: left; vertical-align: top; }
+    .tutor th, .tutor td { overflow-wrap: break-word; padding: 6px 12px; border: 1px solid var(--chip-line); text-align: left; vertical-align: top; }
     .tutor [data-align="center"] { text-align: center; } .tutor [data-align="right"] { text-align: right; }
     .tutor th { font-weight: 600; color: var(--fg); background: var(--fill); }
     .tutor strong { font-weight: 600; }
     .tutor a { color: var(--link); text-decoration: none; }
     .tutor a:hover { text-decoration: underline; }
-    code { font: 12px/16px Menlo, Menlo-fallback, sans-serif; padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--chip-line); color: color-mix(in srgb, var(--fg) 75%, transparent); }
+    code { font: 12px/16px var(--mono); -webkit-box-decoration-break: clone; box-decoration-break: clone; padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--chip-line); color: color-mix(in srgb, var(--fg) 75%, transparent); }
     .tutor pre { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: var(--fill); border: 1px solid var(--chip-line); overflow-x: auto; }
     /* A wide code block or table scrolls sideways. Chromium's own thin
        scrollbar draws arrow buttons that sit over the rounded corners, so it
@@ -962,7 +1003,16 @@
     .tutor pre::-webkit-scrollbar-track, .table-wrap::-webkit-scrollbar-track, .tutor pre::-webkit-scrollbar-corner, .table-wrap::-webkit-scrollbar-corner { background: transparent; }
     .tutor pre::-webkit-scrollbar-thumb, .table-wrap::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 4px; background: color-mix(in srgb, var(--fg) 22%, transparent) padding-box; }
     @supports not selector(::-webkit-scrollbar) { .tutor pre, .table-wrap { scrollbar-width: thin; } }
-    .tutor pre code { padding: 0; border: 0; background: none; white-space: pre; font-size: 12px; line-height: 20px; color: var(--body); }
+    /* A code block is shown exactly as sent: never wrapped (it scrolls
+       sideways), tabs at four columns, no ligatures turning "->" or "!=" into
+       one glyph. A plain block (a diagram) gets a line height equal to the
+       glyph box, so the vertical box-drawing lines of one row meet the next. */
+    .tutor pre code {
+      display: block; padding: 0; border: 0; background: none; color: var(--body);
+      font-size: 12px; line-height: 20px; white-space: pre; overflow-wrap: normal; word-break: normal;
+      tab-size: 4; font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; font-kerning: none;
+    }
+    .tutor pre.plain code { line-height: 14px; }
     .tutor blockquote { margin: 0 0 16px; padding-left: 16px; border-left: 2px solid var(--line-strong); color: var(--muted); }
     .tutor hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
     .err { color: var(--red); }
@@ -972,9 +1022,10 @@
     .dots i:nth-child(2) { animation-delay: 0.15s; } .dots i:nth-child(3) { animation-delay: 0.3s; }
     @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
     .composer { padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+    .composer { flex: none; }
     .box { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--fill); }
     .box:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 45%, transparent); }
-    textarea { flex: 1; min-height: 28px; max-height: 140px; margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--body); font: inherit; }
+    textarea { flex: 1; min-width: 0; min-height: 28px; max-height: min(140px, max(28px, 30cqh)); margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--body); font: inherit; }
     textarea::placeholder { color: var(--muted); }
     textarea:disabled { cursor: not-allowed; }
     button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--green); cursor: pointer; }
@@ -1218,15 +1269,24 @@
     // the student (wheel, touch, keys, a scrollbar drag) stops it at once;
     // coming back near the bottom starts it again. The panel itself only
     // ever scrolls down, and content that shrinks leaves it at the bottom.
-    const view = { follow: true, lastTop: 0 };
+    const view = { follow: true, lastTop: 0, expectTop: null, anchor: null };
     scroll.addEventListener(
       "scroll",
       () => {
         const top = scroll.scrollTop;
+        // The panel's own scroll (following, or restoring the anchor after a
+        // resize) says nothing about what the student wants.
+        if (view.expectTop !== null && Math.abs(top - view.expectTop) < 1) {
+          view.expectTop = null;
+          view.lastTop = top;
+          return;
+        }
+        view.expectTop = null;
         const fromBottom = scroll.scrollHeight - top - scroll.clientHeight;
         if (top < view.lastTop - 1 && fromBottom > 1) view.follow = false;
         else if (fromBottom < 80) view.follow = true;
         view.lastTop = top;
+        if (!view.follow) view.anchor = scrollAnchor(scroll, feed);
       },
       { passive: true }
     );
@@ -1269,7 +1329,94 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, status, statusText, headRight, provider, gear, banner, scroll, view, feed, input, send, hint };
+    return { host, wrap, status, statusText, headRight, provider, gear, banner, scroll, view, feed, input, send, hint };
+  }
+
+  // ---- live resizing ----------------------------------------------------
+  //
+  // The student drags the splitters, so the pane changes width and height at
+  // any time, mid-reply included. Nothing here is measured once: a
+  // ResizeObserver on the scroll area and the feed re-runs these on every
+  // change.
+
+  // The composer grows with what is typed, up to its max-height (which
+  // depends on the pane's height), and must be re-measured when a width
+  // change rewraps the text.
+  function fitInput(p) {
+    const input = p.input;
+    input.style.height = "auto";
+    if (!input.value) return;
+    const max = parseFloat(getComputedStyle(input).maxHeight) || 140;
+    input.style.height = `${Math.min(input.scrollHeight, max)}px`;
+  }
+
+  // Scrolls the panel itself, telling the scroll listener so.
+  function scrollPanelTo(p, top) {
+    const before = p.scroll.scrollTop;
+    p.scroll.scrollTop = top;
+    // Only a real move fires a scroll event to recognize.
+    if (p.scroll.scrollTop !== before) p.view.expectTop = p.scroll.scrollTop;
+    p.view.lastTop = p.scroll.scrollTop;
+  }
+
+  // What the student is reading when scrolled up: the first block (a feed
+  // item, or a paragraph, code block, table or list item inside a reply)
+  // that reaches below the top edge, and how far below the edge it starts.
+  function scrollAnchor(scroll, feed) {
+    const top = scroll.getBoundingClientRect().top;
+    let candidates = feed.children;
+    let found = null;
+    for (let depth = 0; depth < 3 && candidates; depth += 1) {
+      let next = null;
+      for (const node of candidates) {
+        const r = node.getBoundingClientRect();
+        if (r.bottom > top + 0.5 && r.height > 0) {
+          next = node;
+          break;
+        }
+      }
+      if (!next) break;
+      found = next;
+      const r = next.getBoundingClientRect();
+      // Inside a reply (or a list in it), a block nearer the edge holds
+      // still better through a rewrap than the whole reply does.
+      if (r.top >= top - 0.5 || !next.children.length) break;
+      candidates = next.children;
+    }
+    return found ? { node: found, offset: found.getBoundingClientRect().top - top } : null;
+  }
+
+  // After a size change: a following feed stays at the bottom, and one the
+  // student scrolled up keeps the same text at the same height on screen.
+  function keepScrollAnchor(p) {
+    const { scroll, view } = p;
+    if (view.follow) {
+      scrollPanelTo(p, scroll.scrollHeight);
+      return;
+    }
+    const anchor = view.anchor;
+    if (anchor && anchor.node.isConnected) {
+      const now = anchor.node.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+      const delta = now - anchor.offset;
+      if (Math.abs(delta) >= 0.5) scrollPanelTo(p, scroll.scrollTop + delta);
+    }
+    view.anchor = scrollAnchor(scroll, p.feed);
+  }
+
+  function observePanelSize(p) {
+    let width = null;
+    const observer = new ResizeObserver(() => {
+      const w = p.scroll.clientWidth;
+      if (w !== width) {
+        width = w;
+        fitInput(p);
+      }
+      keepScrollAnchor(p);
+    });
+    observer.observe(p.scroll);
+    observer.observe(p.feed);
+    observer.observe(p.wrap);
+    return observer;
   }
 
   // The options page is the only place settings (and API keys) are edited:
@@ -1497,7 +1644,8 @@
       nodes = items.map(nodeFor);
     }
     reconcile(p.feed, nodes);
-    if (stick) p.scroll.scrollTop = p.scroll.scrollHeight;
+    if (stick) scrollPanelTo(p, p.scroll.scrollHeight);
+    else keepScrollAnchor(p);
   }
 
   function scheduleRender() {
@@ -1526,6 +1674,17 @@
     s.top = `${rect.top - layoutRect.top}px`;
     s.width = `${rect.width}px`;
     s.height = `${rect.height}px`;
+    // A splitter drag or a layout change can put another pane under the
+    // tabset: the one made inert follows. A frame where the pane has not
+    // caught up with the tabset yet (no match) keeps the current one.
+    if (active) {
+      const pane = paneUnderTabset(mounted);
+      if (pane && pane !== mounted.inertPane) {
+        if (mounted.inertPane) mounted.inertPane.inert = false;
+        mounted.inertPane = pane;
+        pane.inert = true;
+      }
+    }
   }
 
   function selectedRealButton(m) {
@@ -1563,7 +1722,7 @@
     mounted.panel.hint.hidden = true;
     render();
     mounted.panel.view.follow = true;
-    mounted.panel.scroll.scrollTop = mounted.panel.scroll.scrollHeight;
+    scrollPanelTo(mounted.panel, mounted.panel.scroll.scrollHeight);
     // After the browser's own mousedown focus handling, which would otherwise
     // move focus to the tab button we are being activated from.
     setTimeout(() => {
@@ -1651,14 +1810,14 @@
     const content = tabset.querySelector(".flexlayout__tabset_content");
     if (content) resize.observe(content);
     window.addEventListener("resize", syncRect);
+    const panelSize = observePanelSize(panel);
 
     const theme = new MutationObserver(() => mounted && sampleTheme(mounted));
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
     theme.observe(document.body, { attributes: true, attributeFilter: ["class", "data-theme"] });
 
     panel.input.addEventListener("input", () => {
-      panel.input.style.height = "auto";
-      panel.input.style.height = `${Math.min(panel.input.scrollHeight, 140)}px`;
+      fitInput(panel);
       panel.send.disabled = panel.input.disabled || sending || !panel.input.value.trim();
       // They are editing; a complaint about the previous attempt no longer
       // applies.
@@ -1678,6 +1837,7 @@
       strip.disconnect();
       rects.disconnect();
       resize.disconnect();
+      panelSize.disconnect();
       theme.disconnect();
       window.removeEventListener("resize", syncRect);
       tab.remove();
@@ -1733,11 +1893,11 @@
       const res = await transport.send(body);
       if (res.status === 202) {
         p.input.value = "";
-        p.input.style.height = "auto";
+        fitInput(p);
         // Their own message and the reply should come into view even if they
         // had scrolled up to reread something, until they scroll up again.
         p.view.follow = true;
-        p.scroll.scrollTop = p.scroll.scrollHeight;
+        scrollPanelTo(p, p.scroll.scrollHeight);
         if (codeLeftOut || !snapshot) {
           p.hint.textContent = codeLeftOut ? CODE_TOO_LONG : EDITOR_READ_FAILED;
           p.hint.hidden = false;
