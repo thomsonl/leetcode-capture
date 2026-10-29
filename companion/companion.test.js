@@ -1530,3 +1530,51 @@ test('a live terminal resize mid-stream does not corrupt the turn and the box re
   assert.ok(width !== null, `expected a box rule in the final rendered screen, got: ${JSON.stringify(out)}`);
   assert.equal(width, WIDE_COLUMNS, `expected the box to reflect the full ${WIDE_COLUMNS}-col terminal width once the turn ended, got ${width}`);
 });
+
+// Closing the terminal window sends SIGHUP, which Node handles by dying
+// without running 'exit' handlers. The companion must still stop the relay
+// server it started, or that server outlives it and holds the port.
+test('SIGHUP stops the relay server the companion started', async () => {
+  const port = 18137;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-hup-'));
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...process.env,
+      COMPANION_BACKEND: 'local',
+      COMPANION_MODEL: 'stub-model',
+      COMPANION_BASE_URL: 'http://127.0.0.1:1/v1',
+      LEETCODE_CAPTURES_FILE: path.join(scratch, 'captures.jsonl'),
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: path.join(scratch, 'relay.jsonl'),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const up = async () => {
+    try {
+      await fetch(`http://127.0.0.1:${port}/capture`, { method: 'OPTIONS', signal: AbortSignal.timeout(500) });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitFor = async (want) => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      // eslint-disable-next-line no-await-in-loop
+      if ((await up()) === want) return true;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+  };
+  try {
+    assert.ok(await waitFor(true), 'the companion never started a relay server');
+    child.kill('SIGHUP');
+    assert.ok(await waitFor(false), 'the relay server outlived the companion after SIGHUP');
+  } finally {
+    child.kill('SIGKILL');
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});

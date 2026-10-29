@@ -2090,7 +2090,11 @@ async function pollLoop() {
   }
 }
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
+// SIGHUP is what a terminal sends when its window is closed. Node's default
+// for it ends the process without running 'exit' handlers, which left the
+// relay server this companion started running (and holding its port) after
+// the window was gone.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => rl.close());
 }
 
