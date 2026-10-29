@@ -92,8 +92,20 @@ Publishing tutor replies and reading the messages you type are reserved for the 
 ## Optional features
 
 - **Local model backend.**
-  Run entirely against a local Ollama model instead of Claude: install Ollama, `ollama pull <model>`, then run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `leetcode -local` with the launcher).
-  A handful of env vars (`COMPANION_LOCAL_MAX_HISTORY_TURNS`, `COMPANION_LOCAL_NUM_CTX`, `COMPANION_LOCAL_RESERVE_TOKENS`, `COMPANION_LOCAL_API`) tune context-window limits for smaller local models; the defaults work for most.
+  Run entirely against a local model instead of Claude, with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI and others) and any model: run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `leetcode -local` with the launcher).
+  `COMPANION_BASE_URL` points at the server's OpenAI-compatible root (default `http://localhost:11434/v1`, Ollama's), and `COMPANION_API_KEY` is sent as a bearer token if the server needs one.
+  The context window settings (the defaults work for most):
+  - `COMPANION_LOCAL_NUM_CTX` (default 8192) is the most the companion budgets for, and what Ollama is asked for through its native API.
+  - `COMPANION_LOCAL_API` is `auto` (default), `openai` or `native`.
+    With `auto` the companion asks the server once at startup whether it is Ollama (`GET /api/version`) and uses Ollama's native chat API only if it is, at any address or port, since that is the only API that honors a requested window; anything else uses the standard OpenAI-compatible API.
+    Set it explicitly to skip the guess.
+  - At startup the companion also asks the server for the model's real window where it can: Ollama (`/api/show`, and `/api/ps` for a loaded model on the OpenAI-compatible API), LM Studio (`/api/v0/models`), llama.cpp server (`/props`) and vLLM (`/v1/models`).
+    It budgets for the smaller of that and `COMPANION_LOCAL_NUM_CTX`.
+    Every probe has a short timeout and is ignored if it fails, so an unknown server just uses the configured window.
+  - On any server, if a reply reports far fewer prompt tokens than were sent (under 70 percent), the server silently cut the prompt to fit a smaller window: the companion prints one warning and budgets for the window the server really kept from then on.
+  - `COMPANION_LOCAL_RESERVE_TOKENS` (default 2600) is held back for the model's thinking and answer; the prompt gets the rest.
+  - Each request is fitted to that budget by leaving out the oldest whole exchanges (the problem statement and your code are always kept), and `COMPANION_LOCAL_MAX_HISTORY_TURNS` (default 6, 0 for no cap) also caps how many exchanges are kept.
+    A message is refused, with what is too big named, only if the statement, code and that message alone are over the budget.
 
 - **Auto-clear context on problem switch.**
   On by default: starting a new problem resets the tutor's memory so an old problem doesn't linger as context forever.

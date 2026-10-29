@@ -687,17 +687,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   failed against the compat endpoint's default 4096 completed normally once resent to `/api/chat`
   with `num_ctx: 8192`, and confirmed live end-to-end via a real `companion.js` subprocess against
   the real model both ways (forced `COMPANION_LOCAL_API=openai` reproduces the failure, the default
-  config does not). `COMPANION_LOCAL_API` (`auto`/`openai`/`native`) picks between the two per
-  request, not by live-probing the server (an early design considered probing `/api/tags` at
-  startup, rejected: it would silently break every existing stub-backend test in
-  `companion.test.js`, none of which serve that route, and adds latency/a false-negative risk on a
-  slow-to-answer server) - `auto` (the default) resolves to `native` only when `COMPANION_BASE_URL`
-  is still exactly Ollama's own out-of-the-box default address, so a deliberately-configured
-  different OpenAI-compatible server (or any test pointed at a stub port) keeps behaving exactly as
-  before with zero risk of a silent protocol-mismatch regression. Switching wholesale to the native
-  API by default (irrespective of `COMPANION_BASE_URL`) was considered and rejected: it would 404
-  for a genuinely different OpenAI-compatible server, the one case `COMPANION_BASE_URL` exists to
-  support. `companion/companion.test.js`'s dual-route stub (`startDualApiStubBackend`) serves both
+  config does not). `COMPANION_LOCAL_API` (`auto`/`openai`/`native`) picks between the two; `auto` now probes the
+  server (see the context-window bullet below), and the old exact-default-address rule is gone. `companion/companion.test.js`'s dual-route stub (`startDualApiStubBackend`) serves both
   `/v1/chat/completions` and `/api/chat` behind independently-sized simulated context thresholds, so
   a test can prove the fix comes from genuinely using the native route with more room, not from the
   capture having gotten smaller - verified the repro test actually fails without the fix (reverted
@@ -768,6 +759,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
      7-turn session: `prompt_eval_count` at turn 7 dropped from 2,879 to 1,901 (34% less).
   All three closed-loop-verified against the real, locally-running `gemma4:26b` (never a stub) in a
   real `tmux` pty session, per this file's own established bar - not just the piped test suite.
+
+- `LocalBackend`'s context window works with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI) and any model; nothing may assume Ollama or a particular model.
+  The window budgeted for is `contextWindow()`, the single place it is decided (`resolveContextWindow` in `context-budget.js`): the smallest of `COMPANION_LOCAL_NUM_CTX` (default 8192, also what Ollama's native API is asked for), what the startup probes found, and what a reply showed the server really kept.
+  A settings field for the window only needs to feed `numCtx`.
+  The probes (`companion/local-server.js`, no Node API) run once in the background at startup and the first message waits at most for their 1.5 s timeouts: `GET /api/version` identifies Ollama (then `COMPANION_LOCAL_API=auto` uses the native API, at any address), and `/api/show`, `/api/ps`, LM Studio's `/api/v0/models`, llama.cpp's `/props` and vLLM's `/v1/models` report windows; any failure or unknown shape is ignored.
+  Test model stubs must answer non-chat routes with a 404 (each stub has a one-line guard), since every companion subprocess now probes its stub.
+  Every request is fitted to the budget before it is sent (`fitToBudget`): the oldest whole exchanges are dropped, never the pinned statement, the pinned code or the current message, and it is refused (naming each part's size) only when those alone are over.
+  This replaced a refusal that, with history trimmed only by count and only after a success, stuck every later message once a few long replies filled the budget (`context-window.test.js` has that scenario).
+  A reply cut off with `finish_reason: "length"` also drops the oldest exchange, since the same history would be cut off again.
+  The silent-truncation guard: streamed OpenAI-style requests ask for `stream_options: { include_usage: true }` (dropped for good after a 400/422 that names it), and a reply whose `usage.prompt_tokens` (or native `prompt_eval_count`) is under 70 percent of the estimate, and at least 256 tokens under, means the server dropped the start of the prompt with an ordinary "stop".
+  The window then becomes the reported count, and one terminal warning per session is printed after the turn (`takeWarnings`); there is deliberately no panel message for it.
+  A cut smaller than 30 percent cannot be told apart from tokenizer differences, so it goes unnoticed.
+  The reserve (2600) and the existing refusal path were kept as they were at Thomson's request.
 
 - The in-page Tutor tab (`extension/panel.js`, `relay-server/panel-broker.js`, `companion/panel-bridge.js`) mirrors
   the companion chat into the leetcode.com tab strip. The companion publishes events to the relay (`POST
