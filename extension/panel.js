@@ -1386,7 +1386,7 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, wrap, status, statusText, headRight, provider, gear, banner, scroll, view, feed, input, send, hint };
+    return { host, wrap, status, statusText, headRight, provider, gear, banner, scroll, view, feed, box, input, send, hint };
   }
 
   // ---- live resizing ----------------------------------------------------
@@ -1929,6 +1929,26 @@
       }
     });
     panel.send.addEventListener("click", sendTyped);
+    // The rounded box is what reads as the input, but the textarea leaves
+    // its padding and rims uncovered; a press there would otherwise land on
+    // nothing focusable and typing would go nowhere. Pressing the textarea
+    // itself or a button keeps the browser's own handling (caret placement,
+    // selection, Send).
+    panel.box.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      const target = event.target;
+      if (target === panel.input || (target.closest && target.closest("button"))) return;
+      // Keeps the browser from blurring the textarea or starting a selection
+      // in the box.
+      event.preventDefault();
+      if (panel.input.disabled) return;
+      const focused = panel.input.getRootNode().activeElement === panel.input;
+      panel.input.focus({ preventScroll: true });
+      if (!focused) {
+        const end = panel.input.value.length;
+        panel.input.setSelectionRange(end, end);
+      }
+    });
   }
 
   // Keeps the tab present across LeetCode's own re-renders and SPA

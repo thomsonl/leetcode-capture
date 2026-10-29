@@ -6,8 +6,9 @@
 // Covers what the unit tests cannot: the feed is patched in place (a text
 // selection and a code block's horizontal scroll survive streamed chunks and
 // events for other problems), the header row (dark and light), which native pane is
-// made inert, the relay-restart (epoch) flow over a reconnect, sending
-// (double Enter, the too-long hint), the live editor code a send carries
+// made inert, the injected tab's spot right after Description as tabs come
+// and go, the relay-restart (epoch) flow over a reconnect, sending (double
+// Enter, the too-long hint, a real click on the box around the textarea), the live editor code a send carries
 // (the real content.js and inject.js answering against a stand-in Monaco),
 // some CSS metrics, and tutor diagrams, tables, long URLs and identifiers
 // across live pane resizes (240 to 1000 px wide, 200 to 700 px tall, a
@@ -1327,6 +1328,56 @@ try {
     r = await at('added tabs removed');
     check(r.s === 'Description | Tutor | Submissions', `${r.what}: ${r.s}`);
     check((await page.eval('window.__quiet()')) === 0, 'the strip kept changing after the tabs were removed');
+  });
+
+  await scenario('a real click anywhere on the composer box focuses the textarea, without breaking selection inside it', async () => {
+    await page.eval('window.__openTutor()');
+    await settle();
+    const g = await page.eval(`(() => {
+      const t = window.__q('textarea');
+      const r = (n) => { const b = n.getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom }; };
+      return { disabled: t.disabled, box: r(window.__q('.box')), input: r(t), send: r(window.__q('.box button')) };
+    })()`);
+    check(!g.disabled, 'the composer is disabled');
+    const click = async (x, y) => {
+      await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    };
+    const state = () => page.eval(`(() => { const t = window.__q('textarea'); return { focused: window.__root().activeElement === t, start: t.selectionStart, end: t.selectionEnd, value: t.value }; })()`);
+    const midY = (g.input.top + g.input.bottom) / 2;
+    const midX = (g.input.left + g.input.right) / 2;
+    const spots = {
+      'left padding': [g.box.left + 4, midY],
+      'top rim': [midX, g.box.top + 2],
+      'bottom rim': [midX, g.box.bottom - 2],
+      'gap before Send': [g.send.left - 3, midY],
+    };
+    for (const [name, [x, y]] of Object.entries(spots)) {
+      await page.eval(`(() => { const t = window.__q('textarea'); t.value = 'abc'; t.setSelectionRange(0, 0); t.blur(); })()`);
+      await click(x, y);
+      await settle();
+      let s = await state();
+      check(s.focused && s.start === 3 && s.end === 3, `${name} (${x}, ${y}): ${JSON.stringify(s)}`);
+      await page.send('Input.insertText', { text: 'd' });
+      s = await state();
+      check(s.value === 'abcd', `${name}: typing after the click gave ${JSON.stringify(s.value)}`);
+    }
+    // Already focused, the caret stays where it was.
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = 'abc'; t.focus(); t.setSelectionRange(1, 1); })()`);
+    await click(...spots['left padding']);
+    let s = await state();
+    check(s.focused && s.start === 1 && s.end === 1, `focused click on the padding moved the caret: ${JSON.stringify(s)}`);
+    // Inside the textarea a click still places the caret, and a drag selects.
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = 'hello world'; t.blur(); })()`);
+    await click(g.input.left + 1, midY);
+    s = await state();
+    check(s.focused && s.start === 0 && s.end === 0, `a click at the text start: ${JSON.stringify(s)}`);
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: g.input.left + 1, y: midY, button: 'left', clickCount: 1, buttons: 1 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: g.input.left + 60, y: midY, button: 'left', buttons: 1 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: g.input.left + 60, y: midY, button: 'left', clickCount: 1 });
+    s = await state();
+    check(s.focused && s.start === 0 && s.end > 2, `a drag in the textarea: ${JSON.stringify(s)}`);
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); t.blur(); })()`);
   });
 
   await scenario('no exceptions in the page', async () => {
