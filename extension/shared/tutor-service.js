@@ -174,7 +174,7 @@ export function createTutorService({ storage, permissions, extensionOrigin, log 
 
   async function view(extra = {}) {
     const permission = await permissionFor(settings);
-    return { settings: publicView(settings, secrets), active: statusSummary(settings), permission, ...extra };
+    return { settings: publicView(settings, secrets), active: statusSummary(settings), permission, catalog: PROVIDERS, ...extra };
   }
 
   async function save({ patch }) {

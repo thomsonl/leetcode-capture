@@ -81,6 +81,12 @@ h2 { margin: 0 0 4px; font-size: 16px; line-height: 24px; font-weight: 600; }
 .field { display: grid; gap: 4px; }
 .field label { font-weight: 500; }
 .field .opt { font-weight: 400; color: var(--muted); }
+.field > .label { font-weight: 500; }
+.runtime { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.runtime-option { display: flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; }
+.runtime-option input { margin: 0; accent-color: var(--green); }
+.runtime-option .opt { color: var(--muted); }
+
 .row { display: flex; gap: 8px; }
 .row input { flex: 1; min-width: 0; }
 input[type="text"], input[type="password"], input[type="number"], input[type="url"] {
@@ -91,6 +97,8 @@ input::placeholder { color: var(--muted); }
 input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
 .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 16px; }
 .hint.locked { color: var(--text); }
+.hint:empty { display: none; }
+.hint code.nowrap { display: inline-block; margin-top: 4px; white-space: nowrap; max-width: 100%; overflow-x: auto; vertical-align: top; }
 .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .linkbtn { border: 0; background: none; padding: 0; color: var(--focus); font: inherit; cursor: pointer; text-decoration: underline; }
 

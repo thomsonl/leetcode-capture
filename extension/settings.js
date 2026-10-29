@@ -2,10 +2,25 @@
 //
 // This is an extension page, so it is the one place an API key can be typed
 // without any script on leetcode.com being able to see it. It never holds a
-// key it didn't just receive from the user's keyboard: the companion only ever
-// reports whether a key exists. Everything goes through the relay's
-// POST /settings/rpc, which only answers requests from an extension origin
-// and forwards them to the companion (see relay-server/panel-broker.js).
+// key it didn't just receive from the user's keyboard: whoever stores the key
+// only ever reports whether one exists (`hasKey`).
+//
+// The tutor runs in one of two places (see README.md, "Runtimes"):
+//   - In the browser (the "extension" runtime): the extension's background
+//     worker runs it, for a local model or an API key, nothing to install.
+//     Settings and keys live in the extension's own storage, and this page
+//     talks only to the worker (runtime messages 'lc-tutor:settings-*', see
+//     shared/tutor-service.js). The relay is never needed.
+//   - Through the helper (the companion on this computer), which the Claude
+//     and ChatGPT subscriptions need. Its settings live in the companion's
+//     file and go through the relay's POST /settings/rpc, which only answers
+//     an extension origin (see relay-server/panel-broker.js).
+// The provider and the runtime chosen are always saved in the extension, so
+// the Tutor panel and content.js know where to send things.
+//
+// The browser asks the user before the extension may reach a server: Save,
+// Test connection and Find models request that host permission first, while
+// the click still counts as the user's own action.
 //
 // All text is inserted with textContent / createElement, never innerHTML.
 
@@ -18,12 +33,26 @@
     contextTokens: "Context window (tokens)",
     apiKey: "API key",
   };
+  const RUNTIME_LABELS = {
+    extension: "In the browser",
+    helper: "Through the helper app",
+  };
+  const ANTHROPIC_ORIGIN = "https://api.anthropic.com/*";
 
+  // The provider catalog, the same one the companion uses
+  // (shared/providers.js). A classic script cannot import it, so the worker
+  // hands it over with the extension settings.
+  let catalog = null;
+
+  const api = typeof browser !== "undefined" ? browser : chrome;
   const $ = (id) => document.getElementById(id);
 
-  let view = null; // latest public view from the companion
+  let ext = null; // { settings, active, permission } from the worker
+  let helper = null; // the companion's view ({ settings, active }), or null
+  let helperOffline = null; // why the helper can't be asked, or null
   let selected = null; // provider currently chosen in the form
-  const keyAction = {}; // provider -> "replace" | "remove" | undefined
+  const runtimeChoice = {}; // provider -> "extension" | "helper", as chosen in the form
+  const keyAction = {}; // `${runtime}:${provider}` -> "replace" | "remove" | undefined
   let pollTimer = null;
 
   function h(tag, attrs, ...children) {
@@ -42,7 +71,20 @@
     return node;
   }
 
-  // ---- talking to the companion ---------------------------------------------
+  // ---- talking to the worker (extension runtime) -----------------------------
+
+  // Resolves to { ok, result } or { ok: false, error: { message, field? } }.
+  async function worker(type, params = {}) {
+    try {
+      const answer = await api.runtime.sendMessage({ type, params });
+      if (answer && typeof answer.ok === "boolean") return answer;
+      return { ok: false, error: { message: "The extension did not answer." } };
+    } catch (err) {
+      return { ok: false, error: { message: `The extension did not answer (${err && err.message ? err.message : "error"}).` } };
+    }
+  }
+
+  // ---- talking to the companion (helper runtime) -----------------------------
 
   // Resolves to { ok, result } or { ok: false, error: { message, offline? } }.
   async function rpc(method, params, timeoutMs = 20000) {
@@ -80,12 +122,79 @@
     return body;
   }
 
-  // ---- rendering -----------------------------------------------------------------
+  // ---- host permissions ------------------------------------------------------------
+
+  // The match pattern for the server a provider's form points at, or null
+  // when it reaches no server from the browser.
+  function originPatternFor(id) {
+    if (id === "anthropic") return ANTHROPIC_ORIGIN;
+    if (id !== "local" && id !== "openai") return null;
+    const input = $(`${id}-baseUrl`);
+    const raw = (input && input.value.trim()) || (ext.settings.defaults[id] || {}).baseUrl;
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      return `${url.protocol}//${url.hostname}/*`;
+    } catch {
+      return null;
+    }
+  }
+
+  // Must be called straight from a click, before anything is awaited, or the
+  // browser refuses to ask. Resolves true when the extension may reach the
+  // server (already allowed, or the user just allowed it).
+  function requestPermission(pattern) {
+    if (!pattern) return Promise.resolve(true);
+    try {
+      return Promise.resolve(api.permissions.request({ origins: [pattern] })).then(Boolean, () => false);
+    } catch {
+      return Promise.resolve(false);
+    }
+  }
+
+  function deniedMessage(pattern) {
+    const host = pattern.replace(/\/\*$/, "");
+    return `The browser did not allow the extension to reach ${host}, so the tutor can't use it. Press the button again and choose Allow.`;
+  }
+
+  // ---- state helpers -----------------------------------------------------------
+
+  function runtimesOf(id) {
+    return catalog[id].runtimes;
+  }
+
+  function runtimeOf(id) {
+    const options = runtimesOf(id);
+    const chosen = runtimeChoice[id];
+    return options.includes(chosen) ? chosen : options[0];
+  }
+
+  // The values a provider's fields show: the extension's for the browser
+  // runtime, the companion's for the helper (null while it is offline).
+  function infoFor(id) {
+    if (runtimeOf(id) === "extension") return ext.settings.providers[id];
+    return helper ? helper.settings.providers[id] : null;
+  }
+
+  function helperLocked(field) {
+    return Boolean(helper && helper.settings.locks[field]);
+  }
+
+  function isLocked(id, field) {
+    if (runtimeOf(id) !== "helper") return false;
+    return helperLocked(field) && helper.settings.provider === id;
+  }
+
+  function usable(id) {
+    return runtimeOf(id) === "extension" || Boolean(helper);
+  }
 
   function activeLabel(active) {
     if (!active) return "";
     return active.model ? `${active.label}, ${active.model}` : active.label;
   }
+
+  // ---- rendering -----------------------------------------------------------------
 
   function setConnection(ok, text) {
     const el = $("connection");
@@ -94,10 +203,24 @@
     $("connection-text").textContent = text;
   }
 
+  // What the tutor runs on right now, from what is saved.
+  function renderConnection() {
+    const saved = ext.settings.provider;
+    if (saved && ext.settings.runtime === "extension") {
+      setConnection(true, `Tutor running in the browser: ${activeLabel(ext.active)}`);
+    } else if (helper) {
+      setConnection(true, `Tutor running: ${activeLabel(helper.active)}`);
+    } else if (saved) {
+      setConnection(false, "Helper offline");
+    } else {
+      setConnection(false, "Not set up");
+    }
+  }
+
   // Each cause gets its own instruction; `code` parts render as inline code.
   const OFFLINE_COPY = {
     "relay-down": [
-      "Can't reach the relay server on localhost:8135. Start the tutor with ",
+      "This provider runs through the helper app, and it isn't running: can't reach the relay server on localhost:8135. Start the tutor with ",
       { code: "leetcode" },
       " (or run ",
       { code: "node companion.js" },
@@ -115,46 +238,53 @@
     ],
   };
 
-  function setOffline(kind) {
-    $("form").setAttribute("data-disabled", "");
-    $("test").disabled = true;
-    $("save").disabled = true;
-    setConnection(false, "Tutor offline");
+  function renderOffline() {
     const box = $("offline");
+    const show = selected && runtimeOf(selected) === "helper" && !helper;
+    box.hidden = !show;
+    if (!show) return;
     box.textContent = "";
-    for (const part of OFFLINE_COPY[kind] || OFFLINE_COPY["relay-down"]) {
+    for (const part of OFFLINE_COPY[helperOffline] || OFFLINE_COPY["relay-down"]) {
       box.appendChild(typeof part === "string" ? document.createTextNode(part) : h("code", { text: part.code }));
     }
-    box.hidden = false;
-    if (!pollTimer) pollTimer = setInterval(load, 4000);
   }
 
   function lockNote(field) {
-    const name = view.locks[field];
+    const name = helper && helper.settings.locks[field];
     return name ? h("p", { class: "hint locked", text: `Set by ${name} in your environment. Remove it there to change it here.` }) : null;
   }
 
-  function isLocked(provider, field) {
-    return Boolean(view.locks[field]) && provider === view.provider;
-  }
-
-  function keyField(id) {
-    const info = view.providers[id];
-    const optional = !view.catalog[id].requires.includes("apiKey");
-    const input = h("input", { type: "password", id: `${id}-apiKey`, autocomplete: "off", spellcheck: "false", placeholder: id === "anthropic" ? "sk-ant-..." : id === "openai" ? "sk-..." : "Optional" });
+  function keyField(id, info) {
+    const runtime = runtimeOf(id);
+    const action = keyAction[`${runtime}:${id}`];
+    const optional = !catalog[id].requires.includes("apiKey");
+    const input = h("input", {
+      type: "password",
+      id: `${id}-apiKey`,
+      autocomplete: "off",
+      spellcheck: "false",
+      disabled: !info,
+      placeholder: id === "anthropic" ? "sk-ant-..." : id === "openai" ? "sk-..." : "Optional",
+    });
     const label = h("label", { for: `${id}-apiKey` }, "API key", optional ? h("span", { class: "opt", text: " (optional)" }) : null);
     const wrap = h("div", { class: "field" }, label);
-    if (info.hasKey && keyAction[id] !== "replace" && keyAction[id] !== "remove") {
-      const source = info.keySource === "saved" ? "A key is saved" : `Using ${info.keySource} from your environment`;
+    const setAction = (next) => {
+      keyAction[`${runtime}:${id}`] = next;
+      render();
+    };
+    if (info && info.hasKey && action !== "replace" && action !== "remove") {
+      // The extension stores keys itself; the companion may also take one
+      // from the environment.
+      const source = runtime === "extension" || info.keySource === "saved" ? "A key is saved" : `Using ${info.keySource} from your environment`;
       const line = h("div", { class: "keyline" }, h("span", { text: source }));
-      if (info.keySource === "saved") {
-        line.appendChild(h("button", { type: "button", class: "linkbtn", text: "Replace", onclick: () => { keyAction[id] = "replace"; render(); $(`${id}-apiKey`).focus(); } }));
-        line.appendChild(h("button", { type: "button", class: "linkbtn", text: "Remove", onclick: () => { keyAction[id] = "remove"; render(); } }));
+      if (runtime === "extension" || info.keySource === "saved") {
+        line.appendChild(h("button", { type: "button", class: "linkbtn", text: "Replace", onclick: () => { setAction("replace"); $(`${id}-apiKey`).focus(); } }));
+        line.appendChild(h("button", { type: "button", class: "linkbtn", text: "Remove", onclick: () => setAction("remove") }));
       }
       wrap.appendChild(line);
-    } else if (keyAction[id] === "remove") {
+    } else if (action === "remove") {
       wrap.appendChild(
-        h("div", { class: "keyline" }, h("span", { text: "The key will be removed when you save." }), h("button", { type: "button", class: "linkbtn", text: "Undo", onclick: () => { keyAction[id] = undefined; render(); } }))
+        h("div", { class: "keyline" }, h("span", { text: "The key will be removed when you save." }), h("button", { type: "button", class: "linkbtn", text: "Undo", onclick: () => setAction(undefined) }))
       );
     } else {
       wrap.appendChild(input);
@@ -164,13 +294,15 @@
   }
 
   function fieldFor(id, field) {
-    if (field === "apiKey") return keyField(id);
-    const info = view.providers[id];
+    const info = infoFor(id);
+    if (field === "apiKey") return keyField(id, info);
+    const runtime = runtimeOf(id);
     const locked = isLocked(id, field);
-    const required = view.catalog[id].requires.includes(field);
-    const defaults = view.defaults[id] || {};
-    const value = info[field] === null || info[field] === undefined ? "" : String(info[field]);
-    const attrs = { id: `${id}-${field}`, autocomplete: "off", spellcheck: "false", disabled: locked };
+    const required = catalog[id].requires.includes(field);
+    const defaults = (runtime === "extension" ? ext.settings.defaults[id] : helper && helper.settings.defaults[id]) || {};
+    const raw = info ? info[field] : null;
+    const value = raw === null || raw === undefined ? "" : String(raw);
+    const attrs = { id: `${id}-${field}`, autocomplete: "off", spellcheck: "false", disabled: locked || !info };
     let input;
     if (field === "contextTokens") {
       input = h("input", { ...attrs, type: "number", min: "1024", max: "2000000", step: "1024", value });
@@ -179,15 +311,16 @@
         ...attrs,
         type: "text",
         value,
-        placeholder: field === "model" ? (required ? "Model name" : "Default") : defaults[field] || "",
+        placeholder: field === "model" ? (required ? "Model name" : defaults.model || "Default") : defaults[field] || "",
         list: field === "model" ? `${id}-models` : false,
       });
     }
     const label = h("label", { for: `${id}-${field}` }, FIELD_LABELS[field], required ? null : h("span", { class: "opt", text: " (optional)" }));
     const wrap = h("div", { class: "field" }, label);
-    if (field === "model" && (id === "local" || id === "openai")) {
+    const findable = field === "model" && (id === "local" || id === "openai" || (id === "anthropic" && runtime === "extension"));
+    if (findable) {
       wrap.appendChild(
-        h("div", { class: "row" }, input, h("button", { type: "button", class: "btn", id: `${id}-find`, text: "Find models", disabled: locked, onclick: () => findModels(id) }))
+        h("div", { class: "row" }, input, h("button", { type: "button", class: "btn", id: `${id}-find`, text: "Find models", disabled: locked || !info, onclick: () => findModels(id) }))
       );
       wrap.appendChild(h("datalist", { id: `${id}-models` }));
       wrap.appendChild(h("p", { class: "hint", id: `${id}-models-note` }));
@@ -200,71 +333,163 @@
     if (field === "baseUrl" && id === "openai") {
       wrap.appendChild(h("p", { class: "hint", text: "Leave as is unless you use an OpenAI-compatible proxy." }));
     }
+    if (field === "baseUrl" && id === "local" && runtime === "extension") {
+      wrap.appendChild(
+        h(
+          "p",
+          { class: "hint" },
+          "Ollama answers the extension only if it is allowed to. Set this where Ollama runs, then restart it:",
+          h("br"),
+          h("code", { class: "nowrap", text: `OLLAMA_ORIGINS=${location.origin}` })
+        )
+      );
+    }
     const note = locked ? lockNote(field) : null;
     if (note) wrap.appendChild(note);
     return wrap;
   }
 
+  // Where the tutor runs for a provider: a choice for those that can run in
+  // the browser, a note for those that need the helper.
+  function runtimeRow(id) {
+    const options = runtimesOf(id);
+    if (options.length === 1) {
+      return h("p", { class: "hint runtime-note", text: "Runs through the helper app on your computer (it uses your local sign-in)." });
+    }
+    const group = h("div", { class: "runtime", role: "radiogroup", "aria-label": "Where the tutor runs" });
+    for (const runtime of options) {
+      const inputId = `${id}-runtime-${runtime}`;
+      group.appendChild(
+        h(
+          "label",
+          { class: "runtime-option", for: inputId },
+          h("input", {
+            type: "radio",
+            id: inputId,
+            name: `${id}-runtime`,
+            value: runtime,
+            checked: runtimeOf(id) === runtime,
+            onchange: () => {
+              runtimeChoice[id] = runtime;
+              render();
+              clearResults();
+              if (runtime === "helper" && !helper) loadHelper();
+            },
+          }),
+          h("span", { text: RUNTIME_LABELS[runtime] }),
+          h("span", { class: "opt", text: runtime === "extension" ? " (nothing to install)" : " (the companion)" })
+        )
+      );
+    }
+    return h("div", { class: "field" }, h("span", { class: "label", text: "Where the tutor runs" }), group);
+  }
+
   function providerCard(id) {
-    const spec = view.catalog[id];
-    const locked = Boolean(view.locks.provider);
+    const spec = catalog[id];
+    const providerLocked = helperLocked("provider") && runtimeOf(id) === "helper";
     const radio = h("input", {
       type: "radio",
       name: "provider",
       value: id,
       checked: selected === id,
-      disabled: locked && view.provider !== id,
+      disabled: providerLocked && helper.settings.provider !== id,
       onchange: () => {
         selected = id;
         render();
         clearResults();
+        if (runtimeOf(id) === "helper" && !helper) loadHelper();
       },
     });
     const title = h("div", { class: "provider-title" }, spec.label, id === "chatgpt" ? h("span", { class: "tag", text: "Experimental" }) : null);
     const head = h("label", { class: "provider-head" }, radio, h("div", {}, title, h("div", { class: "provider-hint", text: spec.hint })));
-    const fields = h("div", { class: "fields" }, ...spec.fields.map((f) => fieldFor(id, f)));
+    const fields = h("div", { class: "fields" }, runtimeRow(id), ...spec.fields.map((f) => fieldFor(id, f)));
     return h("div", { class: "provider", "data-selected": selected === id }, head, fields);
   }
 
-  function toggle(id, label, hint, checked) {
-    const locked = Boolean(view.locks[id]);
+  function toggle(id, label, hint, checked, { locked = false, disabled = false } = {}) {
     const wrap = h(
       "div",
       { class: "toggle" },
-      h("input", { type: "checkbox", id, checked, disabled: locked }),
+      h("input", { type: "checkbox", id, checked, disabled: locked || disabled }),
       h("label", { for: id, text: label }),
       h("p", { class: "hint", text: hint })
     );
-    const note = lockNote(id);
+    const note = locked ? lockNote(id) : null;
     if (note) wrap.appendChild(note);
     return wrap;
   }
 
   function renderBehavior() {
-    const o = view.options;
+    const inBrowser = runtimeOf(selected) === "extension";
+    const o = inBrowser ? ext.settings.options : helper ? helper.settings.options : { autoClearContext: true, vaultAutoSummary: false, localMaxHistoryTurns: 6 };
+    const off = !inBrowser && !helper;
     const box = $("behavior");
     box.textContent = "";
-    box.appendChild(toggle("autoClearContext", "Start fresh when you switch problems", "The tutor forgets the previous problem, so old code never muddies a new one.", o.autoClearContext));
-    box.appendChild(toggle("vaultAutoSummary", "Save Submit reviews to my Obsidian vault", "Turns the tutor's review of each Submit into a note. Needs a vault folder (see the README).", o.vaultAutoSummary));
-    const locked = Boolean(view.locks.localMaxHistoryTurns);
+    box.appendChild(
+      toggle("autoClearContext", "Start fresh when you switch problems", "The tutor forgets the previous problem, so old code never muddies a new one.", o.autoClearContext, {
+        locked: !inBrowser && helperLocked("autoClearContext"),
+        disabled: off,
+      })
+    );
+    box.appendChild(
+      toggle(
+        "vaultAutoSummary",
+        "Save Submit reviews to my Obsidian vault",
+        inBrowser
+          ? "Needs the helper app, which can write to your vault folder. Choose \"Through the helper app\" above to use it."
+          : "Turns the tutor's review of each Submit into a note. Needs a vault folder (see the README).",
+        inBrowser ? false : o.vaultAutoSummary,
+        { locked: !inBrowser && helperLocked("vaultAutoSummary"), disabled: inBrowser || off }
+      )
+    );
+    const locked = !inBrowser && helperLocked("localMaxHistoryTurns");
     const num = h(
       "div",
       { class: "toggle number" },
       h("label", { for: "localMaxHistoryTurns", text: "Exchanges a local model remembers" }),
-      h("input", { type: "number", id: "localMaxHistoryTurns", min: "0", max: "100", value: String(o.localMaxHistoryTurns), disabled: locked }),
-      h("p", { class: "hint", text: "Older exchanges are dropped to fit a small context window. 0 keeps everything." })
+      h("input", { type: "number", id: "localMaxHistoryTurns", min: "0", max: "100", value: String(o.localMaxHistoryTurns), disabled: locked || off }),
+      h("p", { class: "hint", text: "Older exchanges are condensed into a short summary to fit a small context window. 0 keeps everything." })
     );
-    const note = lockNote("localMaxHistoryTurns");
+    const note = locked ? lockNote("localMaxHistoryTurns") : null;
     if (note) num.appendChild(note);
     box.appendChild(num);
+  }
+
+  function renderFoot() {
+    const foot = $("foot");
+    foot.textContent = "";
+    if (runtimeOf(selected) === "extension") {
+      foot.appendChild(
+        document.createTextNode(
+          "Settings and API keys are stored in this browser's extension storage, where web pages can't read them. A key is only ever sent to the provider you choose."
+        )
+      );
+      return;
+    }
+    foot.appendChild(document.createTextNode("Settings are stored in "));
+    foot.appendChild(h("code", { id: "path", text: helper ? helper.settings.settingsPath : "your config folder" }));
+    foot.appendChild(document.createTextNode(", readable only by you. API keys never leave your computer except to the provider you choose."));
   }
 
   function render() {
     const fieldset = $("providers");
     for (const node of [...fieldset.children]) if (node.tagName !== "LEGEND") node.remove();
-    for (const id of ORDER) if (view.catalog[id]) fieldset.appendChild(providerCard(id));
+    for (const id of ORDER) if (catalog[id]) fieldset.appendChild(providerCard(id));
     renderBehavior();
-    $("path").textContent = view.settingsPath;
+    renderOffline();
+    renderConnection();
+    renderFoot();
+    const can = usable(selected);
+    $("test").disabled = !can;
+    $("save").disabled = !can;
+    if (can) $("form").removeAttribute("data-disabled");
+    else $("form").setAttribute("data-disabled", "");
+    // Poll for the helper only while it is the one needed and not there.
+    if (!can && !pollTimer) pollTimer = setInterval(loadHelper, 4000);
+    if (can && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
   }
 
   function clearResults() {
@@ -283,13 +508,13 @@
 
   // ---- reading the form back --------------------------------------------------------
 
-  function collectPatch() {
-    const id = selected;
+  function collectFields(id) {
     const fields = {};
-    for (const field of view.catalog[id].fields) {
+    const runtime = runtimeOf(id);
+    for (const field of catalog[id].fields) {
       if (isLocked(id, field)) continue;
       if (field === "apiKey") {
-        if (keyAction[id] === "remove") fields.apiKey = null;
+        if (keyAction[`${runtime}:${id}`] === "remove") fields.apiKey = null;
         else {
           const input = $(`${id}-apiKey`);
           const typed = input ? input.value.trim() : "";
@@ -301,30 +526,56 @@
       if (field === "contextTokens") fields[field] = raw === "" ? null : Number(raw);
       else fields[field] = raw === "" ? null : raw;
     }
+    return fields;
+  }
+
+  function collectOptions(inBrowser) {
     const options = {};
-    if (!view.locks.autoClearContext) options.autoClearContext = $("autoClearContext").checked;
-    if (!view.locks.vaultAutoSummary) options.vaultAutoSummary = $("vaultAutoSummary").checked;
-    if (!view.locks.localMaxHistoryTurns) {
+    if (inBrowser || !helperLocked("autoClearContext")) options.autoClearContext = $("autoClearContext").checked;
+    if (!inBrowser && !helperLocked("vaultAutoSummary")) options.vaultAutoSummary = $("vaultAutoSummary").checked;
+    if (inBrowser || !helperLocked("localMaxHistoryTurns")) {
       const turns = $("localMaxHistoryTurns").value.trim();
       options.localMaxHistoryTurns = turns === "" ? null : Number(turns);
     }
-    return { provider: view.locks.provider ? undefined : id, providers: { [id]: fields }, options };
+    return options;
+  }
+
+  // The patch for the companion (helper runtime), in its own shape.
+  function helperPatch() {
+    const id = selected;
+    return { provider: helperLocked("provider") ? undefined : id, providers: { [id]: collectFields(id) }, options: collectOptions(false) };
+  }
+
+  // The patch for the extension (browser runtime).
+  function extensionPatch() {
+    const id = selected;
+    return { provider: id, runtime: "extension", providers: { [id]: collectFields(id) }, options: collectOptions(true) };
   }
 
   // ---- actions ----------------------------------------------------------------------------
 
   async function findModels(id) {
+    const inBrowser = runtimeOf(id) === "extension";
+    // Asked first, while this still counts as the click.
+    const pattern = inBrowser ? originPatternFor(id) : null;
+    const allowed = inBrowser ? requestPermission(pattern) : Promise.resolve(true);
     const note = $(`${id}-models-note`);
     const button = $(`${id}-find`);
     button.disabled = true;
     note.textContent = "Looking";
     const baseInput = $(`${id}-baseUrl`);
     const keyInput = $(`${id}-apiKey`);
-    const res = await rpc("models", {
+    const params = {
       provider: id,
       baseUrl: baseInput ? baseInput.value.trim() || undefined : undefined,
       apiKey: keyInput && keyInput.value.trim() ? keyInput.value.trim() : undefined,
-    });
+    };
+    if (!(await allowed)) {
+      button.disabled = false;
+      note.textContent = deniedMessage(pattern);
+      return;
+    }
+    const res = inBrowser ? await worker("lc-tutor:settings-models", params) : await rpc("models", params);
     button.disabled = false;
     if (!res.ok) {
       note.textContent = res.error.message;
@@ -339,10 +590,19 @@
   }
 
   async function runTest() {
+    const inBrowser = runtimeOf(selected) === "extension";
+    const pattern = inBrowser ? originPatternFor(selected) : null;
+    const allowed = inBrowser ? requestPermission(pattern) : Promise.resolve(true);
     const button = $("test");
     button.disabled = true;
     showResult("test-result", "", "Testing...");
-    const res = await rpc("test", { patch: collectPatch() }, 100000);
+    const patch = inBrowser ? extensionPatch() : helperPatch();
+    if (!(await allowed)) {
+      button.disabled = false;
+      showResult("test-result", "error", deniedMessage(pattern));
+      return;
+    }
+    const res = inBrowser ? await worker("lc-tutor:settings-test", { patch }) : await rpc("test", { patch }, 100000);
     button.disabled = false;
     if (!res.ok) {
       showResult("test-result", "error", res.error.message);
@@ -351,51 +611,120 @@
     showResult("test-result", res.result.ok ? "ok" : "error", res.result.message);
   }
 
+  function failSave(error) {
+    showResult("save-result", "error", error.message);
+    if (error.field) {
+      const target = $(`${selected}-${error.field}`);
+      if (target) target.focus();
+    }
+  }
+
   async function save(event) {
     event.preventDefault();
+    const inBrowser = runtimeOf(selected) === "extension";
+    const pattern = inBrowser ? originPatternFor(selected) : null;
+    const allowed = inBrowser ? requestPermission(pattern) : Promise.resolve(true);
     const button = $("save");
     button.disabled = true;
     showResult("save-result", "", "Saving...");
-    const res = await rpc("save", { patch: collectPatch() });
-    button.disabled = false;
-    if (!res.ok) {
-      showResult("save-result", "error", res.error.message);
-      if (res.error.field) {
-        const target = $(`${selected}-${res.error.field}`);
-        if (target) target.focus();
+    if (inBrowser) {
+      const patch = extensionPatch();
+      if (!(await allowed)) {
+        button.disabled = false;
+        showResult("save-result", "error", deniedMessage(pattern));
+        return;
       }
+      const res = await worker("lc-tutor:settings-save", { patch });
+      button.disabled = false;
+      if (!res.ok) {
+        failSave(res.error);
+        return;
+      }
+      forgetKeyActions("extension");
+      ext = res.result;
+      render();
+      showResult("save-result", "ok", `Saved. The tutor now runs in the browser with ${activeLabel(ext.active)}.`);
       return;
     }
-    for (const key of Object.keys(keyAction)) delete keyAction[key];
-    applyView(res.result);
-    showResult("save-result", "ok", `Saved. The tutor now uses ${activeLabel(res.result.active)}.`);
+    const res = await rpc("save", { patch: helperPatch() });
+    if (!res.ok) {
+      button.disabled = false;
+      failSave(res.error);
+      return;
+    }
+    helper = res.result;
+    // The extension remembers that this provider runs through the helper, so
+    // captures and the Tutor panel go to the relay.
+    const provider = helper.settings.provider;
+    const routed = await worker("lc-tutor:settings-save", { patch: { provider, runtime: "helper" } });
+    button.disabled = false;
+    if (routed.ok) ext = routed.result;
+    forgetKeyActions("helper");
+    selected = provider;
+    render();
+    if (!routed.ok) {
+      showResult("save-result", "error", `Saved in the helper, but the extension could not switch to it: ${routed.error.message}`);
+      return;
+    }
+    showResult("save-result", "ok", `Saved. The tutor now uses ${activeLabel(helper.active)}.`);
   }
 
-  function applyView(result) {
-    view = result.settings;
-    selected = view.provider;
-    $("offline").hidden = true;
-    $("form").removeAttribute("data-disabled");
-    $("test").disabled = false;
-    $("save").disabled = false;
-    setConnection(true, `Tutor running: ${activeLabel(result.active)}`);
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+  function forgetKeyActions(runtime) {
+    for (const key of Object.keys(keyAction)) if (key.startsWith(`${runtime}:`)) delete keyAction[key];
+  }
+
+  // ---- loading ------------------------------------------------------------------------
+
+  async function loadHelper() {
+    const res = await rpc("get", {});
+    if (!res.ok) {
+      if (helper === null) helperOffline = res.error.offline || "relay-down";
+      if (catalog) render();
+      return;
     }
+    helper = res.result;
+    helperOffline = null;
     render();
   }
 
   async function load() {
-    const res = await rpc("get", {});
+    const res = await worker("lc-tutor:settings-get");
     if (!res.ok) {
-      if (res.error.offline) setOffline(res.error.offline);
-      else if (!view) setOffline("relay-down");
+      setConnection(false, "Extension error");
+      showResult("save-result", "error", res.error.message);
       return;
     }
-    // Polling only runs while the form is disabled (the tutor was offline), so
-    // re-rendering here cannot clobber anything the user was typing.
-    applyView(res.result);
+    ext = res.result;
+    catalog = ext.catalog;
+    for (const [id, runtime] of Object.entries(ext.settings.runtimes)) runtimeChoice[id] = runtime;
+    selected = ext.settings.provider;
+    const helperFirst = rpc("get", {});
+    if (!selected) {
+      // Nothing chosen yet: show what the helper runs, if one is running;
+      // otherwise a local model, which needs nothing installed.
+      const res2 = await helperFirst;
+      if (res2.ok) {
+        // An existing helper setup, from before the extension could run the
+        // tutor itself: start from exactly what it runs.
+        helper = res2.result;
+        selected = helper.settings.provider;
+        if (runtimesOf(selected).includes("helper")) runtimeChoice[selected] = "helper";
+      } else {
+        helperOffline = res2.error.offline || "relay-down";
+        selected = "local";
+      }
+      render();
+      return;
+    }
+    render();
+    const res2 = await helperFirst;
+    if (res2.ok) {
+      helper = res2.result;
+      helperOffline = null;
+    } else {
+      helperOffline = res2.error.offline || "relay-down";
+    }
+    render();
   }
 
   $("form").addEventListener("submit", save);

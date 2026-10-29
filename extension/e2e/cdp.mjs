@@ -87,6 +87,18 @@ class Page {
     });
   }
 
+  // Makes requests matching `urlPattern` fail as a network error, as if
+  // nothing listened there (a page must never reach a real local relay that
+  // happens to be running on the default port).
+  async failFetch(urlPattern) {
+    this.failedRequests = [];
+    await this.send('Fetch.enable', { patterns: [{ urlPattern }] });
+    this.on('Fetch.requestPaused', async (p) => {
+      this.failedRequests.push({ url: p.request.url, method: p.request.method });
+      await this.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'ConnectionRefused' });
+    });
+  }
+
   send(method, params = {}) {
     const id = this.nextId++;
     this.ws.send(JSON.stringify({ id, method, params }));
@@ -94,7 +106,9 @@ class Page {
   }
 
   async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    // userGesture: a click made this way counts as the user's own, as the
+    // browser requires before it asks for a permission.
+    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: true });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     return r.result.value;
   }
@@ -271,8 +285,26 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
     },
     async close() {
       for (const p of pages) p.close();
+      process.removeListener('exit', reap);
       child.kill('SIGKILL');
       fs.rmSync(profile, { recursive: true, force: true });
     },
   };
+}
+
+// A copy of the extension for a test run, with `extraHosts` added to its
+// host_permissions, so permission checks for stub servers pass without the
+// browser's permission prompt (which a headless browser cannot answer).
+// Returns { dir, cleanup }.
+export function extensionCopy(extensionDir, { extraHosts = [] } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-e2e-extension-'));
+  fs.cpSync(extensionDir, dir, {
+    recursive: true,
+    filter: (src) => !/[\\/](e2e|node_modules|web-ext-artifacts)([\\/]|$)/.test(path.relative(extensionDir, src) ? `/${path.relative(extensionDir, src)}` : ''),
+  });
+  const manifestPath = path.join(dir, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.host_permissions = [...(manifest.host_permissions || []), ...extraHosts];
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }

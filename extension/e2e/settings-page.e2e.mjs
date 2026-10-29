@@ -1,8 +1,18 @@
 // End-to-end check of the extension's options page, running the REAL unpacked
-// extension in Playwright's cached Chromium. The page's calls to the relay
-// (localhost:8135/settings/rpc) are answered by a scripted stand-in for the
-// companion that uses the real settings.js, so the data shapes are the real
-// ones and the assertions are about what the page sends and shows.
+// extension in Playwright's cached Chromium, a fresh browser (and so fresh
+// extension storage) per scenario.
+//
+// Helper runtime: the page's calls to the relay (localhost:8135/settings/rpc)
+// are answered by a scripted stand-in for the companion that uses the real
+// settings.js, so the data shapes are the real ones and the assertions are
+// about what the page sends and shows.
+//
+// Browser runtime: the page talks only to the extension's own background
+// worker, which reaches stub model servers on ephemeral ports; every request
+// to localhost:8135 fails as if no relay ran, so these scenarios prove the
+// relay is not needed. The extension is a copy whose manifest pre-grants
+// 127.0.0.1 and api.anthropic.com, since a headless browser cannot answer the
+// permission prompt (a denied prompt is simulated in the page).
 //
 // The last scenario is live instead: a real companion.js (with a temporary
 // settings file and two stub models) and the real relay it starts on a free
@@ -19,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { launch } from './cdp.mjs';
+import { extensionCopy, launch } from './cdp.mjs';
 import {
   applyPatch,
   emptySettings,
@@ -74,13 +84,18 @@ function companion({ env = {}, stored = emptySettings(), models = ['gpt-oss:20b'
   };
 }
 
-const browser = await launch({ extensionDir });
+const copy = extensionCopy(extensionDir, { extraHosts: ['http://127.0.0.1/*', 'https://api.anthropic.com/*'] });
+let browser = null;
 let failures = 0;
 
+// `mock` answers the relay; null means no relay at all (every request to it
+// fails).
 async function scenario(name, mock, run) {
+  browser = await launch({ extensionDir: copy.dir });
   const page = await browser.openPage('about:blank');
   try {
-    await page.mockFetch('http://localhost:8135/*', mock.handler);
+    if (mock) await page.mockFetch('http://localhost:8135/*', mock.handler);
+    else await page.failFetch('http://localhost:8135/*');
     const nav = await page.send('Page.navigate', { url: `chrome-extension://${browser.extensionId}/settings.html` });
     assert.ok(!nav.errorText, nav.errorText);
     await page.waitFor(`document.readyState === 'complete'`);
@@ -94,6 +109,7 @@ async function scenario(name, mock, run) {
     await page.screenshot(path.join(shots, `FAIL-${name.replace(/\W+/g, '-')}.png`)).catch(() => {});
   } finally {
     page.close();
+    await browser.close();
   }
 }
 
@@ -130,6 +146,7 @@ await scenario('a saved local model fills the form, and "Find models" suggests w
 await scenario('typing an API key tests and saves it, sends only the chosen provider, and never shows it back', companion(), async (page) => {
   const secret = 'sk-ant-TYPED-SECRET-1234567890';
   await page.click('input[name=provider][value=anthropic]');
+  await page.click('#anthropic-runtime-helper');
   await page.type('#anthropic-apiKey', secret);
   assert.equal(await page.eval(`document.getElementById('anthropic-apiKey').type`), 'password');
   await page.click('#test');
@@ -146,6 +163,10 @@ await scenario('typing an API key tests and saves it, sends only the chosen prov
   assert.match(await text(page, '#anthropic-apiKey') + (await page.eval(`document.getElementById('providers').textContent`)), /A key is saved/);
   assert.equal(await page.eval(`document.documentElement.outerHTML.includes(${JSON.stringify(secret)})`), false, 'the key is not in the page');
   assert.equal(await page.eval(`document.getElementById('anthropic-apiKey')`), null, 'the key box is replaced by the saved-key line');
+  // The extension only remembers that this provider runs through the helper.
+  const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+  assert.deepEqual([stored.tutorSettings.provider, stored.tutorSettings.runtimes.anthropic], ['anthropic', 'helper']);
+  assert.equal(JSON.stringify(stored).includes(secret), false, 'a helper key is never stored in the extension');
   await page.screenshot(path.join(shots, 'anthropic-saved-dark.png'), { scheme: 'dark' });
 });
 
@@ -176,7 +197,10 @@ await scenario('environment variables lock their fields and are never sent back 
   assert.equal(await value(page, '#local-model'), 'saved-model', 'the saved value is shown');
   assert.equal(await page.eval(`document.getElementById('local-model').disabled`), true);
   assert.match(await text(page, '#providers'), /Set by COMPANION_MODEL in your environment/);
-  assert.equal(await page.eval(`[...document.querySelectorAll('input[name=provider]')].filter((r) => !r.disabled).map((r) => r.value).join()`), 'local', 'the provider is pinned');
+  // The helper's provider is pinned; the ones that can run in the browser
+  // stay choosable, since the environment only pins the helper.
+  assert.equal(await page.eval(`[...document.querySelectorAll('input[name=provider]')].filter((r) => !r.disabled).map((r) => r.value).join()`), 'local,anthropic,openai', 'the helper provider is pinned');
+  assert.equal(await page.eval(`document.getElementById('local-runtime-helper').checked`), true, 'an existing helper setup stays on the helper');
   assert.equal(await page.eval(`document.getElementById('vaultAutoSummary').disabled`), true);
   await page.click('#save');
   await page.waitFor(SAVE_DONE);
@@ -189,6 +213,7 @@ await scenario('environment variables lock their fields and are never sent back 
 
 await scenario('a refused save shows the reason and focuses the offending field', companion({ saveError: { message: 'model can\'t be empty', field: 'model' } }), async (page) => {
   await page.click('input[name=provider][value=local]');
+  await page.click('#local-runtime-helper');
   await page.click('#save');
   await page.waitFor(SAVE_DONE);
   assert.equal(await text(page, '#save-result'), 'model can\'t be empty');
@@ -219,11 +244,129 @@ for (const [status, pattern, kind] of [
   [404, /older version without settings support/, 'old relay'],
 ]) {
   await scenario(`offline: ${kind}`, companion({ httpStatus: status }), async (page) => {
+    // With no helper, a fresh page starts on a local model in the browser,
+    // which needs no helper: nothing is disabled and no warning shows.
+    assert.equal(await page.eval(`document.querySelector('input[name=provider]:checked').value`), 'local');
+    assert.equal(await page.eval(`document.getElementById('offline').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('save').disabled`), false);
+    await page.click('input[name=provider][value=claude]');
     assert.match(await text(page, '#offline'), pattern);
     assert.equal(await page.eval(`document.getElementById('save').disabled`), true);
     assert.equal(await page.eval(`document.getElementById('form').hasAttribute('data-disabled')`), true);
     await page.screenshot(path.join(shots, `offline-${status}-dark.png`), { scheme: 'dark' });
   });
+}
+
+// ---- browser runtime: the worker runs the tutor, no relay ---------------------
+
+// An OpenAI-compatible stub (Ollama-style /api/tags too) on an ephemeral port.
+// `status` makes chat requests fail with that HTTP status.
+function stubServer({ status = 200 } = {}) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      requests.push({ method: req.method, url: req.url, origin: req.headers.origin, body: body ? JSON.parse(body) : null });
+      if (req.url === '/api/tags') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return void res.end(JSON.stringify({ models: [{ name: 'qwen3:8b' }, { name: 'gemma4:26b' }] }));
+      }
+      if (!/\/chat\/completions$/.test(req.url)) return void res.writeHead(404).end();
+      if (status !== 200) return void res.writeHead(status, { 'Content-Type': 'text/plain' }).end('Forbidden');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] }));
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}/v1` })));
+}
+
+{
+  const model = await stubServer();
+  await scenario('browser runtime: with no helper, a local model is set up, tested and saved without the relay', null, async (page) => {
+    assert.equal(await page.eval(`document.querySelector('input[name=provider]:checked').value`), 'local');
+    assert.equal(await page.eval(`document.getElementById('local-runtime-extension').checked`), true);
+    assert.equal(await text(page, '#connection-text'), 'Not set up');
+    assert.equal(await page.eval(`document.getElementById('offline').hidden`), true, 'no helper warning');
+    assert.match(await text(page, '#providers'), /OLLAMA_ORIGINS=chrome-extension:\/\//);
+    assert.match(await text(page, '#foot'), /extension storage/);
+    await page.type('#local-baseUrl', model.url);
+    await page.click('#local-find');
+    await page.waitFor(`document.querySelectorAll('#local-models option').length === 2`, { what: 'model suggestions from the stub' });
+    await page.type('#local-model', 'qwen3:8b');
+    await page.click('#test');
+    await page.waitFor(`document.getElementById('test-result').textContent.includes('Connected')`, { what: 'the connection test', timeout: 20000 });
+    assert.equal(await page.eval(`document.getElementById('test-result').getAttribute('data-kind')`), 'ok');
+    const chat = model.requests.find((r) => /chat\/completions$/.test(r.url));
+    assert.equal(chat.body.model, 'qwen3:8b');
+    assert.match(chat.origin, /^chrome-extension:\/\//, 'the worker itself made the request');
+    await page.click('#save');
+    await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save' });
+    assert.equal(await text(page, '#save-result'), 'Saved. The tutor now runs in the browser with Local model, qwen3:8b.');
+    assert.equal(await text(page, '#connection-text'), 'Tutor running in the browser: Local model, qwen3:8b');
+    const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+    assert.deepEqual([stored.tutorSettings.provider, stored.tutorSettings.runtimes.local, stored.tutorSettings.providers.local.model], ['local', 'extension', 'qwen3:8b']);
+    assert.ok(page.failedRequests.length > 0, 'the page did look for a helper');
+    assert.ok(page.failedRequests.every((r) => /\/settings\/rpc$/.test(r.url)), 'and only asked it for settings');
+    await page.screenshot(path.join(shots, 'browser-local-dark.png'), { scheme: 'dark' });
+    await page.screenshot(path.join(shots, 'browser-local-light.png'), { scheme: 'light' });
+  });
+  model.server.close();
+}
+
+await scenario('browser runtime: an Anthropic key is saved in extension storage only, and never shown back', null, async (page) => {
+  const secret = 'sk-ant-BROWSER-SECRET-0987654321';
+  await page.click('input[name=provider][value=anthropic]');
+  assert.equal(await page.eval(`document.getElementById('anthropic-runtime-extension').checked`), true);
+  await page.type('#anthropic-apiKey', secret);
+  await page.click('#save');
+  await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save' });
+  assert.match(await text(page, '#save-result'), /Anthropic API key, claude-opus-5-5/);
+  assert.match(await text(page, '#providers'), /A key is saved/);
+  assert.equal(await page.eval(`document.documentElement.outerHTML.includes(${JSON.stringify(secret)})`), false, 'the key is not in the page');
+  const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+  assert.equal(stored.tutorSecrets.anthropic, secret, 'the key is in the extension storage');
+  assert.equal(JSON.stringify(stored.tutorSettings).includes(secret), false, 'and not in the settings record');
+  // Reloading the page gets only hasKey back.
+  await page.send('Page.reload');
+  await page.waitFor(`document.getElementById('connection-text').textContent.startsWith('Tutor running in the browser')`, { what: 'the reload' });
+  assert.equal(await page.eval(`document.documentElement.outerHTML.includes(${JSON.stringify(secret)})`), false);
+  // Remove it again.
+  await page.eval(`[...document.querySelectorAll('.linkbtn')].find((b) => b.textContent === 'Remove').click()`);
+  await page.click('#save');
+  await page.waitFor(SAVE_DONE);
+  assert.equal(await page.eval(`document.getElementById('save-result').getAttribute('data-kind')`), 'error', 'the provider needs a key');
+  assert.match(await text(page, '#save-result'), /needs an API key/);
+  await page.screenshot(path.join(shots, 'browser-anthropic-dark.png'), { scheme: 'dark' });
+});
+
+await scenario('browser runtime: a denied permission prompt says what happened and saves nothing', null, async (page) => {
+  await page.eval(`chrome.permissions.request = () => Promise.resolve(false)`);
+  await page.type('#local-baseUrl', 'http://192.0.2.10:11434/v1');
+  await page.type('#local-model', 'llama3.2');
+  await page.click('#save');
+  await page.waitFor(SAVE_DONE);
+  assert.equal(await page.eval(`document.getElementById('save-result').getAttribute('data-kind')`), 'error');
+  assert.equal(await text(page, '#save-result'), 'The browser did not allow the extension to reach http://192.0.2.10, so the tutor can\'t use it. Press the button again and choose Allow.');
+  const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+  assert.equal(stored.tutorSettings, undefined, 'nothing was saved');
+  await page.click('#test');
+  await page.waitFor(`document.getElementById('test-result').getAttribute('data-kind') === 'error'`);
+  assert.match(await text(page, '#test-result'), /did not allow/);
+});
+
+{
+  const model = await stubServer({ status: 403 });
+  await scenario('browser runtime: an Ollama that refuses the extension (403) gets the OLLAMA_ORIGINS fix in the test result', null, async (page) => {
+    await page.type('#local-baseUrl', model.url);
+    await page.type('#local-model', 'llama3.2');
+    await page.click('#test');
+    await page.waitFor(`document.getElementById('test-result').getAttribute('data-kind') === 'error'`, { what: 'the failed test', timeout: 20000 });
+    const result = await text(page, '#test-result');
+    assert.match(result, /refused the request \(403\)/);
+    assert.match(result, new RegExp(`OLLAMA_ORIGINS=chrome-extension://${browser.extensionId}`));
+  });
+  model.server.close();
 }
 
 // ---- live: the real relay and companion ------------------------------------------
@@ -282,6 +425,7 @@ async function liveScenario(name, run) {
   child.stdout.on('data', (c) => (out += c));
   child.stderr.on('data', (c) => (out += c));
   const exited = new Promise((resolve) => child.on('exit', resolve));
+  browser = await launch({ extensionDir: copy.dir });
   const page = await browser.openPage('about:blank');
   try {
     const deadline = Date.now() + 15000;
@@ -302,6 +446,7 @@ async function liveScenario(name, run) {
     await page.screenshot(path.join(shots, `FAIL-${name.replace(/\W+/g, '-')}.png`)).catch(() => {});
   } finally {
     page.close();
+    await browser.close();
     child.kill();
     await exited;
     modelA.server.close();
@@ -337,6 +482,6 @@ await liveScenario('live: the page reads, tests and saves through the real relay
   await page.screenshot(path.join(shots, 'live-saved-dark.png'), { scheme: 'dark' });
 });
 
-await browser.close();
+copy.cleanup();
 console.log(failures ? `\n${failures} scenario(s) FAILED` : `\nall scenarios passed; screenshots in ${shots}`);
 process.exit(failures ? 1 : 0);
