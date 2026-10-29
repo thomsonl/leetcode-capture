@@ -280,6 +280,47 @@ test("a reply interrupted by a relay restart comes back to life if its companion
   assert.deepEqual([turn.interrupted, turn.pending, turn.text], [false, false, "done"]);
 });
 
+test("a turn-end the relay sends for a companion that exited mid-reply marks the reply interrupted", () => {
+  const state = createState();
+  applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "a", seq: 1, epoch: "e1" });
+  applyEvent(state, { type: "chunk", turnId: "t1", text: "Half", seq: 2, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "t2", problemSlug: "a", seq: 3, epoch: "e1" });
+  const [cut, empty] = itemsFor(state, "a");
+  assert.equal(applyEvent(state, { type: "turn-end", turnId: "t1", problemSlug: "a", text: "Half", interrupted: true, seq: 4, epoch: "e1" }), "a");
+  applyEvent(state, { type: "turn-end", turnId: "t2", problemSlug: "a", text: "", interrupted: true, seq: 5, epoch: "e1" });
+  assert.deepEqual([cut.pending, cut.interrupted, cut.text, cut.error], [false, true, "Half", null]);
+  // Cut before its first chunk: no typing dots left, just the note.
+  assert.deepEqual([empty.pending, empty.interrupted, empty.text], [false, true, ""]);
+  // A tab that joins later and only sees the end gets the same result.
+  const late = createState();
+  applyEvent(late, { type: "turn-end", turnId: "t1", problemSlug: "a", text: "Half", interrupted: true, seq: 4, epoch: "e1" });
+  assert.deepEqual([itemsFor(late, "a")[0].pending, itemsFor(late, "a")[0].interrupted], [false, true]);
+});
+
+test("the companion going offline interrupts replies still streaming, even from a relay that does not end them", () => {
+  const state = createState();
+  applyEvent(state, { type: "status", companionOnline: true, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "a", seq: 1, epoch: "e1" });
+  applyEvent(state, { type: "chunk", turnId: "t1", text: "Half", seq: 2, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "t2", problemSlug: "b", seq: 3, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "t3", problemSlug: "b", seq: 4, epoch: "e1" });
+  applyEvent(state, { type: "turn-end", turnId: "t3", problemSlug: "b", text: "done", seq: 5, epoch: "e1" });
+  const turn = itemsFor(state, "a")[0];
+  const revBefore = turn.rev;
+  // Every transcript can change, so the whole feed is redrawn.
+  assert.equal(applyEvent(state, { type: "status", companionOnline: false, epoch: "e1" }), RESTARTED);
+  assert.deepEqual([turn.pending, turn.interrupted, turn.text], [false, true, "Half"]);
+  assert.ok(turn.rev > revBefore);
+  assert.deepEqual(itemsFor(state, "b").map((i) => [i.pending, i.interrupted]), [[false, true], [false, false]]);
+  // Unlike a relay restart, no "Session restarted" divider: the relay did not restart.
+  assert.equal(itemsFor(state, "a").filter((i) => i.kind === "notice").length, 0);
+  // Nothing pending: an offline status changes nothing.
+  assert.equal(applyEvent(state, { type: "status", companionOnline: false, epoch: "e1" }), null);
+  // A companion that comes back and keeps streaming the turn revives it.
+  applyEvent(state, { type: "chunk", turnId: "t1", text: " more", seq: 6, epoch: "e1" });
+  assert.deepEqual([turn.pending, turn.interrupted], [true, false]);
+});
+
 test("every change to a tutor item bumps its revision", () => {
   const state = createState();
   applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "a", seq: 1 });

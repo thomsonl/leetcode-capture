@@ -543,3 +543,76 @@ test('end to end: switching problems in the panel tracks what the tutor has real
   const started = new Set(events.filter((e) => e.type === 'turn-start').map((e) => e.turnId));
   assert.ok(events.filter((e) => e.type === 'chunk').every((e) => started.has(e.turnId)));
 });
+
+// ---- the companion exiting mid-reply, with a relay it did not start ---------
+//
+// The relay outlives the companion here (started separately, as when the
+// student runs it themselves), so no epoch change rescues the panel: before
+// the relay closed open turns, the cut reply stayed "typing" forever and was
+// replayed that way to every tab opened later.
+
+test('end to end: a companion killed mid-reply leaves the reply interrupted, not typing', async (t) => {
+  const PORT = 18198;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-panel-exit-'));
+  // A model that streams the first half of its reply, then never finishes.
+  const model = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Half of a reply' } }] })}\n\n`);
+    });
+  });
+  await new Promise((resolve) => model.listen(0, '127.0.0.1', resolve));
+
+  const relay = spawn(process.execPath, [path.join(__dirname, '..', 'relay-server', 'server.js')], {
+    env: { ...process.env, CAPTURE_PORT: String(PORT), CAPTURE_LOG_PATH: path.join(scratch, 'relay-captures.jsonl') },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const relayExited = new Promise((resolve) => relay.on('exit', resolve));
+  let relayOut = '';
+  relay.stdout.on('data', (c) => (relayOut += c));
+  await until(() => relayOut.includes('listening'), 5000, 'the relay to listen');
+
+  const companion = spawnCompanion({ port: PORT, modelPort: model.address().port, scratch });
+  const companionExited = new Promise((resolve) => companion.child.on('exit', resolve));
+  const panel = connectPanel(PORT);
+  const panels = [panel];
+  t.after(async () => {
+    for (const p of panels) p.close();
+    if (companion.child.exitCode === null && companion.child.signalCode === null) {
+      companion.child.kill('SIGKILL');
+      await companionExited;
+    }
+    relay.kill();
+    await relayExited;
+    model.closeAllConnections();
+    model.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  await until(() => panel.events.some((e) => e.type === 'status' && e.companionOnline), 10000, 'companion online');
+  assert.equal(await panel.sendMessage('any hints?', 'two-sum'), 202);
+  await until(() => panel.events.some((e) => e.type === 'chunk' && e.text === 'Half of a reply'), 10000, 'the first half of the reply');
+  const turnId = panel.events.find((e) => e.type === 'turn-start').turnId;
+
+  // A crash: no exit handlers, no last words.
+  companion.child.kill('SIGKILL');
+  await companionExited;
+
+  await until(() => panel.events.filter((e) => e.type === 'status').pop().companionOnline === false, 5000, 'companion offline');
+  const end = panel.events.find((e) => e.type === 'turn-end' && e.turnId === turnId);
+  assert.ok(end, `the cut reply never got a turn-end: ${JSON.stringify(panel.events)}`);
+  assert.deepEqual([end.interrupted, end.text, end.problemSlug], [true, 'Half of a reply', 'two-sum']);
+
+  // A tab opened afterwards is told the same.
+  const late = connectPanel(PORT);
+  panels.push(late);
+  await until(() => late.events.some((e) => e.type === 'status'), 5000, 'the late tab to catch up');
+  assert.deepEqual(
+    late.events.filter((e) => e.turnId === turnId).map((e) => [e.type, e.interrupted === true]),
+    [
+      ['turn-start', false],
+      ['turn-end', true],
+    ]
+  );
+});

@@ -334,6 +334,44 @@ try {
     await page.screenshot(path.join(SHOTS, '04-restart.png'), { width: 1100, height: 760 });
   });
 
+  await scenario('the companion exiting mid-reply: a cut reply and a not-yet-started one stop typing and say so', async () => {
+    const NOTE = 'The tutor stopped before this reply finished.';
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'cut', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'cut', text: 'Half of a' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'never', problemSlug: 'two-sum' })`);
+    await settle();
+    check(await page.eval(`window.__qa('.dots').length === 1`), 'the not-yet-started reply shows no typing indicator');
+    const notesBefore = await page.eval(`window.__qa('.tutor .note').length`);
+    // What the relay sends when the last companion leaves: a turn-end marked
+    // interrupted for each open reply, then the offline status.
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'cut', problemSlug: 'two-sum', text: 'Half of a', interrupted: true })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'never', problemSlug: 'two-sum', text: '', interrupted: true })`);
+    await page.eval(`window.__event({ type: 'status', companionOnline: false, epoch: 'e2' })`);
+    await settle();
+    const m = await page.eval(`({
+      dots: window.__qa('.dots').length,
+      notes: window.__qa('.tutor .note').map((n) => n.textContent),
+      cut: window.__qa('.tutor').at(-2).textContent,
+      status: window.__q('.status span').textContent,
+    })`);
+    check(m.dots === 0, 'a reply cut off by the companion exiting still shows the typing indicator');
+    check(m.notes.length === notesBefore + 2 && m.notes.slice(-2).every((n) => n === NOTE), `notes: ${JSON.stringify(m.notes)}`);
+    check(m.cut === `Half of a${NOTE}`, `cut reply: ${m.cut}`);
+    check(m.status === 'Tutor offline', m.status);
+    // An older relay sends no turn-end: the offline status alone does it.
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e2' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'old-relay', problemSlug: 'two-sum' })`);
+    await settle();
+    await page.eval(`window.__event({ type: 'status', companionOnline: false, epoch: 'e2' })`);
+    await settle();
+    check(await page.eval(`window.__qa('.dots').length === 0 && window.__qa('.tutor').at(-1).textContent === ${JSON.stringify(NOTE)}`), 'offline status did not interrupt the pending reply');
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await settle();
+    await page.screenshot(path.join(SHOTS, '05-companion-exit.png'), { width: 1100, height: 760 });
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e2' })`);
+    await settle();
+  });
+
   await scenario('switching problems shows the other transcript, and coming back reuses the old nodes', async () => {
     await page.eval(`window.__q('.tutor p').__marker = 'kept'`);
     await page.eval(`history.pushState(null, '', '/problems/valid-parentheses/description/')`);

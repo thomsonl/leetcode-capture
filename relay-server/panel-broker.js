@@ -62,6 +62,7 @@ const MAX_PUBLISH_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 200_000;
 const MAX_MESSAGE_CHARS = 8000;
 const MAX_PANEL_STREAMS = 20;
+const MAX_OPEN_TURNS = 100;
 const HEARTBEAT_MS = 15_000;
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/i;
@@ -146,6 +147,16 @@ function createPanelBroker({ port }) {
   const panelClients = new Set(); // SSE responses for panels
   const consumers = new Set(); // SSE responses for companions (inbox)
   let nextMessageId = 1;
+  // Replies that have started but not ended, with the text streamed so far:
+  // turnId -> { problemSlug, text, closed }. The companion ends every turn it
+  // finishes, but a companion that exits mid-reply (Ctrl+C, a crash, the
+  // terminal closed) never sends that end, and the panel would show the
+  // reply as still typing forever, in every tab opened later too. When the
+  // last companion's inbox stream goes away (and after any publish that
+  // arrives while none is connected), closeOpenTurns ends each of them as
+  // interrupted. `closed` marks one ended that way, so a companion that only
+  // lost its stream and keeps streaming the same turn reopens it.
+  const openTurns = new Map();
 
   function corsHeaders(req) {
     // Only ever echoed for the one allowed origin; a request with no Origin
@@ -181,7 +192,37 @@ function createPanelBroker({ port }) {
     for (const res of panelClients) sseWrite(res, { data: statusEvent() });
   }
 
-  function addEvent(event) {
+  function trackTurn(event) {
+    if (!event.turnId) return;
+    if (event.type === "turn-start") {
+      openTurns.delete(event.turnId);
+      openTurns.set(event.turnId, { problemSlug: event.problemSlug, text: "", closed: false });
+      // A companion that never ends its turns must not grow this forever.
+      if (openTurns.size > MAX_OPEN_TURNS) openTurns.delete(openTurns.keys().next().value);
+    } else if (event.type === "chunk") {
+      const turn = openTurns.get(event.turnId);
+      if (!turn) return;
+      turn.closed = false;
+      if (event.text && turn.text.length < MAX_TEXT_CHARS) turn.text = (turn.text + event.text).slice(0, MAX_TEXT_CHARS);
+    } else if (event.type === "turn-end") {
+      openTurns.delete(event.turnId);
+    }
+  }
+
+  // Ends every reply still streaming as interrupted, with the text it got
+  // so far (a turn-end replaces its chunks in the buffer, see addEvent). The
+  // panel shows the same "did not finish" note it uses for a relay restart.
+  function closeOpenTurns() {
+    for (const [turnId, turn] of openTurns) {
+      if (turn.closed) continue;
+      turn.closed = true;
+      const stored = { type: "turn-end", turnId, problemSlug: turn.problemSlug, text: turn.text, interrupted: true };
+      addEvent(stored, { track: false });
+    }
+  }
+
+  function addEvent(event, { track = true } = {}) {
+    if (track) trackTurn(event);
     const stored = { ...event, seq: nextSeq++, epoch };
     // A turn-end carries the turn's full authoritative text, so the chunks
     // that led up to it are dead weight for anyone replaying the buffer.
@@ -313,6 +354,7 @@ function createPanelBroker({ port }) {
     if (route === "GET /panel/inbox") {
       openStream(req, res, () => {
         consumers.delete(res);
+        if (consumers.size === 0) closeOpenTurns();
         broadcastStatus();
       });
       consumers.add(res);
@@ -347,7 +389,13 @@ function createPanelBroker({ port }) {
           sendJson(req, res, 400, { error: "invalid event" });
           return;
         }
-        const stored = clean.map(addEvent);
+        const stored = clean.map((event) => addEvent(event));
+        // A publish can land after the companion's inbox stream closed: a
+        // companion that exits sends its last batch and drops its stream at
+        // the same moment, in either order. With no companion connected
+        // nothing will end what this batch started or continued, so it is
+        // closed again right away.
+        if (consumers.size === 0) closeOpenTurns();
         sendJson(req, res, 200, { ok: true, lastSeq: stored[stored.length - 1].seq });
       });
       return true;

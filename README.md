@@ -60,6 +60,7 @@ When you come back to a problem you already ran code for in this session, the tu
 A message you type in the terminal before your first Run or Submit stays in the terminal, since it belongs to no problem's transcript yet.
 If the companion isn't running, the tab says so instead of failing silently.
 If the relay restarts, the tab marks the break with "Session restarted" and carries on with the new session.
+If the companion quits in the middle of a reply (Ctrl+C, a crash, its terminal closed), that reply stops typing and says the tutor stopped before it finished, in every open tab and in any tab opened later.
 Set `COMPANION_PANEL=0` to turn the bridge off.
 
 The first time the page talks to the relay, Chrome may ask whether leetcode.com can connect to devices on your local network.

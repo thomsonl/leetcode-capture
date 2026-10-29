@@ -513,3 +513,77 @@ test("a web page cannot fill the panel-stream cap with requests it cannot read",
   assert.equal(noCorsPost.status, 403);
   for (const s of [...held, panel, inbox]) s.close();
 });
+
+test("when the last companion leaves, its unfinished replies are closed as interrupted", async (t) => {
+  const port = PORT + 6;
+  await startServer(t, port);
+  const publish = (events) => request({ port, method: "POST", route: "/panel/publish", headers: COMPANION, body: { events } });
+  const inbox = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  assert.equal((await inbox.ready()).statusCode, 200);
+  await publish([
+    { type: "turn-start", turnId: "t-done", problemSlug: "two-sum" },
+    { type: "chunk", turnId: "t-done", text: "All " },
+    { type: "turn-end", turnId: "t-done", problemSlug: "two-sum", text: "All done." },
+    // Cut off mid-reply, and cut off before its first chunk.
+    { type: "turn-start", turnId: "t-half", problemSlug: "two-sum" },
+    { type: "chunk", turnId: "t-half", text: "Half " },
+    { type: "chunk", turnId: "t-half", text: "a reply" },
+    { type: "turn-start", turnId: "t-none", problemSlug: "valid-parentheses" },
+  ]);
+  const panel = openSse({ port, route: "/panel/events", headers: { origin: LEETCODE } });
+  await panel.waitFor((e) => e.some((x) => x.type === "status" && x.companionOnline === true));
+
+  // The companion exits without sending a turn-end (its process is gone).
+  inbox.close();
+  const live = await panel.waitFor((e) => e.filter((x) => x.type === "status").pop().companionOnline === false);
+  const ends = live.filter((x) => x.type === "turn-end" && x.interrupted === true);
+  assert.deepEqual(
+    ends.map((x) => [x.turnId, x.problemSlug, x.text]),
+    [
+      ["t-half", "two-sum", "Half a reply"],
+      ["t-none", "valid-parentheses", ""],
+    ]
+  );
+  // They arrive before the offline status, and a finished turn is left alone.
+  assert.ok(live.indexOf(ends[1]) < live.lastIndexOf(live.filter((x) => x.type === "status").pop()));
+  assert.equal(live.filter((x) => x.turnId === "t-done" && x.type === "turn-end").length, 1);
+  panel.close();
+
+  // A tab opened later is not shown a reply that is still "typing".
+  const late = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+  const replay = await late.waitFor((e) => e.some((x) => x.type === "status"));
+  for (const turnId of ["t-half", "t-none"]) {
+    const mine = replay.filter((x) => x.turnId === turnId);
+    assert.deepEqual(mine.map((x) => x.type), ["turn-start", "turn-end"], turnId);
+    assert.equal(mine[1].interrupted, true);
+  }
+  late.close();
+
+  // The companion's last batch can land after its stream closed; nothing
+  // will end that turn either, so it is closed at once.
+  await publish([
+    { type: "turn-start", turnId: "t-race", problemSlug: "two-sum" },
+    { type: "chunk", turnId: "t-race", text: "Last words" },
+  ]);
+  const raced = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+  const racedReplay = await raced.waitFor((e) => e.some((x) => x.type === "status"));
+  const raceEnd = racedReplay.filter((x) => x.turnId === "t-race").pop();
+  assert.deepEqual([raceEnd.type, raceEnd.text, raceEnd.interrupted], ["turn-end", "Last words", true]);
+  raced.close();
+
+  // A companion that comes back and finishes the same turn (it only lost its
+  // inbox stream) still ends it normally, and is not closed a second time.
+  const back = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await back.ready();
+  await publish([
+    { type: "chunk", turnId: "t-half", text: " finished" },
+    { type: "turn-end", turnId: "t-half", problemSlug: "two-sum", text: "Half a reply finished" },
+  ]);
+  back.close();
+  const after = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+  const final = await after.waitFor((e) => e.filter((x) => x.type === "status").length > 0);
+  const half = final.filter((x) => x.turnId === "t-half" && x.type === "turn-end");
+  assert.equal(half.at(-1).text, "Half a reply finished");
+  assert.equal(half.at(-1).interrupted, undefined);
+  after.close();
+});

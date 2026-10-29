@@ -125,16 +125,10 @@
   // changed.
   function restartSession(state) {
     state.lastSeq = 0;
+    interruptPending(state);
     let changed = false;
     for (const [slug, items] of state.byProblem) {
       if (!items.length) continue;
-      for (const item of items) {
-        if (item.kind === "tutor" && item.pending) {
-          item.pending = false;
-          item.interrupted = true;
-          touch(item);
-        }
-      }
       if (items[items.length - 1].kind !== "notice" || items[items.length - 1].restart !== true) {
         pushItem(state, slug, { kind: "notice", text: "Session restarted", restart: true });
       }
@@ -143,10 +137,28 @@
     return changed;
   }
 
+  // Every reply still streaming will never get its end: it stops showing
+  // the typing indicator and says it did not finish. Returns true if any
+  // reply changed.
+  function interruptPending(state) {
+    let changed = false;
+    for (const items of state.byProblem.values()) {
+      for (const item of items) {
+        if (item.kind === "tutor" && item.pending) {
+          item.pending = false;
+          item.interrupted = true;
+          touch(item);
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
   // Applies one relay event. Returns the problem slug whose transcript it
   // changed (or null), so the caller only touches the feed when that problem
-  // is on screen. Returns RESTARTED when the relay's epoch changed, which can
-  // touch every transcript.
+  // is on screen. Returns RESTARTED when the change can touch every
+  // transcript: the relay's epoch changed, or the companion went offline.
   const RESTARTED = "\u0000restarted";
   function applyEvent(state, event) {
     // Checked per event, not only on status: a reconnect replays the buffer
@@ -164,6 +176,11 @@
   function applyEventInEpoch(state, event) {
     if (event.type === "status") {
       state.companionOnline = Boolean(event.companionOnline);
+      // The companion left (it exited, crashed, or its terminal closed), so
+      // nothing will end a reply it was still streaming. The relay ends
+      // those itself (a turn-end marked interrupted, see panel-broker.js's
+      // closeOpenTurns); this covers a relay started before it did.
+      if (!state.companionOnline && interruptPending(state)) return RESTARTED;
       return null;
     }
     // Replays after a reconnect can overlap what we already have.
@@ -196,8 +213,9 @@
         const turn = findTurn(state, event.turnId);
         if (!turn) return null;
         turn.text += event.text || "";
-        // A reply marked interrupted by a relay restart that keeps streaming
-        // (the companion outlived the relay) is alive after all.
+        // A reply marked interrupted that keeps streaming (the companion
+        // outlived the relay, or only lost its inbox stream) is alive after
+        // all.
         if (turn.interrupted) {
           turn.interrupted = false;
           turn.pending = true;
@@ -216,7 +234,9 @@
         if (typeof event.text === "string") turn.text = event.text;
         turn.error = event.error || null;
         turn.pending = false;
-        turn.interrupted = false;
+        // The relay ends a reply this way when its companion went away
+        // before finishing it.
+        turn.interrupted = event.interrupted === true;
         touch(turn);
         return state.turnProblem.get(event.turnId);
       }
@@ -1092,6 +1112,7 @@
   // form is unchanged keep their nodes, and only the first changed block
   // onward is rebuilt, which while streaming is normally just the last one.
 
+  const INTERRUPTED_NOTE = "The tutor stopped before this reply finished.";
   const nodeCache = new WeakMap(); // item -> { node, rev, blocks: [{ key, node }], tail: [] }
   let emptyNode = null;
   let feedDirty = true; // the on-screen transcript changed since the last feed render
@@ -1125,7 +1146,9 @@
       entry.blocks.push({ key: keys[k], node });
     }
     if (item.error) entry.tail.push(el("p", "err", item.error));
-    if (item.interrupted) entry.tail.push(el("p", "note", "The session restarted before this reply finished."));
+    // One note for every way a reply can be cut off: the relay restarted, or
+    // the companion went away mid-reply.
+    if (item.interrupted) entry.tail.push(el("p", "note", INTERRUPTED_NOTE));
     if (item.pending && !item.text) {
       const dots = el("div", "dots");
       for (let i = 0; i < 3; i += 1) dots.appendChild(document.createElement("i"));
