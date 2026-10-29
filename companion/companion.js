@@ -216,6 +216,16 @@ const LOCAL_RESERVE_TOKENS = Number(process.env.COMPANION_LOCAL_RESERVE_TOKENS |
 // messages typed there. On by default; COMPANION_PANEL=0 turns the bridge off
 // and leaves the terminal chat exactly as it was. See panel-bridge.js.
 const PANEL_ENABLED = !/^(0|false|no)$/i.test(process.env.COMPANION_PANEL || '');
+// Run by the Native Messaging helper (helper/host.js) instead of from a
+// terminal: stdin is the helper's pipe (it writes commands such as /reset,
+// and closing it is the signal to quit), output goes to the helper's log
+// file, and the helper owns the relay. A closed terminal's SIGHUP does not
+// apply; the helper ends this process with SIGTERM or by closing stdin.
+const HEADLESS = /^(1|true|yes)$/i.test(process.env.COMPANION_HEADLESS || '');
+// With nothing heard from the relay (so no panel and no extension behind
+// it) for this long, quit on our own, so a browser or helper that vanished
+// cannot leave this process behind. Headless only by default; 0 turns it off.
+const IDLE_EXIT_MS = Number(process.env.COMPANION_IDLE_EXIT_MS ?? (HEADLESS ? 3 * 60 * 1000 : 0)) || 0;
 
 const { vaultPath: VAULT_PATH, algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER } = resolveVaultConfig();
 // Fail loudly at startup, not on the first Submit - a wrong or unset vault
@@ -485,6 +495,12 @@ async function isRelayServerUp() {
 
 async function ensureRelayServer() {
   if (await isRelayServerUp()) return;
+  // The helper starts the relay before this process and stops it after, so a
+  // relay started from here would outlive both.
+  if (HEADLESS) {
+    printBanner(dim(`companion: warning: the relay is not answering on http://${RELAY_HOST}:${RELAY_PORT}`), console.error);
+    return;
+  }
 
   // Pass the environment through unchanged: if Thomson set CAPTURE_PORT or
   // CAPTURE_LOG_PATH for this companion invocation, server.js reads those
@@ -634,6 +650,16 @@ function activateProblem(problemId, slug) {
   );
   panelPublish({ type: 'notice', problemSlug: slug || null, text: 'New problem detected. Started a fresh tutor session.' });
   return result;
+}
+
+// `/reset` (typed, or written by the helper when the active problem's tab
+// stayed closed for its grace period): the tutor forgets the conversation and
+// the code it held, so the next message starts fresh with the full code. The
+// relay, the panel feed and the process itself stay as they are.
+function resetTutorContext() {
+  backend.resetContext();
+  ledger.forgetHeld();
+  printAboveInput(consumeTurnBoundary() + dim('companion: tutor context cleared'));
 }
 
 // --- vault auto-summary (VAULT_AUTO_SUMMARY) --------------------------------
@@ -1303,6 +1329,10 @@ rl.on('line', (line) => {
     rl.close();
     return;
   }
+  if (text === '/reset') {
+    queueTurn(async () => resetTutorContext()).catch(() => {});
+    return;
+  }
   // Readline's own echo already put this line on screen (that's what was
   // just committed to permanent scrollback, above) - this is purely for
   // history/showHistory's benefit, since readline's echo never goes
@@ -1715,8 +1745,13 @@ async function pollLoop() {
 // for it ends the process without running 'exit' handlers, which left the
 // relay server this companion started running (and holding its port) after
 // the window was gone.
+// Run by the helper, there is no terminal to close: SIGHUP is ignored, and
+// the helper's SIGTERM or closed stdin ends this process.
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => rl.close());
+  process.on(sig, () => {
+    if (sig === 'SIGHUP' && HEADLESS) return;
+    rl.close();
+  });
 }
 
 // --- mouse-wheel scrollback viewport ------------------------------------
@@ -1971,6 +2006,16 @@ const settingsRpc = createSettingsRpc({
   validateVault: () => validateVaultPath(VAULT_PATH),
 });
 
+// For the idle exit: whether the panel bridge's inbox stream to the relay is
+// up, and when it last was.
+let relayConnected = false;
+let relayLastSeen = Date.now();
+function noteRelayState(state) {
+  if (relayConnected) relayLastSeen = Date.now();
+  relayConnected = state === 'connected';
+  if (relayConnected) relayLastSeen = Date.now();
+}
+
 await ensureRelayServer();
 
 if (PANEL_ENABLED) {
@@ -1980,6 +2025,7 @@ if (PANEL_ENABLED) {
     onMessage: handlePanelMessage,
     onRpc: (method, params) => settingsRpc.handle(method, params),
     onState: (state) => {
+      noteRelayState(state);
       if (state === 'connected' && !announced) {
         announced = true;
         printAboveInput(dim('companion: in-page panel connected (the Tutor tab on leetcode.com)'));
@@ -1992,6 +2038,13 @@ if (PANEL_ENABLED) {
   });
   panelBridge.start();
   publishConfig();
+  if (IDLE_EXIT_MS > 0) {
+    setInterval(() => {
+      if (relayConnected || Date.now() - relayLastSeen < IDLE_EXIT_MS) return;
+      printAboveInput(dim(`companion: nothing heard from the relay for ${Math.round(IDLE_EXIT_MS / 1000)} s, exiting`));
+      rl.close();
+    }, Math.min(IDLE_EXIT_MS, 10000)).unref();
+  }
   process.on('exit', () => panelBridge.stop());
 }
 

@@ -11,7 +11,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { createPanelBroker } = require("./panel-broker");
+const { createPanelBroker, companionOnlyRejection } = require("./panel-broker");
 
 const HOST = "127.0.0.1";
 const PORT = process.env.CAPTURE_PORT ? Number(process.env.CAPTURE_PORT) : 8135;
@@ -139,7 +139,26 @@ const CORS_HEADERS = {
 // /capture handling below.
 const panelBroker = createPanelBroker({ port: PORT, captureLog: { path: LOG_PATH, trim: trimCaptureLog } });
 
+// Run by the Native Messaging helper (helper/host.js), the relay quits on its
+// own when nothing has been heard for RELAY_IDLE_EXIT_MS, so a browser or
+// helper that vanished cannot leave it holding the port. Heard means a
+// request from anything but the companion (a panel, a capture, the options
+// page), an open panel stream, or the helper's POST /helper/keepalive, which
+// the helper sends while the extension keeps talking to it. Off (0) unless
+// set, so a relay started by hand runs until stopped.
+const IDLE_EXIT_MS = Number(process.env.RELAY_IDLE_EXIT_MS) || 0;
+let lastHeard = Date.now();
+
 const server = http.createServer((req, res) => {
+  if (req.headers["x-lc-companion"] === undefined) lastHeard = Date.now();
+  if (req.method === "POST" && req.url === "/helper/keepalive") {
+    const rejection = companionOnlyRejection(req);
+    res.writeHead(rejection ? 403 : 204, { "Content-Type": "application/json" });
+    if (!rejection) lastHeard = Date.now();
+    res.end(rejection ? JSON.stringify({ error: rejection }) : undefined);
+    req.resume();
+    return;
+  }
   if (panelBroker.handle(req, res)) return;
 
   if (req.method === "OPTIONS" && req.url === "/capture") {
@@ -198,6 +217,23 @@ const server = http.createServer((req, res) => {
 });
 
 loadExistingSequences();
+
+if (IDLE_EXIT_MS > 0) {
+  setInterval(() => {
+    if (panelBroker.openPanelStreams() > 0) lastHeard = Date.now();
+    if (Date.now() - lastHeard < IDLE_EXIT_MS) return;
+    console.log(`nothing heard for ${Math.round(IDLE_EXIT_MS / 1000)} s, exiting`);
+    process.exit(0);
+  }, Math.min(IDLE_EXIT_MS, 10000)).unref();
+}
+
+// Started by the helper with a pipe for stdin: the helper closing it (or
+// dying, which closes it too) means stop.
+if (/^(1|true|yes)$/i.test(process.env.RELAY_EXIT_WITH_STDIN || "")) {
+  process.stdin.on("end", () => process.exit(0));
+  process.stdin.on("error", () => process.exit(0));
+  process.stdin.resume();
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`leetcode-capture relay server listening on http://${HOST}:${PORT}`);

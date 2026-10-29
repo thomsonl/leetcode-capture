@@ -716,7 +716,9 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
     return true;
   }
 
-  return { handle };
+  // How many panels are following the event stream right now (the relay's
+  // idle exit counts an open stream as activity).
+  return { handle, openPanelStreams: () => panelClients.size };
 }
 
 module.exports = {
