@@ -74,6 +74,19 @@ class Page {
     });
   }
 
+  // Sends requests matching `urlPattern` somewhere else instead, unchanged
+  // apart from the URL (the browser's own Origin and Sec-Fetch-* headers
+  // stay): rewrite(url) -> new url. Lets the real page talk to a real relay
+  // on a test port without either side knowing.
+  async redirectFetch(urlPattern, rewrite) {
+    this.redirectedRequests = [];
+    await this.send('Fetch.enable', { patterns: [{ urlPattern }] });
+    this.on('Fetch.requestPaused', async (p) => {
+      this.redirectedRequests.push({ url: p.request.url, method: p.request.method, headers: p.request.headers });
+      await this.send('Fetch.continueRequest', { requestId: p.requestId, url: rewrite(p.request.url) });
+    });
+  }
+
   send(method, params = {}) {
     const id = this.nextId++;
     this.ws.send(JSON.stringify({ id, method, params }));

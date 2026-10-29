@@ -4,12 +4,20 @@
 // companion that uses the real settings.js, so the data shapes are the real
 // ones and the assertions are about what the page sends and shows.
 //
+// The last scenario is live instead: a real companion.js (with a temporary
+// settings file and two stub models) and the real relay it starts on a free
+// port, with the page's requests to localhost:8135 sent to that port by the
+// browser itself, so the relay sees the page's real extension Origin.
+//
 // Run with:  node extension/e2e/settings-page.e2e.mjs
 // Screenshots land in $LC_E2E_SHOTS (default /tmp/lc-settings-shots).
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { launch } from './cdp.mjs';
 import {
@@ -217,6 +225,117 @@ for (const [status, pattern, kind] of [
     await page.screenshot(path.join(shots, `offline-${status}-dark.png`), { scheme: 'dark' });
   });
 }
+
+// ---- live: the real relay and companion ------------------------------------------
+
+function stubModel(name) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || !/\/chat\/completions$/.test(req.url)) return void res.writeHead(404).end();
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      requests.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: `OK from ${name}` }, finish_reason: 'stop' }] }));
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}/v1` })));
+}
+
+function freePort() {
+  return new Promise((resolve) => {
+    const s = http.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+async function liveScenario(name, run) {
+  const modelA = await stubModel('A');
+  const modelB = await stubModel('B');
+  const port = await freePort();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-settings-live-'));
+  const settingsFile = path.join(scratch, 'config', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+  fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, provider: 'local', providers: { local: { model: 'model-a', baseUrl: modelA.url } } }));
+  const captures = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(captures, '');
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (/^(COMPANION_|VAULT_AUTO_SUMMARY|ANTHROPIC_|OPENAI_)/.test(k)) delete env[k];
+  const child = spawn(process.execPath, [path.resolve(here, '../../companion/companion.js')], {
+    env: {
+      ...env,
+      LEETCODE_CAPTURE_SETTINGS: settingsFile,
+      COMPANION_LOCAL_API: 'openai',
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: captures,
+      LEETCODE_CAPTURES_FILE: captures,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (c) => (out += c));
+  child.stderr.on('data', (c) => (out += c));
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  const page = await browser.openPage('about:blank');
+  try {
+    const deadline = Date.now() + 15000;
+    while (!out.includes('in-page panel connected')) {
+      if (Date.now() > deadline) throw new Error(`the companion did not connect to its relay:\n${out}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await page.redirectFetch('http://localhost:8135/*', (url) => url.replace('http://localhost:8135', `http://localhost:${port}`));
+    const nav = await page.send('Page.navigate', { url: `chrome-extension://${browser.extensionId}/settings.html` });
+    assert.ok(!nav.errorText, nav.errorText);
+    await page.waitFor(`document.getElementById('connection-text').textContent !== 'Connecting'`, { what: 'the page to finish loading' });
+    await run(page, { modelA, modelB, settingsFile, out: () => out });
+    assert.deepEqual(page.console.filter((l) => /error|exception/i.test(l)), [], 'console errors');
+    console.log(`PASS  ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.log(`FAIL  ${name}\n      ${err.stack.split('\n').slice(0, 4).join('\n      ')}`);
+    await page.screenshot(path.join(shots, `FAIL-${name.replace(/\W+/g, '-')}.png`)).catch(() => {});
+  } finally {
+    page.close();
+    child.kill();
+    await exited;
+    modelA.server.close();
+    modelB.server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+await liveScenario('live: the page reads, tests and saves through the real relay and companion, and the companion switches models', async (page, live) => {
+  assert.match(await text(page, '#connection-text'), /Tutor running: Local model, model-a/);
+  const origins = new Set(page.redirectedRequests.map((r) => r.headers.Origin || r.headers.origin));
+  assert.deepEqual([...origins], [`chrome-extension://${browser.extensionId}`], 'the page sends its extension origin');
+  assert.equal(await value(page, '#local-model'), 'model-a');
+  await page.type('#local-model', 'model-b');
+  await page.type('#local-baseUrl', live.modelB.url);
+  await page.click('#test');
+  await page.waitFor(`document.getElementById('test-result').textContent.includes('Connected')`, { what: 'the live connection test', timeout: 20000 });
+  assert.equal(live.modelB.requests.length, 1, 'the test went to the draft model');
+  assert.equal(live.modelB.requests[0].model, 'model-b');
+  assert.equal(JSON.parse(fs.readFileSync(live.settingsFile, 'utf8')).providers.local.model, 'model-a', 'a test saves nothing');
+  await page.click('#save');
+  await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the live save', timeout: 20000 });
+  assert.match(await text(page, '#connection-text'), /Tutor running: Local model, model-b/);
+  const saved = JSON.parse(fs.readFileSync(live.settingsFile, 'utf8'));
+  assert.deepEqual([saved.provider, saved.providers.local.model, saved.providers.local.baseUrl], ['local', 'model-b', live.modelB.url]);
+  assert.equal(fs.statSync(live.settingsFile).mode & 0o777, 0o600);
+  const deadline = Date.now() + 5000;
+  while (!live.out().includes('settings saved - now using Local model (model-b)')) {
+    if (Date.now() > deadline) throw new Error(`the companion did not switch:\n${live.out()}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(live.modelA.requests.length, 0);
+  await page.screenshot(path.join(shots, 'live-saved-dark.png'), { scheme: 'dark' });
+});
 
 await browser.close();
 console.log(failures ? `\n${failures} scenario(s) FAILED` : `\nall scenarios passed; screenshots in ${shots}`);
