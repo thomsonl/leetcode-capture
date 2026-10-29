@@ -22,6 +22,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SUMMARIZER_SYSTEM, SUMMARY_HEADER, SUMMARY_MAX_TOKENS, summaryBodyChars } from './context-summary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -60,9 +61,13 @@ function sse(res, events) {
 
 // A stub model server. `routes` maps "METHOD /path" to a handler
 // `(body, req, res)`; anything else answers 404, like a real server that
-// does not know a probe's route. Every request is recorded.
+// does not know a probe's route. Every request is recorded. A summary call
+// (the companion condensing older exchanges, context-summary.js) goes to
+// `routes.summary` instead, or gets a 500 when there is none, and is recorded
+// in `summaries` only, so the tutor-turn handlers never see one.
 function startStub(routes) {
   const seen = [];
+  const summaries = [];
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
@@ -72,6 +77,12 @@ function startStub(routes) {
         body = raw ? JSON.parse(raw) : null;
       } catch {
         body = null;
+      }
+      if (body?.messages?.[0]?.content === SUMMARIZER_SYSTEM) {
+        summaries.push(body);
+        if (routes.summary) routes.summary(body, req, res);
+        else res.writeHead(500).end('no summaries here');
+        return;
       }
       seen.push({ method: req.method, url: req.url, body });
       const handler = routes[`${req.method} ${req.url}`];
@@ -83,7 +94,7 @@ function startStub(routes) {
       handler(body, req, res);
     });
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen })));
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen, summaries })));
 }
 
 async function startCompanion(t, { baseUrl, env = {} }) {
@@ -166,7 +177,7 @@ async function turnOutput(c, from, what) {
 // 7,300 window minus the default 2,600 reserve), the pinned system prompt,
 // statement and code take about 2,600, and each exchange about 470, so the
 // sixth message does not fit with all five earlier exchanges.
-test('a long conversation never gets stuck over the budget: the oldest exchanges are dropped to fit', async (t) => {
+test('a long conversation never gets stuck over the budget: the oldest exchanges are condensed to fit', async (t) => {
   const requests = [];
   const stub = await startStub({
     'POST /v1/chat/completions': (body, req, res) => {
@@ -197,8 +208,8 @@ test('a long conversation never gets stuck over the budget: the oldest exchanges
     assert.match(printed, new RegExp(`Reply ${i}\\.`));
   }
 
-  // Older exchanges were really dropped, a whole exchange at a time, and the
-  // pinned statement stayed.
+  // Older exchanges were really taken out, a whole exchange at a time, and
+  // the pinned statement stayed.
   const last = requests[requests.length - 1];
   assert.ok(last.filter((m) => m.role === 'assistant').length < 6, 'some exchanges were dropped');
   assert.ok(last.some((m) => m.role === 'system' && m.content.includes(BIG_DESCRIPTION)));
@@ -441,4 +452,123 @@ test('after a reply is cut off for room, the oldest exchange is dropped so the n
   const users = requests[3].filter((m) => m.role === 'user').map((m) => m.content);
   assert.equal(users.length, 2, `the first exchange and the cut-off message are gone: ${JSON.stringify(users)}`);
   assert.equal(users[1], 'fourth');
+});
+
+// --- condensing instead of dropping (context-summary.js) -------------------
+
+const SUMMARY_CAP_CHARS = summaryBodyChars(SUMMARY_MAX_TOKENS);
+const summaryMessageOf = (messages) =>
+  messages.find((m) => m.role === 'system' && m.content.startsWith(`${SUMMARY_HEADER}\n`));
+const json = (res, content) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }] }));
+};
+
+// The stuck scenario again (a big statement plus long tutor replies over a
+// 4,700-token budget), each reply carrying a fact the summary must keep.
+// `summary` answers the summary calls. Returns the tutor requests, the
+// summary calls and everything printed after the first Submit was sent.
+async function runCondenseScenario(t, { summary, messages = 8 }) {
+  const requests = [];
+  const stub = await startStub({
+    'POST /v1/chat/completions': (body, req, res) => {
+      requests.push(body.messages);
+      sse(res, [
+        { choices: [{ delta: { content: `Reply ${requests.length}. FACT-${requests.length} noted. ${LONG_REPLY}` } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]);
+    },
+    ...(summary ? { summary } : {}),
+  });
+  t.after(() => stub.server.close());
+  const c = await startCompanion(t, {
+    baseUrl: `http://127.0.0.1:${stub.server.address().port}/v1`,
+    env: { COMPANION_LOCAL_NUM_CTX: '7300', COMPANION_LOCAL_MAX_HISTORY_TURNS: '0' },
+  });
+  const start = c.out().length;
+  let from = start;
+  c.capture({ problemDescription: BIG_DESCRIPTION, code: 'def twoSum(nums, target):\n    return []\n' });
+  assert.match(await turnOutput(c, from, 'the Submit reply'), /Reply 1\./);
+  for (let i = 2; i <= messages; i += 1) {
+    from = c.out().length;
+    c.type(`Question number ${i} about my approach? More words.`);
+    // eslint-disable-next-line no-await-in-loop
+    const printed = await turnOutput(c, from, `message ${i}`);
+    assert.ok(!printed.includes('error talking to backend'), `message ${i} was refused: ${printed}`);
+    assert.match(printed, new RegExp(`Reply ${i}\\.`));
+  }
+  return { c, requests, summaries: stub.summaries, printed: c.out().slice(start) };
+}
+
+// Checks every tutor request: the summary (when present) sits right after
+// the pinned statement and code and before the live history, under its cap.
+function assertSummaryPlacement(requests) {
+  for (const messages of requests) {
+    const summary = summaryMessageOf(messages);
+    if (!summary) continue;
+    const index = messages.indexOf(summary);
+    assert.ok(messages[index - 1].role === 'system', 'pins come before the summary');
+    assert.ok(messages.slice(index + 1).every((m) => m.role !== 'system'), 'only live history follows it');
+    assert.ok(summary.content.length - SUMMARY_HEADER.length - 1 <= SUMMARY_CAP_CHARS, `summary over its cap: ${summary.content.length}`);
+  }
+}
+
+test('the stuck scenario succeeds with a summary that keeps the oldest facts, and nothing is printed about it', async (t) => {
+  // A model summary that names every FACT it was shown (from the dropped
+  // replies and from the earlier summary), padded far past the cap.
+  const { requests, summaries, printed } = await runCondenseScenario(t, {
+    summary: (body, req, res) => {
+      const facts = [...new Set(body.messages[1].content.match(/FACT-\d+/g) || [])];
+      json(res, `Facts so far: ${facts.join(', ')}. ${'filler '.repeat(800)}`);
+    },
+  });
+  assert.ok(summaries.length >= 1, 'a summary call was made');
+  for (const call of summaries) {
+    assert.equal(call.stream, false, 'the summary call is never streamed');
+    assert.match(call.messages[1].content, /under 250 words/);
+    assert.ok(!call.messages[1].content.includes(BIG_DESCRIPTION.slice(0, 200)), 'the pinned statement is never summarized');
+    assert.ok(estimate(call.messages) <= 4700, 'the summary call fits the budget');
+  }
+  const last = requests[requests.length - 1];
+  const summary = summaryMessageOf(last);
+  assert.ok(summary, 'the last request carries the summary');
+  assert.match(summary.content, /FACT-1\b/, 'the oldest fact survives repeated condensing');
+  assert.ok(last.some((m) => m.role === 'system' && m.content.includes(BIG_DESCRIPTION)), 'the statement stays pinned');
+  assert.equal(last[last.length - 1].content, 'Question number 8 about my approach? More words.');
+  assertSummaryPlacement(requests);
+  assert.ok(!/summar|condens|earlier in this session|companion: (warning|error)/i.test(printed), `something was printed about it: ${printed}`);
+});
+
+test('a summary call that fails falls back to the one-line-per-exchange digest', async (t) => {
+  const { requests, summaries } = await runCondenseScenario(t, {
+    summary: (body, req, res) => res.writeHead(500).end('model crashed'),
+  });
+  assert.ok(summaries.length >= 1);
+  const summary = summaryMessageOf(requests[requests.length - 1]);
+  assert.ok(summary, 'a digest stands in for the condensed exchanges');
+  assert.match(summary.content, /^- Student: .* Tutor: Reply \d+\.$/m);
+  assert.match(summary.content, /- Student: Question number \d+ about my approach\? Tutor: Reply \d+\./);
+  assert.ok(!summary.content.includes('More words'), 'one sentence per side');
+  assertSummaryPlacement(requests);
+});
+
+test('a summary call that returns nothing falls back to the digest too', async (t) => {
+  const { requests, summaries } = await runCondenseScenario(t, { summary: (body, req, res) => json(res, '   ') });
+  assert.ok(summaries.length >= 1);
+  const summary = summaryMessageOf(requests[requests.length - 1]);
+  assert.ok(summary);
+  assert.match(summary.content, /- Student: .* Tutor: Reply \d+\./);
+});
+
+test('a problem switch clears the summary', async (t) => {
+  const { c, requests } = await runCondenseScenario(t, { summary: (body, req, res) => json(res, 'SUMMARY-OF-TWO-SUM') });
+  assert.ok(summaryMessageOf(requests[requests.length - 1]), 'condensed before the switch');
+  const before = requests.length;
+  const from = c.out().length;
+  c.capture({ problemSlug: 'valid-parentheses', problemTitle: 'Valid Parentheses', url: 'https://leetcode.com/problems/valid-parentheses/', problemDescription: 'Brackets.', code: 'def isValid(s):\n    return True\n' });
+  await turnOutput(c, from, 'the reply on the new problem');
+  assert.equal(requests.length, before + 1);
+  const after = requests[requests.length - 1];
+  assert.ok(!summaryMessageOf(after), 'no summary after the reset');
+  assert.ok(!JSON.stringify(after).includes('SUMMARY-OF-TWO-SUM'));
 });

@@ -54,11 +54,8 @@ import {
   indentContinuation,
 } from './terminal-format.js';
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
-import {
-  buildMessages as buildLocalMessages,
-  fitToBudget,
-  resolveContextWindow,
-} from './context-budget.js';
+import { buildMessages as buildLocalMessages, resolveContextWindow } from './context-budget.js';
+import { fitWithSummary } from './context-summary.js';
 import { probeServer, serverRoot } from './local-server.js';
 import { createPanelBridge } from './panel-bridge.js';
 import {
@@ -204,10 +201,11 @@ const LOCAL_RESERVE_TOKENS = Number(process.env.COMPANION_LOCAL_RESERVE_TOKENS |
 //     discussion would otherwise keep being resent long after the
 //     conversation moved on).
 //   - localMaxHistoryTurns (COMPANION_LOCAL_MAX_HISTORY_TURNS), 6 by default:
-//     how many user+assistant pairs LocalBackend and CodexBackend keep (see
-//     LocalBackend.trimHistory). Only a cap on the count: every local request
-//     is also fitted to the token budget before it is sent (fitToBudget in
-//     context-budget.js). 0 turns the count cap off.
+//     how many user+assistant pairs LocalBackend and CodexBackend keep in
+//     full; older ones are condensed into one short summary
+//     (context-summary.js). Only a cap on the count: every local request is
+//     also fitted to the token budget before it is sent (fitWithSummary).
+//     0 turns the count cap off.
 // In-page tutor panel (the extension's "Tutor" tab on leetcode.com): mirrors
 // this conversation to the browser through the relay server and accepts
 // messages typed there. On by default; COMPANION_PANEL=0 turns the bridge off
@@ -483,7 +481,7 @@ class ClaudeBackend {
 // no accumulated history at all: one capture's own content (system prompt +
 // problem description + submitted code) can by itself already exceed a
 // small model's context window - a genuinely different failure from the
-// multi-turn growth `trimHistory` guards against, and confirmed live to
+// multi-turn growth the pre-flight fit guards against, and confirmed live to
 // happen with a perfectly normal-sized real submission (a description plus a
 // ~150-line solution), not just a synthetic worst case. See LocalBackend's
 // class comment for the actual fix (a bigger real context window via
@@ -561,9 +559,10 @@ class LocalBackend {
   // silently drop the start of the prompt (the system prompt and problem)
   // with an ordinary "stop", so the tutor answers about the wrong thing with
   // no error. Three things close that, all in sendMessage: the pre-flight
-  // fit (every request is trimmed to the budget, oldest whole exchanges
-  // first, and refused only if the parts that can never be dropped are over
-  // it), the probed window, and the silent-truncation guard (a reply that
+  // fit (every request is fitted to the budget by condensing the oldest
+  // whole exchanges into one short summary, see context-summary.js, and
+  // refused only if the parts that can never be dropped are over it), the
+  // probed window, and the silent-truncation guard (a reply that
   // reports far fewer prompt tokens than were sent lowers the window to what
   // the server really kept, with one visible warning).
   constructor({ baseUrl, model, apiKey, maxHistoryTurns, apiStyle, numCtx, reserveTokens = LOCAL_RESERVE_TOKENS, probe = probeServer }) {
@@ -612,7 +611,7 @@ class LocalBackend {
     // Includes the shared style addendum (see STYLE_ADDENDUM) - this backend
     // never inherits it any other way. Kept on its own so resetContext
     // (below) can restore exactly this. Ollama's native /api/chat accepts
-    // this exact same messages shape too, so history/resetContext/trimHistory
+    // this exact same messages shape too, so history/resetContext and the fit
     // are all shared unchanged between both API styles.
     this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}` };
     this.history = [this.systemMessage];
@@ -627,6 +626,13 @@ class LocalBackend {
     // full code never loses it: later turns only carry diffs against it.
     // `{ text }` or null.
     this.pinnedCode = null;
+    // The "earlier in this session" summary standing in for condensed older
+    // exchanges (context-summary.js), or null. Memory only, cleared by
+    // resetContext; a backend swap builds a new backend without one.
+    this.summary = null;
+    // Exchanges that must be condensed on the next request even if it fits
+    // (after a reply cut off for room, see sendMessage).
+    this.forceCondense = 0;
   }
 
   // The context window this backend budgets for, `{ tokens, source }`: the
@@ -689,21 +695,29 @@ class LocalBackend {
       ...(typeof compactText === 'string' && compactText !== text ? { compactContent: compactText } : {}),
     });
 
-    // Pre-flight fit: drop the oldest whole exchanges until the request is
-    // within budget, rather than ever sending one estimated to exceed the
-    // model's real window (a server may silently discard part of an
-    // over-long prompt and review the wrong code with an ordinary "stop",
-    // which no finishReason guard can see). Done on every request, so a
-    // conversation that grew past the budget (long replies, or a window
-    // that turned out smaller) frees itself on the very next message.
-    // Refused only when the parts that can never be dropped (system prompt,
-    // problem statement, code, this message) are over the budget alone.
+    // Pre-flight fit: condense the oldest whole exchanges into the
+    // "earlier in this session" summary until the request is within budget
+    // (or past the exchange-count cap), rather than ever sending one
+    // estimated to exceed the model's real window (a server may silently
+    // discard part of an over-long prompt and review the wrong code with an
+    // ordinary "stop", which no finishReason guard can see). Done on every
+    // request, so a conversation that grew past the budget (long replies, or
+    // a window that turned out smaller) frees itself on the very next
+    // message, silently: the summary call (see summarize) streams nothing and
+    // prints nothing, and it runs inside this turn, so the turn queue never
+    // interleaves it with another. Refused only when the parts that can
+    // never be dropped (system prompt, problem statement, code, this
+    // message) are over the budget alone.
     const budget = this.promptBudget();
-    const fit = fitToBudget({
+    const fit = await fitWithSummary({
       history: this.history,
       pinnedProblemContext: this.pinnedProblemContext,
       pinnedCode: this.pinnedCode,
+      summary: this.summary,
       budget,
+      maxPairs: this.maxHistoryTurns > 0 ? this.maxHistoryTurns : 0,
+      forcePairs: this.forceCondense,
+      summarize: (messages, signal) => this.summarize(messages, signal),
     });
     if (!fit.fits) {
       this.history.pop();
@@ -719,6 +733,8 @@ class LocalBackend {
       );
     }
     this.history = fit.history.slice();
+    this.summary = fit.summary;
+    this.forceCondense = 0;
 
     // Every failure path below pops the dangling user turn before
     // propagating, rather than leaving history with a user message that was
@@ -746,8 +762,9 @@ class LocalBackend {
     } catch (err) {
       this.history.pop();
       // Cut off for room: the same request would only be cut off again, so
-      // the oldest exchange goes too, giving the next message more room.
-      if (err.cutOff) this.dropOldestPair();
+      // the oldest exchange is condensed on the next message, giving it more
+      // room.
+      if (err.cutOff) this.forceCondense = 1;
       throw err;
     }
 
@@ -756,11 +773,19 @@ class LocalBackend {
       throw new Error('local backend returned an empty reply (no content or reasoning in the response)');
     }
     this.history.push({ role: 'assistant', content: replyText });
-    // Only runs once this turn is fully resolved and paired (the user
-    // message pushed above, now matched by this assistant reply) - see
-    // trimHistory's own comment for why that matters.
-    this.trimHistory();
     return replyText;
+  }
+
+  // The summary call (context-summary.js's condense): the same model and
+  // API, not streamed, no warnings, no truncation check. Resolves to the
+  // text (empty when the model gave none) or throws; any failure means the
+  // deterministic digest is used instead.
+  async summarize(messages, signal) {
+    const raw =
+      this.apiStyle === 'native'
+        ? await this.requestNative(null, messages, { signal })
+        : await this.requestOpenAI(null, messages, { signal });
+    return resolveReplyText({ content: raw.content, reasoning: raw.reasoning, finishReason: raw.finishReason, advice: '' });
   }
 
   // The silent-truncation guard. `reported` is the prompt size the server
@@ -793,6 +818,7 @@ class LocalBackend {
       history: this.history,
       pinnedProblemContext: this.pinnedProblemContext,
       pinnedCode: this.pinnedCode,
+      summary: this.summary,
     });
   }
 
@@ -800,11 +826,12 @@ class LocalBackend {
   // portable to any server that speaks it. Resolves to the raw reply parts
   // `{ content, reasoning, finishReason, promptTokens }`; sendMessage turns
   // them into the reply (resolveReplyText) after the truncation guard.
-  async requestOpenAI(onChunk, messages) {
+  async requestOpenAI(onChunk, messages, { signal } = {}) {
     const stream = Boolean(onChunk);
     const send = (withUsage) =>
       fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
+        signal,
         headers: {
           'Content-Type': 'application/json',
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
@@ -864,11 +891,12 @@ class LocalBackend {
   // at the top level. The only reason to use this over requestOpenAI is
   // `options.num_ctx`, below - confirmed live this is honored here and
   // nowhere on the compat endpoint.
-  async requestNative(onChunk, messages) {
+  async requestNative(onChunk, messages, { signal } = {}) {
     let response;
     try {
       response = await fetch(`${this.nativeBaseUrl}/api/chat`, {
         method: 'POST',
+        signal,
         headers: {
           'Content-Type': 'application/json',
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
@@ -897,31 +925,6 @@ class LocalBackend {
       finishReason: data?.done_reason,
       promptTokens: Number(data?.prompt_eval_count),
     };
-  }
-
-  // Drops the oldest complete user+assistant pairs once history holds more
-  // than maxHistoryTurns of them. The token budget is enforced separately,
-  // before every request (see sendMessage); this is only a cap on the count.
-  //
-  // Only ever called right after sendMessage pushes a successful assistant
-  // reply, so this.history is always exactly [system, user, assistant, ...]
-  // when it runs - splicing out the oldest pair (indices 1 and 2, right
-  // after the system message) can never cut a turn in half.
-  trimHistory() {
-    if (!this.maxHistoryTurns || this.maxHistoryTurns <= 0) return; // 0/unset: no count cap
-    const keepMessages = 1 + this.maxHistoryTurns * 2; // system + N whole pairs
-    while (this.history.length > keepMessages) {
-      this.history.splice(1, 2);
-    }
-  }
-
-  // Drops the single oldest whole exchange, if there is one. Called on an
-  // error path after the dangling user turn is already gone, so history is
-  // [system, user, assistant, ...] here too.
-  dropOldestPair() {
-    if (this.history.length >= 3 && this.history[1].role === 'user' && this.history[2].role === 'assistant') {
-      this.history.splice(1, 2);
-    }
   }
 
   // Reads an OpenAI-compatible chat-completions SSE stream (one `data:
@@ -1026,6 +1029,8 @@ class LocalBackend {
     this.history = [this.systemMessage];
     this.pinnedProblemContext = null;
     this.pinnedCode = null;
+    this.summary = null;
+    this.forceCondense = 0;
   }
 }
 

@@ -20,12 +20,15 @@
 //
 // `codex` is spawned per turn and sees the whole conversation each time
 // (--ephemeral keeps no session), so this backend keeps its own bounded
-// history like LocalBackend does.
+// history like LocalBackend does: past `maxHistoryTurns` exchanges, the older
+// ones are condensed into one short summary (context-summary.js) by one extra
+// codex call, or a deterministic digest when that call fails.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { buildMessages } from './context-budget.js';
 import { formatPinnedCode } from './code-ledger.js';
+import { SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_MS, condense, condenseCount, summaryBodyChars } from './context-summary.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_STDERR_CHARS = 2000;
@@ -80,6 +83,7 @@ export class CodexBackend {
     command = 'codex',
     commandArgs = [],
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    summaryTimeoutMs = SUMMARY_TIMEOUT_MS,
     env = process.env,
   }) {
     if (!cwd) throw new Error('CodexBackend needs a scratch directory (cwd)');
@@ -90,6 +94,7 @@ export class CodexBackend {
     this.command = command;
     this.commandArgs = commandArgs;
     this.timeoutMs = timeoutMs;
+    this.summaryTimeoutMs = summaryTimeoutMs;
     this.env = env;
     this.history = []; // [{ role: 'student' | 'tutor', text, compactText? }]
     this.pinnedProblemContext = null;
@@ -97,12 +102,15 @@ export class CodexBackend {
     // statement so dropping the old turn that carried the full code never
     // loses it; later turns only carry diffs against it. `{ text }` or null.
     this.pinnedCode = null;
+    // The "earlier in this session" summary of condensed exchanges, or null.
+    this.summary = null;
   }
 
   resetContext() {
     this.history = [];
     this.pinnedProblemContext = null;
     this.pinnedCode = null;
+    this.summary = null;
   }
 
   // The same pinning rules as LocalBackend (context-budget.js's
@@ -122,6 +130,7 @@ export class CodexBackend {
       history,
       pinnedProblemContext: this.pinnedProblemContext,
       pinnedCode: this.pinnedCode,
+      summary: this.summary,
     });
     const system = messages.filter((m) => m.role === 'system').map((m) => m.content);
     const turns = messages.filter((m) => m.role !== 'system');
@@ -145,19 +154,47 @@ export class CodexBackend {
     }
     const pinnedText = formatPinnedCode(heldCode);
     this.pinnedCode = pinnedText ? { text: pinnedText } : null;
-    const prompt = this.buildPrompt(text, { compactText });
     fs.mkdirSync(this.cwd, { recursive: true });
+    await this.condenseIfNeeded();
+    const prompt = this.buildPrompt(text, { compactText });
     const reply = await this.runCodex(prompt);
     this.history.push(
       { role: 'student', text, ...(typeof compactText === 'string' && compactText !== text ? { compactText } : {}) },
       { role: 'tutor', text: reply }
     );
-    const keep = this.maxHistoryTurns * 2;
-    if (this.maxHistoryTurns > 0 && this.history.length > keep) this.history = this.history.slice(this.history.length - keep);
     return reply;
   }
 
-  runCodex(prompt) {
+  // Past maxHistoryTurns exchanges, condenses the older ones (at least the
+  // older half) into the summary instead of dropping them. Runs at the start
+  // of a turn, inside the companion's turn queue, and prints nothing.
+  async condenseIfNeeded() {
+    const pairs = this.history.length / 2;
+    if (!(this.maxHistoryTurns > 0) || pairs <= this.maxHistoryTurns) return;
+    const k = condenseCount(pairs, pairs - this.maxHistoryTurns);
+    const dropped = [];
+    for (let i = 0; i < k; i += 1) {
+      const student = this.history[2 * i];
+      const tutor = this.history[2 * i + 1];
+      const compact = Boolean(this.pinnedCode) && typeof student.compactText === 'string';
+      dropped.push({ student: compact ? student.compactText : student.text, tutor: tutor.text });
+    }
+    const { summary } = await condense({
+      existing: this.summary,
+      dropped,
+      maxChars: summaryBodyChars(SUMMARY_MAX_TOKENS),
+      summarize: (messages) =>
+        this.runCodex(
+          `${messages.map((m) => m.content).join('\n\n---\n\n')}\n\nDo not run commands or read files.`,
+          { timeoutMs: this.summaryTimeoutMs }
+        ),
+      timeoutMs: this.summaryTimeoutMs,
+    });
+    this.summary = summary;
+    this.history = this.history.slice(2 * k);
+  }
+
+  runCodex(prompt, { timeoutMs = this.timeoutMs } = {}) {
     return new Promise((resolve, reject) => {
       const args = [...this.commandArgs, ...buildCodexArgs({ model: this.model, cwd: this.cwd })];
       const child = spawn(this.command, args, { env: codexSubscriptionEnv(this.env), stdio: ['pipe', 'pipe', 'pipe'] });
@@ -172,8 +209,8 @@ export class CodexBackend {
       };
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
-        finish(reject, new Error(`codex did not answer within ${Math.round(this.timeoutMs / 1000)} seconds`));
-      }, this.timeoutMs);
+        finish(reject, new Error(`codex did not answer within ${Math.round(timeoutMs / 1000)} seconds`));
+      }, timeoutMs);
       child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
       child.stderr.on('data', (chunk) => {
         if (stderr.length < MAX_STDERR_CHARS) stderr += chunk.toString();

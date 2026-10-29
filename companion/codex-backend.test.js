@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CodexBackend, buildCodexArgs, checkCodexLogin, codexSubscriptionEnv, parseCodexOutput } from './codex-backend.js';
+import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from './context-summary.js';
 
 const FAKE = `
 const fs = require('node:fs');
@@ -32,6 +33,7 @@ process.stdin.on('end', () => {
   calls.push({ args, prompt, hasCodexKey: 'CODEX_API_KEY' in process.env, hasOpenaiKey: 'OPENAI_API_KEY' in process.env });
   fs.writeFileSync(rec, JSON.stringify(calls));
   if (mode === 'hang') return setTimeout(() => {}, 60000);
+  if (mode === 'fail-summary' && prompt.includes('You condense')) { console.error('summary failed'); process.exit(1); }
   if (mode === 'silent') { console.error('boom: not authenticated'); process.exit(1); }
   const emit = (e) => console.log(JSON.stringify(e));
   emit({ type: 'thread.started', thread_id: 't1' });
@@ -63,8 +65,12 @@ function setup(t, extra = {}) {
     env,
     ...(extra.backend || {}),
   });
-  const calls = () => (fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : []);
-  return { backend, calls, script, env, dir };
+  const allCalls = () => (fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : []);
+  // Tutor turns only; the summary calls (condensing older exchanges) apart.
+  const isSummary = (c) => c.prompt.startsWith(SUMMARIZER_SYSTEM);
+  const calls = () => allCalls().filter((c) => !isSummary(c));
+  const summaryCalls = () => allCalls().filter(isSummary);
+  return { backend, calls, summaryCalls, allCalls, script, env, dir };
 }
 
 test('buildCodexArgs follows the documented non-interactive flags and reads the prompt from stdin', () => {
@@ -117,12 +123,34 @@ test('later turns carry the conversation so far; resetContext clears it', async 
   assert.ok(!calls()[2].prompt.includes('first question'));
 });
 
-test('history is bounded so a long session cannot grow the prompt forever', async (t) => {
-  const { backend, calls } = setup(t, { backend: { maxHistoryTurns: 2 } });
+test('history is bounded: older exchanges are condensed into one summary instead of dropped', async (t) => {
+  const { backend, calls, summaryCalls } = setup(t, { backend: { maxHistoryTurns: 2 } });
   for (let i = 1; i <= 5; i += 1) await backend.sendMessage(`question ${i}`);
+  // Turn 4 found three exchanges, one over the cap, and condensed the older
+  // half (two) in one codex call.
+  assert.equal(summaryCalls().length, 1);
+  const summaryPrompt = summaryCalls()[0].prompt;
+  assert.match(summaryPrompt, /under 250 words/);
+  assert.ok(summaryPrompt.includes('question 1') && summaryPrompt.includes('question 2'));
+  assert.ok(!summaryPrompt.includes('question 3'), 'only the exchanges being condensed go to the summary call');
   const last = calls()[4].prompt;
   assert.ok(last.includes('question 4') && last.includes('question 3'));
-  assert.ok(!last.includes('question 2'), 'older turns are dropped');
+  assert.ok(!last.includes('question 2'), 'condensed turns are no longer sent whole');
+  assert.ok(last.includes(`${SUMMARY_HEADER}\nFAKE-REPLY-4`), 'the summary stands in for them');
+  backend.resetContext();
+  await backend.sendMessage('after reset');
+  assert.ok(!calls()[5].prompt.includes(SUMMARY_HEADER), 'a reset clears the summary');
+});
+
+test('a failed summary call falls back to the one-line-per-exchange digest', async (t) => {
+  const { backend, calls, summaryCalls } = setup(t, { backend: { maxHistoryTurns: 1 }, env: { FAKE_CODEX_MODE: 'fail-summary' } });
+  await backend.sendMessage('Why does my loop run forever? It never stops.');
+  await backend.sendMessage('second');
+  await backend.sendMessage('third');
+  assert.equal(summaryCalls().length, 1);
+  const third = calls()[2].prompt;
+  assert.ok(third.includes(`${SUMMARY_HEADER}\n- Student: Why does my loop run forever? Tutor: FAKE-REPLY-1`), third);
+  assert.ok(!third.includes('It never stops'), 'only the first sentence is kept');
 });
 
 test('held code is pinned and older full-code turns go compact, so dropping a turn never loses the code', async (t) => {

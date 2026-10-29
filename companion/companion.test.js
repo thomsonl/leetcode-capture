@@ -26,6 +26,9 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { replayToScreen } from './virtual-terminal.js';
+import { SUMMARIZER_SYSTEM } from './context-summary.js';
+
+const isSummaryRequest = (messages) => messages?.[0]?.content === SUMMARIZER_SYSTEM;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -500,6 +503,9 @@ function startTrackingStubBackend() {
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
       const parsedBody = JSON.parse(body);
+      // A summary call (condensing older exchanges, context-summary.js) is
+      // not a tutor turn: refuse it, so the companion uses its digest.
+      if (isSummaryRequest(parsedBody.messages)) return void res.writeHead(500).end();
       requests.push(parsedBody.messages);
       const content = `Reply number ${requests.length}`;
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -686,6 +692,9 @@ function startExhaustionStubBackend({ thresholdChars }) {
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
       const parsedBody = JSON.parse(body);
+      // A summary call (condensing older exchanges, context-summary.js) is
+      // not a tutor turn: refuse it, so the companion uses its digest.
+      if (isSummaryRequest(parsedBody.messages)) return void res.writeHead(500).end();
       requests.push(parsedBody.messages);
       const totalChars = parsedBody.messages.reduce((sum, m) => sum + (m.content || '').length, 0);
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -801,7 +810,7 @@ test('without history trimming, a long single-problem conversation eventually ex
   const { out } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18150,
-    thresholdChars: 6400,
+    thresholdChars: 7700,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '0' },
   });
 
@@ -815,12 +824,13 @@ test('without history trimming, a long single-problem conversation eventually ex
 // The fix: with trimming enabled, the same growing conversation over the
 // same number of turns never crosses the threshold, because the resent
 // history is capped rather than growing without bound - confirming this
-// isn't just "the same bug, later."
+// isn't just "the same bug, later." (The threshold leaves room for the
+// bounded summary the capped exchanges are condensed into.)
 test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation from ever exhausting context', async () => {
   const { out, requests } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18151,
-    thresholdChars: 6400,
+    thresholdChars: 7700,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' },
   });
 
@@ -832,8 +842,8 @@ test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation
   for (const req of requests) {
     // Past the leading system messages (prompt, pinned description, pinned
     // code), at most the one kept pair plus this request's own new user
-    // message - see trimHistory's own comment: trimming runs after a reply
-    // lands, not before the next request goes out.
+    // message: older exchanges are condensed into the summary (a system
+    // message) before the request goes out.
     const turns = req.filter((m) => m.role !== 'system');
     assert.ok(turns.length <= 3, `request history should stay bounded (one kept pair + the new turn), got ${turns.length} turns`);
   }
@@ -841,7 +851,7 @@ test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation
 
 // Every request's own message array must stay in well-formed
 // [system, user, assistant, user, assistant, ...] shape - trimming a whole
-// pair at a time (see trimHistory) must never leave a dangling half-turn.
+// pair at a time (the exchange-count cap) must never leave a dangling half-turn.
 test('trimmed history never leaves a dangling half-turn', async () => {
   const { requests } = await runManyTurnsScenario({
     turnCount: 6,
@@ -873,7 +883,7 @@ test('trimmed history never leaves a dangling half-turn', async () => {
 // own content (problem description + submitted code, formatted alongside
 // TUTOR_SYSTEM_PROMPT) can by itself exceed a small local model's context
 // window, on the very first turn of a brand-new conversation - before any
-// history has accumulated at all, so trimHistory (which only bounds growth
+// history has accumulated at all, so the exchange-count cap (which only bounds growth
 // across turns) cannot help. Confirmed live against the real Ollama
 // gemma4:26b model this companion is configured for (see companion.js's
 // LocalBackend class comment): a single normal-sized Submit capture (a real
@@ -1278,13 +1288,13 @@ test('a capture sized to exceed the estimated token budget is refused with a vis
 
 // The correctness constraint on the description-once-per-problem change:
 // the description must stay available for the whole session, not just for
-// as long as the turn that first carried it survives trimHistory's rolling
+// as long as the turn that first carried it survives the exchange-count cap's rolling
 // window. Aggressive trimming (COMPANION_LOCAL_MAX_HISTORY_TURNS=1) across
 // 5 turns for the same problem guarantees turn 1's own user message is long
 // gone from history by the last request - yet the pinned description (see
 // context-budget.js's buildMessages) must still be there, reconstructed
 // fresh into every request independent of that window.
-test('the pinned problem description survives trimHistory dropping the turn that first carried it', async () => {
+test('the pinned problem description survives the count cap condensing the turn that first carried it', async () => {
   const { requests } = await runSameProblemManyTurns({
     turnCount: 5,
     capturePort: 18171,

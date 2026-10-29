@@ -2,7 +2,7 @@
 // estimate, the line diff, and the outgoing LocalBackend message list with
 // its pinned description and code. Direct/fast, unlike companion.test.js's
 // subprocess-level coverage of the same features end to end (the pre-flight
-// refusal, the pinned description and code surviving trimHistory) - see
+// refusal, the pinned description and code surviving the count cap) - see
 // companion.test.js for those.
 //
 // Run with: node --test context-budget.test.js

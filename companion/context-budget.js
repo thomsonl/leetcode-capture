@@ -154,19 +154,29 @@ export function formatDiffSummary(oldCode, newCode) {
 // leading system message, the pinned problem description right after it (if
 // one is known), then the pinned code (the latest version of the student's
 // code the tutor has been shown, which any code change in the current turn
-// applies to), then the rest of history. An older user turn that carried the
+// applies to), then the summary of condensed older exchanges if there is one
+// (context-summary.js), then the rest of history. An older user turn that carried the
 // full code is sent as its `compactContent` instead, since that code (or a
 // newer version of it) is already pinned (only while code is pinned, so the
 // compact note never points at nothing); the turn just pushed for this
 // request is always last and always sent in full.
 //
-// Pinning is what lets history trimming (LocalBackend.trimHistory) drop the
-// turn that originally carried the full code without the tutor losing it:
+// Pinning is what lets condensing or dropping old exchanges
+// (context-summary.js) remove the turn that originally carried the full code without the tutor losing it:
 // later turns only carry diffs against it. Pure function of its inputs -
 // LocalBackend.buildMessages (companion.js) is a thin wrapper passing its
 // own fields through - so it can be unit-tested without a real backend.
 // `history` is never mutated.
-export function buildMessages({ history, pinnedProblemContext, pinnedCode = null }) {
+// The "earlier in this session" summary (context-summary.js) that stands in
+// for condensed older exchanges: its header, and the message it is sent as.
+export const SUMMARY_HEADER =
+  'Earlier in this session (a short summary of older exchanges that are no longer shown in full):';
+
+export function summaryContent(summary) {
+  return `${SUMMARY_HEADER}\n${summary}`;
+}
+
+export function buildMessages({ history, pinnedProblemContext, pinnedCode = null, summary = null }) {
   const messages = [history[0]]; // the leading system message
   if (pinnedProblemContext?.description) {
     messages.push({
@@ -178,6 +188,9 @@ export function buildMessages({ history, pinnedProblemContext, pinnedCode = null
   }
   if (pinnedCode && typeof pinnedCode.text === 'string') {
     messages.push({ role: 'system', content: pinnedCode.text });
+  }
+  if (typeof summary === 'string' && summary) {
+    messages.push({ role: 'system', content: summaryContent(summary) });
   }
 
   const rest = history.slice(1);
@@ -207,7 +220,9 @@ export function resolveContextWindow({ configured, detected = null, observed = n
   return best;
 }
 
-// Fits one request to the prompt budget: `history` is
+// Fits one request to the prompt budget by dropping, the last resort behind
+// context-summary.js's fitWithSummary (which condenses instead whenever even
+// a small summary fits, and is what LocalBackend calls): `history` is
 // [system, user, assistant, ..., user] with the current message last. While
 // the request is over budget, the oldest whole user+assistant exchange is
 // dropped (never half of one, never the pinned statement or code, never the
