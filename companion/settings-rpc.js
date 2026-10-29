@@ -24,8 +24,8 @@ import {
   statusSummary,
 } from './settings.js';
 import { checkCodexLogin } from './codex-backend.js';
+import { CONNECTION_TEST_PROMPT as TEST_PROMPT } from '../extension/shared/tutor-prompt.js';
 
-const TEST_PROMPT = 'This is a connection test. Reply with the single word OK.';
 const TEST_TIMEOUT_MS = 90_000;
 const MODELS_TIMEOUT_MS = 6000;
 const MAX_MODELS = 200;

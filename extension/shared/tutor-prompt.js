@@ -62,6 +62,9 @@ export const STYLE_ADDENDUM = `Two additional style rules for your responses:
 // rules.
 export const TUTOR_SYSTEM_MESSAGE = `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}`;
 
+// The message an options-page "Test connection" sends, in every runtime.
+export const CONNECTION_TEST_PROMPT = 'This is a connection test. Reply with the single word OK.';
+
 // --- capture formatting (adapted from the old watch.js) --------------------
 
 export function triggerLabel(trigger) {
