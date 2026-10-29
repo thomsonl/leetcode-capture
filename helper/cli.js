@@ -10,6 +10,7 @@
 //   uninstall  Removes exactly what install wrote.
 //   status     Shows what is registered where.
 
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,6 +86,7 @@ export function run(argv, { home = os.homedir(), env = process.env, platform = p
   return 2;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// npx and global installs run this through a symlink in node_modules/.bin.
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = run(process.argv.slice(2));
 }
