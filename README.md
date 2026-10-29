@@ -43,7 +43,7 @@ node companion.js
 
 That's it.
 It starts a local relay server automatically and drops you into a chat.
-Your Run/Submit clicks on LeetCode show up in that chat as they happen.
+Your Run/Submit clicks on LeetCode show up in that chat as they happen (see "What the tutor is sent" below for which ones reach the tutor).
 Type `/exit` (or press Ctrl+C) to quit.
 
 Optional shortcut: symlink the launcher once (`ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode`), then just run `leetcode` from anywhere instead of the three commands above.
@@ -51,13 +51,24 @@ Optional shortcut: symlink the launcher once (`ln -s "$(pwd)/bin/leetcode" ~/.lo
 ## Tutor tab on LeetCode
 
 With the companion running, the extension adds a **Tutor** tab to the left tab strip on every problem page, next to Description, Submissions, Editorial, and Solutions.
-It mirrors the same conversation you see in the terminal: your Run and Submit attempts show up as they happen, the tutor's replies stream in, and you can type to it from the page.
+It mirrors the same conversation you see in the terminal: your Run and Submit attempts show up as small chips as they happen, the tutor's replies stream in, and you can type to it from the page.
 The terminal chat keeps working exactly as before, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
 
 Each problem has its own transcript.
-If you ask a question about a different problem than the one the tutor was last discussing, it is told which problem you are looking at, and the tutor session resets first if `COMPANION_AUTO_CLEAR_CONTEXT` is on.
-When you come back to a problem you already ran code for in this session, the tutor is told so and gets that problem's description again.
 A message you type in the terminal before your first Run or Submit stays in the terminal, since it belongs to no problem's transcript yet.
+
+### What the tutor is sent
+
+- A Run (the button or Ctrl+') is never sent to the tutor on its own. It is recorded as the newest code for that problem, and its chip says "Kept for your next message".
+- A Submit is sent automatically, but only if the code changed since the tutor last saw it. Otherwise the tab notes that it was unchanged and nothing is sent.
+- When you send a message from the Tutor tab, the tab reads the live editor and sends it along. If the code changed since the tutor last saw it, your message goes with a diff (line numbered, with a little context), not the whole code again. If nothing changed, your message goes as typed.
+- A message typed in the terminal cannot read the editor, so it uses the newest recorded Run or Submit instead.
+- The tutor gets the full code once, the first time (and again after a reset), and whenever a diff would be almost as long as the code itself.
+- What the tutor holds is tracked in memory only, and only counts once a reply came back, so a failed call never makes the companion think the tutor saw code it did not.
+
+The active problem is whichever one you last sent a message, Run or Submit from.
+Activity on a different problem resets the tutor (with `COMPANION_AUTO_CLEAR_CONTEXT` on, the default): its context, the code it held, and the old problem's chat kept by the relay are all dropped, and the new problem starts with its statement and your latest code.
+`relay-server/data/captures.jsonl` still keeps every Run and Submit with its full code.
 If the companion isn't running, the tab says so instead of failing silently.
 If the relay restarts, the tab marks the break with "Session restarted" and carries on with the new session.
 If the companion quits in the middle of a reply (Ctrl+C, a crash, its terminal closed), that reply stops typing and says the tutor stopped before it finished, in every open tab and in any tab opened later.

@@ -8,9 +8,10 @@
 //     on first run).
 //   - Runs a normal readline chat loop on stdin/stdout so Thomson can type
 //     into it directly at any time.
-//   - Sends each new capture into the same ongoing conversation through a
-//     swappable backend, then prints the real response - no pane, nothing
-//     to scrape.
+//   - Sends a changed Submit (never a Run) and every typed message into the
+//     same ongoing conversation through a swappable backend, the code as a
+//     diff against what the tutor already holds (see code-ledger.js), then
+//     prints the real response - no pane, nothing to scrape.
 //
 // Backends (set COMPANION_BACKEND):
 //   - "claude" (default): the Claude Agent SDK (@anthropic-ai/claude-agent-sdk),
@@ -2339,12 +2340,12 @@ printBanner(
 printBanner(
   dim(
     AUTO_CLEAR_CONTEXT
-      ? 'companion: auto-clear-context ON - a capture for a different problem resets the tutor session (set COMPANION_AUTO_CLEAR_CONTEXT=0 to disable)'
+      ? 'companion: auto-clear-context ON - a message, Run or Submit on a different problem resets the tutor session (set COMPANION_AUTO_CLEAR_CONTEXT=0 to disable)'
       : 'companion: auto-clear-context off (COMPANION_AUTO_CLEAR_CONTEXT=0)'
   )
 );
 printBanner(
-  dim('companion: type to chat directly; captures are injected automatically. Page Up for history, /exit to quit.')
+  dim('companion: type to chat directly; a changed Submit goes to the tutor, a Run waits for your next message. Page Up for history, /exit to quit.')
 );
 if (stylingEnabled()) drawBox();
 else rl.prompt();

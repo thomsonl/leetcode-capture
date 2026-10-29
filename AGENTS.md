@@ -84,7 +84,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - `fixtures/captures.jsonl` is a sample capture log for exercising the vault tool without a live capture session (`--dry-run` to preview without writing).
 - `companion/companion.js` is a single Node process (no tmux, no CLI pane-scraping): it tails
   captures the same way the old `watch.js` did and drives a normal `readline` chat loop, sending
-  both typed input and injected captures through a swappable backend (`COMPANION_BACKEND=claude`
+  both typed input and changed Submits (never Runs, see the code-ledger bullet) through a swappable backend (`COMPANION_BACKEND=claude`
   via `@anthropic-ai/claude-agent-sdk`, or `local` via plain `fetch` against an OpenAI-compatible
   endpoint). A capture arriving mid-keystroke never corrupts the in-progress input line - it's
   printed above the prompt and the prompt is redrawn with the saved line/cursor reinserted
@@ -363,17 +363,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not independently
   live-verified against a real Claude account.
 
-- Automatic context reset on a problem switch (`COMPANION_AUTO_CLEAR_CONTEXT`, on by
-  default - see `companion.js`'s "automatic context reset on problem switch" section):
-  tracks `capture.problemSlug` (falling back to `problemTitle`) across captures and calls
-  each backend's own `resetContext()` - dropping `ClaudeBackend.sessionId` so the SDK
-  starts a fresh session, or truncating `LocalBackend.history` back to just its leading
-  system message - the instant a capture for a different problem arrives, rather than
-  relying on `TUTOR_SYSTEM_PROMPT`'s own soft "first capture for this problem" wording.
-  Deliberately in-memory only, not added to `.companion-state.json`: neither backend's own
-  continuity (`sessionId`/`history`) is persisted across a restart either, so persisting
-  just the tracked problem id would add bookkeeping without changing any actual behavior -
-  a restart already starts both backends from a clean slate regardless.
+- What the tutor is sent, and the reset on a problem switch, live in `companion/code-ledger.js` (pure, no Node API, so it
+  can later run in the extension's background; `code-ledger.test.js` checks that). A Run is only recorded, never sent.
+  A Submit is sent only when its code differs from what the tutor holds. A typed message leads with a numbered diff
+  (`formatDiffBody` in `context-budget.js`) against the held code, or the full code when nothing is held or the diff
+  passes 80% of the code. The held code advances only on `commit()` after a successful backend call, and is memory only.
+  Panel messages carry a live editor `snapshot` (content.js reads the Monaco model only, never the DOM scrape, which can
+  be truncated); terminal messages fall back to the newest Run or Submit. Every capture, message and reset runs inside
+  `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with
+  `COMPANION_AUTO_CLEAR_CONTEXT` on, the default) calls the backend's `resetContext()`, drops the old problem from the
+  ledger and asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`); `captures.jsonl` is
+  never touched. `LocalBackend` pins the held code as a system message (like the description) so `trimHistory` cannot
+  lose it, and an older full-code turn is sent as its `compactContent`. `ClaudeBackend` needs no pinning: its resumed
+  session keeps the first full code and later diffs. `companion/code-updates.test.js` covers the rules end to end.
 - Real mouse-wheel scrolling inside the alternate screen: `companion/mouse-input.js` enables xterm's
   SGR mouse-reporting mode (`\x1b[?1000h\x1b[?1006h`, disabled on exit alongside `1049l`) and parses the
   `\x1b[<Cb;Cx;Cy;M`/`m` reports it produces, calling back with `'up'`/`'down'` for a wheel notch (bit 6
@@ -755,17 +757,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
      `history` by turn 3): after 4 captures plus a typed follow-up, the real model still answered a
      detail-specific question ("what exact condition triggers the police alarm") correctly from the
      pinned description alone.
-  3. **Older history turns compressed to a diff**: `buildMessages` sends every user turn in full
-     *except* older ones (not the first-ever capture, which has nothing to diff against, and never
-     the current turn) - those get replaced with `compressOldCaptureTurn`'s output, a compact
-     LCS-based line diff (`diffLines`/`formatDiffSummary`, own from-scratch implementation, no new
-     dependency) against the code from the attempt before it, keeping the header line but dropping
-     the RUN/SUBMIT addendum. Live-measured on an identical real 7-turn session (same problem,
-     mostly Run with a Submit every third) run twice against the real model, before and after:
-     `prompt_eval_count` at turn 7 dropped from 2,879 to 1,901 (34% less) with the gap widening every
-     turn (turn 1 is a wash - the pinned-description wrapper costs a few more tokens than the old
-     inline `Problem:` prefix did - the real savings only start once there's a second capture to
-     compress), and both runs' actual tutor replies stayed accurate and equivalent in substance.
+  3. **Older history turns compressed to a diff**: superseded by the capture-diff rules above (later turns now carry
+     only a diff, and older full-code turns go compact next to the pinned code). The original measurement on a real
+     7-turn session: `prompt_eval_count` at turn 7 dropped from 2,879 to 1,901 (34% less).
   All three closed-loop-verified against the real, locally-running `gemma4:26b` (never a stub) in a
   real `tmux` pty session, per this file's own established bar - not just the piped test suite.
 
