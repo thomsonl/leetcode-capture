@@ -512,3 +512,17 @@ test("buildMessageBody never makes a body past the relay's cap, and never trunca
   assert.equal(JSON.parse(dropDesc.body).snapshot.problemDescription, undefined);
   assert.ok(bytes(dropDesc.body) <= MAX_MESSAGE_BYTES);
 });
+
+test("a config event names the tutor's model in state and never touches a transcript", () => {
+  const state = createState();
+  assert.equal(state.config, null);
+  const affected = applyEvent(state, { type: "config", provider: "local", label: "Local model", model: "gpt-oss:20b", epoch: "e1" });
+  assert.equal(affected, null);
+  assert.deepEqual(state.config, { provider: "local", label: "Local model", model: "gpt-oss:20b" });
+  assert.equal(state.byProblem.size, 0);
+  assert.equal(state.lastSeq, 0, "a config event has no sequence number to count");
+  applyEvent(state, { type: "config", provider: "claude", label: "Claude subscription", model: null });
+  assert.deepEqual(state.config, { provider: "claude", label: "Claude subscription", model: null });
+  applyEvent(state, { type: "config", provider: "x" });
+  assert.equal(state.config.label, "Claude subscription", "a config without a label is ignored");
+});

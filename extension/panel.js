@@ -73,6 +73,9 @@
       // The relay run that lastSeq counts in. Sequence numbers restart at 1
       // when the relay restarts, so a seq means nothing without its epoch.
       epoch: null,
+      // What the tutor runs on, from the companion's `config` event
+      // ({ provider, label, model }, never a key), or null before one came.
+      config: null,
       byProblem: new Map(), // slug -> items[]
       turnProblem: new Map(), // turnId -> slug, so a chunk (which has no slug) finds its turn
     };
@@ -217,6 +220,16 @@
       // closeOpenTurns); this covers a relay started before it did.
       if (!state.companionOnline && interruptPending(state)) return RESTARTED;
       if (state.companionOnline && Array.isArray(event.openTurns) && reviveOpen(state, event.openTurns)) return RESTARTED;
+      return null;
+    }
+    // Kept apart from the transcripts; only the header shows it.
+    if (event.type === "config") {
+      if (typeof event.label !== "string" || !event.label) return null;
+      state.config = {
+        provider: typeof event.provider === "string" ? event.provider : "",
+        label: event.label,
+        model: typeof event.model === "string" && event.model ? event.model : null,
+      };
       return null;
     }
     // Replays after a reconnect can overlap what we already have.
@@ -868,7 +881,19 @@
       height: 32px; margin: 0 1px; padding: 0 12px; border-bottom: 1px solid var(--head-line); color: var(--muted);
     }
     .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .head-right { flex: none; }
+    .head-left { flex: none; }
+    .head-right { flex: 0 1 auto; gap: 4px; }
+    /* Which model the tutor uses: the same muted secondary text as the
+       status, cut with an ellipsis when the pane is narrow (the full name is
+       in the tooltip). */
+    .provider { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; color: var(--muted); }
+    /* An icon button like LeetCode's own pane-header icons: muted, brighter on
+       hover over a faint fill. Pulled 4px right so the 16px icon itself, not
+       its hover box, lines up with the row's 12px padding, as the status
+       text does on the left. */
+    button.gear { flex: none; width: 24px; height: 24px; margin-right: -4px; border-radius: 4px; color: var(--muted); }
+    button.gear:hover { color: var(--fg); background: var(--fill); }
+    button.gear:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
     .status { display: flex; align-items: center; gap: 6px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
     /* The status light: neutral (the text color) while connecting or with
        the tutor offline, red with no relay, green idle, yellow working. The
@@ -1132,8 +1157,9 @@
     wrap.setAttribute("aria-label", "Tutor");
     // A slim header row like the one Submissions opens with, fixed at the
     // top while the transcript scrolls under it: the connection status on
-    // the left, and room on the right for controls (a settings gear and the
-    // model's name are planned there).
+    // the left; on the right the model the tutor uses and a gear that opens
+    // the extension's options page (through background.js, since a content
+    // script cannot open it itself).
     const head = el("div", "head");
     const headLeft = el("div", "head-left");
     const status = el("div", "status");
@@ -1148,6 +1174,21 @@
     status.appendChild(statusText);
     headLeft.appendChild(status);
     const headRight = el("div", "head-right");
+    const provider = el("span", "provider", "");
+    provider.hidden = true;
+    const gear = document.createElement("button");
+    gear.type = "button";
+    gear.className = "gear";
+    gear.setAttribute("aria-label", "Tutor settings");
+    gear.title = "Tutor settings";
+    // Feather's "settings" gear (MIT), drawn in the text color.
+    gear.innerHTML =
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="3"/>' +
+      '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' +
+      "</svg>";
+    gear.addEventListener("click", openSettings);
+    headRight.append(provider, gear);
     head.append(headLeft, headRight);
 
     const banner = el("div", "banner");
@@ -1186,7 +1227,23 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, status, statusText, headRight, banner, scroll, feed, input, send, hint };
+    return { host, status, statusText, headRight, provider, gear, banner, scroll, feed, input, send, hint };
+  }
+
+  // The options page is the only place settings (and API keys) are edited:
+  // a script on leetcode.com can read anything typed into this panel, but not
+  // an extension page. Without an extension runtime (the panel injected by
+  // hand for a test) there is nothing to open.
+  function openSettings() {
+    const runtime =
+      (typeof browser !== "undefined" && browser.runtime) || (typeof chrome !== "undefined" && chrome.runtime) || null;
+    if (!runtime || typeof runtime.sendMessage !== "function" || !runtime.id) return;
+    try {
+      const pending = runtime.sendMessage({ type: "lc-tutor:open-settings" });
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    } catch {
+      // The extension was reloaded under this page; nothing to do.
+    }
   }
 
   function currentSlug() {
@@ -1331,6 +1388,15 @@
     if (p.statusText.textContent !== conn.label) p.statusText.textContent = conn.label;
     if (p.status.dataset.state !== conn.light) p.status.dataset.state = conn.light;
     renderBanner(p.banner, conn.banner);
+
+    // The model is only named while the companion that reported it is online.
+    const config = state.companionOnline ? state.config : null;
+    const providerText = config ? (config.model ? `${config.label} \u00b7 ${config.model}` : config.label) : "";
+    if (p.provider.textContent !== providerText) {
+      p.provider.textContent = providerText;
+      p.provider.title = config ? `The tutor uses ${config.model ? `${config.label}, ${config.model}` : config.label}` : "";
+    }
+    p.provider.hidden = !providerText;
 
     const canSend = conn.ok && Boolean(slug);
     p.input.disabled = !canSend;

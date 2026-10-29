@@ -143,7 +143,7 @@ try {
       return {
         title: window.__qa('h1, h2, .title').length,
         left: window.__q('.head > .head-left > .status') !== null,
-        right: window.__q('.head > .head-right') !== null && window.__q('.head-right').children.length === 0,
+        right: window.__q('.head > .head-right > .provider[hidden]') !== null && window.__q('.head > .head-right > button.gear') !== null,
         // The header stays put while the transcript scrolls under it.
         outsideScroll: !scroll.contains(headNode),
         role: status.getAttribute('role'),
@@ -239,6 +239,129 @@ try {
     // The light fixture's Description text is rgb(38, 38, 38).
     check(/^(rgba\(38, 38, 38, 0\.1\)|color\(srgb 0\.149\d* 0\.149\d* 0\.149\d* \/ 0\.1\))$/.test(m.border), `light border: ${m.border}`);
     check(m.rowColor === 'rgba(26, 26, 26, 0.6)' && m.color === m.rowColor, `light header text ${m.color} vs the Submissions row ${m.rowColor}`);
+  });
+
+  await scenario('the header names the tutor model on the right, in the row text style, with a settings gear', async () => {
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
+    await page.eval(`window.__event({ type: 'config', provider: 'local', label: 'Local model', model: 'gpt-oss:20b', epoch: 'e1' })`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const host = document.getElementById('lc-tutor-panel-host').getBoundingClientRect();
+      const head = window.__q('.head').getBoundingClientRect();
+      const provider = window.__q('.provider');
+      const gear = window.__q('button.gear');
+      const pr = provider.getBoundingClientRect();
+      const gr = gear.getBoundingClientRect();
+      const ps = getComputedStyle(provider);
+      const gs = getComputedStyle(gear);
+      const icon = gear.querySelector('svg').getBoundingClientRect();
+      return {
+        text: provider.textContent,
+        hidden: provider.hidden,
+        title: provider.title,
+        font: ps.fontSize + '/' + ps.lineHeight,
+        color: ps.color,
+        statusColor: getComputedStyle(window.__q('.status')).color,
+        providerMid: pr.top + pr.height / 2 - (head.top + head.height / 2),
+        gap: gr.left - pr.right,
+        gear: { w: gr.width, h: gr.height, mid: gr.top + gr.height / 2 - (head.top + head.height / 2), right: host.right - gr.right, radius: gs.borderRadius, color: gs.color, bg: gs.backgroundColor },
+        icon: { w: icon.width, h: icon.height, dx: icon.left + icon.width / 2 - (gr.left + gr.width / 2), dy: icon.top + icon.height / 2 - (gr.top + gr.height / 2) },
+        label: gear.getAttribute('aria-label'),
+        tip: gear.title,
+        type: gear.type,
+      };
+    })()`);
+    check(m.text === 'Local model · gpt-oss:20b' && !m.hidden, `provider label: ${JSON.stringify(m)}`);
+    check(m.title === 'The tutor uses Local model, gpt-oss:20b', `provider tooltip: ${m.title}`);
+    check(m.font === '12px/16px' && m.color === m.statusColor, `provider text style: ${m.font} ${m.color} vs ${m.statusColor}`);
+    check(Math.abs(m.providerMid) <= 0.5, `provider label centered: ${m.providerMid}`);
+    check(m.label === 'Tutor settings' && m.tip === 'Tutor settings' && m.type === 'button', `gear a11y: ${JSON.stringify(m)}`);
+    // 1px header margin plus 12px padding, less the 4px the icon sits inside
+    // its hover box: the icon ends 13px from the pane edge, where the status
+    // text starts on the left.
+    check(m.gear.w === 24 && m.gear.h === 24 && Math.abs(m.gear.mid) <= 0.5 && m.gear.right === 9, `gear box: ${JSON.stringify(m.gear)}`);
+    check(m.gear.radius === '4px' && m.gear.color === m.statusColor && m.gear.bg === 'rgba(0, 0, 0, 0)', `gear at rest: ${JSON.stringify(m.gear)}`);
+    check(m.icon.w === 16 && m.icon.h === 16 && Math.abs(m.icon.dx) <= 0.5 && Math.abs(m.icon.dy) <= 0.5, `gear icon: ${JSON.stringify(m.icon)}`);
+    check(m.gap === 4, `label to gear gap: ${m.gap}`);
+    // Hover: the label color brightens to the tab text and a faint fill shows.
+    const center = await page.eval(`(() => { const r = window.__q('button.gear').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: center.x, y: center.y });
+    await settle();
+    const hover = await page.eval(`(() => { const g = getComputedStyle(window.__q('button.gear')); return { color: g.color, bg: g.backgroundColor, fg: getComputedStyle(window.__q('.wrap')).getPropertyValue('--fg') || document.getElementById('lc-tutor-panel-host').style.getPropertyValue('--fg') }; })()`);
+    check(hover.color === hover.fg.trim() && hover.bg !== 'rgba(0, 0, 0, 0)', `gear hover: ${JSON.stringify(hover)}`);
+    await page.screenshot(path.join(SHOTS, '02d-header-provider-gear-hover.png'), { width: 1100, height: 760 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
+    await settle();
+    await page.screenshot(path.join(SHOTS, '02e-header-provider-gear.png'), { width: 1100, height: 760 });
+  });
+
+  await scenario('the gear asks the background worker to open the options page, and does nothing without an extension runtime', async () => {
+    // As injected here (no extension), chrome.runtime has no id: a click must not throw.
+    await page.eval(`window.__q('button.gear').click()`);
+    const sent = await page.eval(`(() => {
+      const saved = window.chrome.runtime;
+      const messages = [];
+      window.chrome.runtime = { ...saved, id: 'abcdefghijklmnopabcdefghijklmnop', sendMessage: (m) => { messages.push(m); return Promise.resolve(); } };
+      window.__q('button.gear').click();
+      window.chrome.runtime = saved;
+      return messages;
+    })()`);
+    check(JSON.stringify(sent) === JSON.stringify([{ type: 'lc-tutor:open-settings' }]), `messages sent: ${JSON.stringify(sent)}`);
+    const rejected = await page.eval(`(async () => {
+      const saved = window.chrome.runtime;
+      window.chrome.runtime = { ...saved, id: 'abcdefghijklmnopabcdefghijklmnop', sendMessage: () => Promise.reject(new Error('Extension context invalidated.')) };
+      window.__q('button.gear').click();
+      await new Promise((r) => setTimeout(r, 50));
+      window.chrome.runtime = saved;
+      return 'ok';
+    })()`);
+    check(rejected === 'ok', 'a rejected sendMessage escaped');
+  });
+
+  await scenario('a long model name is cut with an ellipsis, never pushing the status or the gear', async () => {
+    const statusBefore = await page.eval(`window.__q('.status').getBoundingClientRect().width`);
+    await page.eval(`window.__event({ type: 'config', provider: 'openai', label: 'OpenAI API key', model: 'a-very-long-fine-tuned-model-name-that-goes-on-and-on-and-on-and-on-and-on-and-on-and-on-and-on-and-on-forever', epoch: 'e1' })`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const head = window.__q('.head').getBoundingClientRect();
+      const p = window.__q('.provider');
+      const pr = p.getBoundingClientRect();
+      const sr = window.__q('.status').getBoundingClientRect();
+      const gr = window.__q('button.gear').getBoundingClientRect();
+      return { overflow: getComputedStyle(p).textOverflow, clipped: p.scrollWidth > p.clientWidth, providerLeft: pr.left, statusRight: sr.right, statusWidth: sr.width, gearRight: gr.right, headRight: head.right, gearWidth: gr.width, headHeight: head.height };
+    })()`);
+    check(m.overflow === 'ellipsis' && m.clipped, `long name: ${JSON.stringify(m)}`);
+    check(m.providerLeft >= m.statusRight + 12 && m.statusWidth === statusBefore, `the label crowds the status: ${JSON.stringify(m)}`);
+    check(m.gearWidth === 24 && m.headRight - m.gearRight === 8 && m.headHeight === 32, `the gear moved or the row grew: ${JSON.stringify(m)}`);
+    await page.screenshot(path.join(SHOTS, '02f-header-long-model.png'), { width: 1100, height: 760 });
+    await page.eval(`window.__event({ type: 'config', provider: 'claude', label: 'Claude subscription', model: null, epoch: 'e1' })`);
+    await settle();
+    const plain = await page.eval(`window.__q('.provider').textContent`);
+    check(plain === 'Claude subscription', `no model: ${plain}`);
+  });
+
+  await scenario('offline, the model is not named (it may be stale) but the gear stays', async () => {
+    await page.eval(`window.__event({ type: 'status', companionOnline: false, epoch: 'e1' })`);
+    await settle();
+    const m = await page.eval(`({ hidden: window.__q('.provider').hidden, display: getComputedStyle(window.__q('.provider')).display, gear: getComputedStyle(window.__q('button.gear')).display })`);
+    check(m.hidden && m.display === 'none' && m.gear !== 'none', `offline header: ${JSON.stringify(m)}`);
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
+    await settle();
+    check(!(await page.eval(`window.__q('.provider').hidden`)), 'the label comes back when the companion does');
+  });
+
+  await scenario('light mode: the model label and the gear take the light row color', async () => {
+    await page.eval(`document.documentElement.classList.add('light')`);
+    await settle();
+    const m = await page.eval(`({
+      provider: getComputedStyle(window.__q('.provider')).color,
+      gear: getComputedStyle(window.__q('button.gear')).color,
+      row: getComputedStyle(document.querySelector('#pane-subs .row-label')).color,
+    })`);
+    await page.screenshot(path.join(SHOTS, '02g-header-provider-light.png'), { width: 1100, height: 760 });
+    await page.eval(`document.documentElement.classList.remove('light')`);
+    await settle();
+    check(m.row === 'rgba(26, 26, 26, 0.6)' && m.provider === m.row && m.gear === m.row, `light: ${JSON.stringify(m)}`);
   });
 
   await scenario('header text before Submissions was ever opened: the measured row color in dark, the tab strip in light', async () => {
@@ -404,7 +527,7 @@ try {
       const enter = () => t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
       enter();
       enter();
-      window.__duringSend = { readOnly: t.readOnly, sendDisabled: window.__q('button').disabled };
+      window.__duringSend = { readOnly: t.readOnly, sendDisabled: window.__q('.box button').disabled };
       enter();
     })()`);
     const during = await page.eval('window.__duringSend');
