@@ -24,6 +24,8 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { buildMessages } from './context-budget.js';
+import { formatPinnedCode } from './code-ledger.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_STDERR_CHARS = 2000;
@@ -89,36 +91,67 @@ export class CodexBackend {
     this.commandArgs = commandArgs;
     this.timeoutMs = timeoutMs;
     this.env = env;
-    this.history = []; // [{ role: 'student' | 'tutor', text }]
+    this.history = []; // [{ role: 'student' | 'tutor', text, compactText? }]
     this.pinnedProblemContext = null;
+    // The code the tutor holds (see code-ledger.js), pinned like the problem
+    // statement so dropping the old turn that carried the full code never
+    // loses it; later turns only carry diffs against it. `{ text }` or null.
+    this.pinnedCode = null;
   }
 
   resetContext() {
     this.history = [];
     this.pinnedProblemContext = null;
+    this.pinnedCode = null;
   }
 
-  buildPrompt(text) {
-    const parts = [this.systemPrompt];
-    if (this.pinnedProblemContext && this.pinnedProblemContext.description) {
-      const p = this.pinnedProblemContext;
-      parts.push(`Problem currently being discussed: ${p.title} (${p.slug})\n\n${p.description}`);
-    }
-    if (this.history.length) {
+  // The same pinning rules as LocalBackend (context-budget.js's
+  // buildMessages): the statement and the held code come first, and an older
+  // student turn whose code is now pinned is sent as its compact form.
+  buildPrompt(text, { compactText } = {}) {
+    const history = [
+      { role: 'system', content: this.systemPrompt },
+      ...this.history.map((h) => ({
+        role: h.role === 'student' ? 'user' : 'assistant',
+        content: h.text,
+        ...(typeof h.compactText === 'string' ? { compactContent: h.compactText } : {}),
+      })),
+      { role: 'user', content: text, ...(typeof compactText === 'string' ? { compactContent: compactText } : {}) },
+    ];
+    const messages = buildMessages({
+      history,
+      pinnedProblemContext: this.pinnedProblemContext,
+      pinnedCode: this.pinnedCode,
+    });
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content);
+    const turns = messages.filter((m) => m.role !== 'system');
+    const current = turns.pop();
+    const parts = [...system];
+    if (turns.length) {
       parts.push(
-        `Conversation so far:\n\n${this.history.map((h) => `${h.role === 'student' ? 'Student' : 'Tutor'}: ${h.text}`).join('\n\n')}`
+        `Conversation so far:\n\n${turns.map((m) => `${m.role === 'user' ? 'Student' : 'Tutor'}: ${m.content}`).join('\n\n')}`
       );
     }
-    parts.push(`Student: ${text}\n\nReply now as the tutor, following the rules above. Do not run commands or read files.`);
+    parts.push(`Student: ${current.content}\n\nReply now as the tutor, following the rules above. Do not run commands or read files.`);
     return parts.join('\n\n---\n\n');
   }
 
-  async sendMessage(text, { problemContext } = {}) {
-    if (problemContext && problemContext.description) this.pinnedProblemContext = problemContext;
-    const prompt = this.buildPrompt(text);
+  // `heldCode` is the code the tutor held before this turn and `compactText`
+  // what this turn becomes once its code is pinned instead (see
+  // LocalBackend.sendMessage, which takes the same options).
+  async sendMessage(text, { problemContext, heldCode, compactText } = {}) {
+    if (problemContext?.description && (!this.pinnedProblemContext || problemContext.problemId !== this.pinnedProblemContext.problemId)) {
+      this.pinnedProblemContext = problemContext;
+    }
+    const pinnedText = formatPinnedCode(heldCode);
+    this.pinnedCode = pinnedText ? { text: pinnedText } : null;
+    const prompt = this.buildPrompt(text, { compactText });
     fs.mkdirSync(this.cwd, { recursive: true });
     const reply = await this.runCodex(prompt);
-    this.history.push({ role: 'student', text }, { role: 'tutor', text: reply });
+    this.history.push(
+      { role: 'student', text, ...(typeof compactText === 'string' && compactText !== text ? { compactText } : {}) },
+      { role: 'tutor', text: reply }
+    );
     const keep = this.maxHistoryTurns * 2;
     if (this.maxHistoryTurns > 0 && this.history.length > keep) this.history = this.history.slice(this.history.length - keep);
     return reply;

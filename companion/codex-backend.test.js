@@ -125,6 +125,28 @@ test('history is bounded so a long session cannot grow the prompt forever', asyn
   assert.ok(!last.includes('question 2'), 'older turns are dropped');
 });
 
+test('held code is pinned and older full-code turns go compact, so dropping a turn never loses the code', async (t) => {
+  const { backend, calls } = setup(t, { backend: { maxHistoryTurns: 1 } });
+  const ctx = { problemId: 'two-sum', title: 'Two Sum', slug: 'two-sum', description: 'Given nums and a target...' };
+  await backend.sendMessage('FULL-CODE-TURN def f(): pass', { problemContext: ctx, compactText: 'COMPACT-FIRST' });
+  const held = { code: 'def f():\n    return 42', language: 'python3' };
+  await backend.sendMessage('DIFF-TURN-2', { problemContext: ctx, heldCode: held, compactText: 'COMPACT-SECOND' });
+  const second = calls()[1].prompt;
+  assert.match(second, /exactly as you last saw it/);
+  assert.match(second, /return 42/);
+  assert.match(second, /Student: COMPACT-FIRST/, 'the older full-code turn is sent compact');
+  assert.ok(!second.includes('FULL-CODE-TURN'));
+  assert.match(second, /Student: DIFF-TURN-2/, 'the current turn is sent whole');
+  await backend.sendMessage('THIRD', { problemContext: ctx, heldCode: held });
+  const third = calls()[2].prompt;
+  assert.ok(!third.includes('COMPACT-FIRST'), 'the history cap dropped the first turn');
+  assert.match(third, /return 42/, 'but the held code is still pinned');
+  assert.match(third, /Given nums and a target/);
+  backend.resetContext();
+  await backend.sendMessage('after reset');
+  assert.ok(!calls()[3].prompt.includes('return 42'), 'a reset drops the pinned code');
+});
+
 test('without a model flag configured, codex uses its own default', async (t) => {
   const { backend, calls } = setup(t, { model: null });
   await backend.sendMessage('hi');
