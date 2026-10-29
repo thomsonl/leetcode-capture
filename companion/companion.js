@@ -13,12 +13,16 @@
 //     diff against what the tutor already holds (see code-ledger.js), then
 //     prints the real response - no pane, nothing to scrape.
 //
-// Backends (set COMPANION_BACKEND):
-//   - "claude" (default): the Claude Agent SDK (@anthropic-ai/claude-agent-sdk),
-//     a real programmatic session - not the `claude` CLI driven by keystrokes.
+// Providers (chosen on the extension's options page, saved by settings.js, or
+// with COMPANION_BACKEND, which wins):
+//   - "claude" (default): the Claude Agent SDK (@anthropic-ai/claude-agent-sdk)
+//     on the Claude Code sign-in, a real programmatic session - not the
+//     `claude` CLI driven by keystrokes. "anthropic" is the same backend with
+//     an API key.
 //   - "local": plain HTTP against an OpenAI-compatible chat-completions
 //     endpoint (e.g. a local Ollama install). No extra dependency - Node's
-//     built-in fetch.
+//     built-in fetch. "openai" is the same backend against OpenAI's API.
+//   - "chatgpt": the Codex CLI on a ChatGPT sign-in (codex-backend.js).
 //
 // See the "Companion" section of the top-level README.md for setup,
 // environment variables, and exactly what credentials each backend needs.
@@ -57,6 +61,17 @@ import {
 } from './context-budget.js';
 import { probeServer, serverRoot } from './local-server.js';
 import { createPanelBridge } from './panel-bridge.js';
+import {
+  loadSettings,
+  resolveEffective,
+  settingsPath,
+  statusSummary,
+  claudeBackendEnv,
+  OLLAMA_BASE_URL,
+  PROVIDERS,
+} from './settings.js';
+import { createSettingsRpc } from './settings-rpc.js';
+import { CodexBackend } from './codex-backend.js';
 import { requestCaptureTrim, pendingTrimFor, pendingTrimHappened, isPendingTrim } from './capture-log.js';
 import { stripControlChars, oneLine, sanitizeCapture } from './sanitize.js';
 import {
@@ -125,14 +140,22 @@ if (process.stdout.isTTY) {
 
 // --- config ---------------------------------------------------------------
 
-const BACKEND = process.env.COMPANION_BACKEND || 'claude';
-const MODEL = process.env.COMPANION_MODEL || null;
+// Which LLM the tutor talks to and how comes from settings.js: per field, an
+// environment variable wins over the saved settings file (written by the
+// extension's options page through settings-rpc.js), which wins over the
+// default. A set environment variable locks its field in the options page.
+// `effective` is replaced as a whole after each save from the options page
+// (applySettings, below), so everything that reads it sees the new values
+// from the next turn on. It carries the API key, so it is never published.
+const SETTINGS_FILE = settingsPath(process.env);
+const loadedSettings = loadSettings(SETTINGS_FILE);
+let storedSettings = loadedSettings.settings;
+let effective = resolveEffective(storedSettings, process.env);
+
 // Ollama's own default OpenAI-compat address, used when nothing else is set.
 // Any OpenAI-compatible server works (LM Studio, llama.cpp server, vLLM,
 // text-generation-webui, LocalAI, ...).
-const DEFAULT_BASE_URL = 'http://localhost:11434/v1';
-const BASE_URL = process.env.COMPANION_BASE_URL || DEFAULT_BASE_URL;
-const API_KEY = process.env.COMPANION_API_KEY || null;
+const DEFAULT_BASE_URL = OLLAMA_BASE_URL;
 
 // Which HTTP API LocalBackend actually speaks: 'openai' (the standard
 // /v1/chat/completions shape every OpenAI-compatible server understands) or
@@ -155,7 +178,9 @@ const LOCAL_API = LOCAL_API_RAW === 'openai' || LOCAL_API_RAW === 'native' ? LOC
 // and was confirmed live to turn a real single-capture failure (a normal
 // ~150-line solution plus its problem description, no prior history) into a
 // normal completed reply with the exact same input.
-const LOCAL_NUM_CTX = Number(process.env.COMPANION_LOCAL_NUM_CTX || 8192);
+// From settings.js: the "Context window (tokens)" field of the local
+// provider, or COMPANION_LOCAL_NUM_CTX, which wins over it.
+const DEFAULT_LOCAL_NUM_CTX = 8192;
 
 // How many tokens of LOCAL_NUM_CTX to hold back for the model's own
 // thinking + answer when pre-flight checking a request's estimated size
@@ -169,32 +194,20 @@ const LOCAL_NUM_CTX = Number(process.env.COMPANION_LOCAL_NUM_CTX || 8192);
 // per-request guess.
 const LOCAL_RESERVE_TOKENS = Number(process.env.COMPANION_LOCAL_RESERVE_TOKENS || 2600);
 
-// Off by default: a portable checkout of this repo for someone other than
-// Thomson won't have this vault's Study/Algorithms structure, or even use
-// Obsidian. Thomson turns this on in his own untracked environment. See the
-// "Vault auto-summary" section below and README.md for what it does.
-const VAULT_AUTO_SUMMARY = /^(1|true|yes)$/i.test(process.env.VAULT_AUTO_SUMMARY || '');
-
-// On by default (opposite of VAULT_AUTO_SUMMARY above) - see the
-// "automatic context reset on problem switch" section below for what this
-// does and why leaving it on is the safer default: without it, a stale
-// problem's full code/discussion keeps getting resent as context on every
-// turn even long after the conversation has moved on to something else, with
-// only the system prompt's own soft wording asking the model to notice.
-// Explicit "0"/"false"/"no" (case-insensitive) turns it off; anything else,
-// including unset, leaves it on.
-const AUTO_CLEAR_CONTEXT = !/^(0|false|no)$/i.test(process.env.COMPANION_AUTO_CLEAR_CONTEXT || '');
-
-// How many user+assistant turn-pairs LocalBackend.history keeps before
-// dropping the oldest ones - see LocalBackend.trimHistory. AUTO_CLEAR_CONTEXT
-// above already resets history to nothing on a problem switch; this is the
-// additional bound *within* one still-current problem's own back-and-forth.
-// It is only a cap on the count: every request is also fitted to the token
-// budget before it is sent (fitToBudget in context-budget.js), dropping the
-// oldest whole exchanges as needed, so a few long replies can never leave
-// the conversation stuck over the budget. Defaults to 6. 0 (or unset to a
-// non-number) turns the count cap off; the token fit always applies.
-const LOCAL_MAX_HISTORY_TURNS = Number(process.env.COMPANION_LOCAL_MAX_HISTORY_TURNS || 6);
+// The other options also come from settings.js (`effective.options`):
+//   - vaultAutoSummary (VAULT_AUTO_SUMMARY), off by default: a portable
+//     checkout won't have this vault's Study/Algorithms structure, or even
+//     use Obsidian. See "Vault auto-summary" below and README.md.
+//   - autoClearContext (COMPANION_AUTO_CLEAR_CONTEXT), on by default: see the
+//     "automatic context reset on problem switch" section below for why
+//     leaving it on is the safer default (a stale problem's code and
+//     discussion would otherwise keep being resent long after the
+//     conversation moved on).
+//   - localMaxHistoryTurns (COMPANION_LOCAL_MAX_HISTORY_TURNS), 6 by default:
+//     how many user+assistant pairs LocalBackend and CodexBackend keep (see
+//     LocalBackend.trimHistory). Only a cap on the count: every local request
+//     is also fitted to the token budget before it is sent (fitToBudget in
+//     context-budget.js). 0 turns the count cap off.
 // In-page tutor panel (the extension's "Tutor" tab on leetcode.com): mirrors
 // this conversation to the browser through the relay server and accepts
 // messages typed there. On by default; COMPANION_PANEL=0 turns the bridge off
@@ -206,7 +219,9 @@ const { vaultPath: VAULT_PATH, algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER }
 // path should never silently fabricate a new folder tree (see
 // vault-notes.js's validateVaultPath). Only checked when the feature is
 // actually on, so a portable checkout with it off never needs a real vault.
-if (VAULT_AUTO_SUMMARY) validateVaultPath(VAULT_PATH);
+// A save from the options page is checked the same way (settings-rpc.js's
+// validateVault) and refused instead.
+if (effective.options.vaultAutoSummary) validateVaultPath(VAULT_PATH);
 
 // The tutor persona both backends share. Written out in full so every rule
 // is explicit rather than implied - see the "Companion" section of the
@@ -287,8 +302,9 @@ const RELAY_SERVER_DIR = path.join(REPO_ROOT, 'relay-server');
 // an explicit messages array and resends it in full, OpenAI-chat style).
 
 class ClaudeBackend {
-  constructor({ model }) {
+  constructor({ model, apiKey = null }) {
     this.model = model;
+    this.apiKey = apiKey;
     this.sessionId = undefined;
     this.queryFn = null;
   }
@@ -365,6 +381,7 @@ class ClaudeBackend {
       mcpServers: {},
       strictMcpConfig: true,
       settingSources: [],
+      env: claudeBackendEnv(this.apiKey),
     };
     if (this.model) options.model = this.model;
     if (this.sessionId) options.resume = this.sessionId;
@@ -552,7 +569,7 @@ class LocalBackend {
   constructor({ baseUrl, model, apiKey, maxHistoryTurns, apiStyle, numCtx, reserveTokens = LOCAL_RESERVE_TOKENS, probe = probeServer }) {
     if (!model) {
       throw new Error(
-        'COMPANION_MODEL is required for COMPANION_BACKEND=local (e.g. COMPANION_MODEL=llama3.2)'
+        'a model name is required for a local or OpenAI-compatible model (set it in the extension\'s Tutor settings, or COMPANION_MODEL, e.g. COMPANION_MODEL=llama3.2)'
       );
     }
     this.baseUrl = baseUrl.replace(/\/+$/, '');
@@ -1012,22 +1029,49 @@ class LocalBackend {
   }
 }
 
-function makeBackend() {
-  if (BACKEND === 'claude') return new ClaudeBackend({ model: MODEL });
-  if (BACKEND === 'local') {
+// Builds the backend for an effective configuration (settings.js's
+// resolveEffective). Throws, with a message fit for the options page, when
+// one cannot be built from it. Used at startup and by every options-page
+// save or connection test (settings-rpc.js), so all of them agree.
+function makeBackend(config) {
+  const { provider } = config;
+  if (provider === 'claude') return new ClaudeBackend({ model: config.model });
+  if (provider === 'anthropic') {
+    if (!config.apiKey) throw new Error('Anthropic API key needs an API key (or ANTHROPIC_API_KEY)');
+    return new ClaudeBackend({ model: config.model, apiKey: config.apiKey });
+  }
+  if (provider === 'local' || provider === 'openai') {
     return new LocalBackend({
-      baseUrl: BASE_URL,
-      model: MODEL,
-      apiKey: API_KEY,
-      maxHistoryTurns: LOCAL_MAX_HISTORY_TURNS,
-      apiStyle: LOCAL_API,
-      numCtx: LOCAL_NUM_CTX,
+      baseUrl: config.baseUrl || DEFAULT_BASE_URL,
+      model: config.model,
+      apiKey: config.apiKey,
+      maxHistoryTurns: config.options.localMaxHistoryTurns,
+      // A hosted OpenAI API always speaks the OpenAI shape; never probe it
+      // for Ollama's native API.
+      apiStyle: provider === 'openai' ? 'openai' : LOCAL_API,
+      numCtx: config.contextTokens || DEFAULT_LOCAL_NUM_CTX,
+      reserveTokens: LOCAL_RESERVE_TOKENS,
     });
   }
-  throw new Error(`unknown COMPANION_BACKEND "${BACKEND}" (expected "claude" or "local")`);
+  if (provider === 'chatgpt') {
+    return new CodexBackend({
+      model: config.model,
+      cwd: path.join(SCRATCH_DIR, 'codex'),
+      systemPrompt: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}`,
+      maxHistoryTurns: config.options.localMaxHistoryTurns,
+    });
+  }
+  throw new Error(`unknown provider "${provider}" (expected one of ${Object.keys(PROVIDERS).join(', ')})`);
 }
 
-const backend = makeBackend();
+// Swappable: an options-page save replaces it through the turn queue (see
+// applySettings), so a swap never lands in the middle of a turn.
+let backend = makeBackend(effective);
+
+// The label used in "error talking to backend (...)" lines.
+function backendLabel() {
+  return effective.provider;
+}
 
 // --- relay server lifecycle -------------------------------------------------
 //
@@ -1249,7 +1293,7 @@ function captureProblemContext(capture) {
 // when it changed (and AUTO_CLEAR_CONTEXT is on). Runs inside the turn queue,
 // so a reset never lands in the middle of a backend call.
 function activateProblem(problemId, slug) {
-  const result = ledger.activate(problemId, { slug, resetOnSwitch: AUTO_CLEAR_CONTEXT });
+  const result = ledger.activate(problemId, { slug, resetOnSwitch: effective.options.autoClearContext });
   if (!result.reset) return result;
   backend.resetContext();
   if (result.dropped && result.dropped.slug && panelBridge) panelBridge.dropProblem(result.dropped.slug);
@@ -1801,12 +1845,12 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, held
     } catch (err) {
       stopSpinner();
       clearBottomRows();
-      const errorLine = `${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`;
+      const errorLine = `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n`;
       recordHistory(errorLine);
       process.stdout.write(errorLine);
       drawBox();
       turnBoundaryPending = true;
-      panelEnd({ error: `Error talking to the backend (${BACKEND}): ${err.message}` });
+      panelEnd({ error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
       return false;
     }
 
@@ -1845,12 +1889,12 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, held
   } catch (err) {
     stopSpinner();
     clearBottomRows();
-    const errorLine = `${dim(`companion: error talking to backend (${BACKEND}): ${err.message}`)}\n`;
+    const errorLine = `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n`;
     recordHistory(errorLine);
     process.stdout.write(errorLine);
     drawBox();
     turnBoundaryPending = true;
-    panelEnd({ error: `Error talking to the backend (${BACKEND}): ${err.message}` });
+    panelEnd({ error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
     return false;
   }
   stopSpinner();
@@ -2162,7 +2206,7 @@ async function handleCaptureLine(line) {
       // on - see the "vault auto-summary" section above. One extra instruction
       // rides on the same message; no second LLM call.
       let vaultContext = null;
-      if (VAULT_AUTO_SUMMARY) {
+      if (effective.options.vaultAutoSummary) {
         try {
           vaultContext = prepareVaultContext({
             capture,
@@ -2532,6 +2576,72 @@ if (process.stdout.isTTY) {
   });
 }
 
+// --- settings from the extension's options page ----------------------------
+//
+// The options page calls settings-rpc.js through the relay (POST
+// /settings/rpc, forwarded down the inbox stream; see panel-bridge.js). A
+// save is validated and a backend is built from it before anything is
+// written, then applySettings swaps it in.
+
+// The non-secret summary of what the tutor runs on, for the panel's header.
+function publishConfig() {
+  if (panelBridge) panelBridge.setConfig(statusSummary(effective));
+}
+
+// What a backend is built from; when none of it changed (only an option such
+// as the vault auto-summary did), the running backend and its conversation
+// are kept.
+function backendKey(config) {
+  return JSON.stringify([
+    config.provider,
+    config.model,
+    config.baseUrl,
+    config.apiKey,
+    config.contextTokens,
+    config.options.localMaxHistoryTurns,
+  ]);
+}
+
+// Swaps in a saved configuration through the turn queue, so it lands between
+// turns and never in the middle of one (a message queued after the save goes
+// to the new backend). The new backend holds nothing, so the code the tutor
+// held is forgotten and the next message carries the full code. Not awaited
+// by the save itself: the options page hears "saved" at once even while a
+// long reply is still running.
+function applySettings(nextEffective, nextBackend) {
+  queueTurn(async () => {
+    const swap = backendKey(nextEffective) !== backendKey(effective);
+    effective = nextEffective;
+    if (swap) {
+      backend = nextBackend;
+      ledger.forgetHeld();
+    }
+    const now = statusSummary(effective);
+    printAboveInput(
+      dim(
+        `companion: settings saved - ${swap ? 'now using' : 'still using'} ${now.label}${
+          now.model ? ` (${oneLine(now.model)})` : ''
+        }${swap ? ', starting a fresh tutor session' : ''}`
+      )
+    );
+    publishConfig();
+  }).catch((err) => {
+    printAboveInput(dim(`companion: error applying settings: ${err.message}`));
+  });
+}
+
+const settingsRpc = createSettingsRpc({
+  file: SETTINGS_FILE,
+  env: process.env,
+  getStored: () => storedSettings,
+  setStored: (next) => {
+    storedSettings = next;
+  },
+  buildBackend: (config) => makeBackend(config),
+  apply: applySettings,
+  validateVault: () => validateVaultPath(VAULT_PATH),
+});
+
 await ensureRelayServer();
 
 if (PANEL_ENABLED) {
@@ -2539,6 +2649,7 @@ if (PANEL_ENABLED) {
   panelBridge = createPanelBridge({
     baseUrl: `http://${RELAY_HOST}:${RELAY_PORT}`,
     onMessage: handlePanelMessage,
+    onRpc: (method, params) => settingsRpc.handle(method, params),
     onState: (state) => {
       if (state === 'connected' && !announced) {
         announced = true;
@@ -2551,21 +2662,28 @@ if (PANEL_ENABLED) {
     },
   });
   panelBridge.start();
+  publishConfig();
   process.on('exit', () => panelBridge.stop());
 }
 
-printBanner(dim(`companion: backend=${BACKEND}${MODEL ? ` model=${MODEL}` : ''}`));
+{
+  const active = statusSummary(effective);
+  printBanner(
+    dim(`companion: backend=${active.provider} (${active.label})${active.model ? ` model=${oneLine(active.model)}` : ''}`)
+  );
+  if (loadedSettings.warning) printBanner(dim(`companion: warning: settings: ${oneLine(loadedSettings.warning)}`));
+}
 printBanner(dim(`companion: watching ${CAPTURES_PATH} (starting offset=${offset})`));
 printBanner(
   dim(
-    VAULT_AUTO_SUMMARY
+    effective.options.vaultAutoSummary
       ? `companion: vault auto-summary ON - writing to ${VAULT_PATH}`
-      : 'companion: vault auto-summary off (set VAULT_AUTO_SUMMARY=1 to enable)'
+      : 'companion: vault auto-summary off (turn it on in the Tutor settings, or set VAULT_AUTO_SUMMARY=1)'
   )
 );
 printBanner(
   dim(
-    AUTO_CLEAR_CONTEXT
+    effective.options.autoClearContext
       ? 'companion: auto-clear-context ON - a message, Run or Submit on a different problem resets the tutor session (set COMPANION_AUTO_CLEAR_CONTEXT=0 to disable)'
       : 'companion: auto-clear-context off (COMPANION_AUTO_CLEAR_CONTEXT=0)'
   )

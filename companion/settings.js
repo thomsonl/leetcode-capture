@@ -354,6 +354,24 @@ export function missingRequirement(effective) {
   return null;
 }
 
+// ---- backend environments ------------------------------------------------------
+
+// Environment variables that make Claude Code bill an API key (or another
+// token) instead of the sign-in the subscription provider was picked for.
+const ANTHROPIC_KEY_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
+
+// The environment the Claude backend's Claude Code process runs with (the
+// Agent SDK's `env` option). Without an apiKey (the "Claude subscription"
+// provider) every key variable is removed, so a stray ANTHROPIC_API_KEY can
+// never silently bill instead of the subscription; with one (the "Anthropic
+// API key" provider) exactly that key is set.
+export function claudeBackendEnv(apiKey, env = process.env) {
+  const out = { ...env };
+  for (const name of ANTHROPIC_KEY_ENV) delete out[name];
+  if (apiKey) out.ANTHROPIC_API_KEY = apiKey;
+  return out;
+}
+
 // ---- what other parties may see -----------------------------------------------
 
 // Non-secret summary of what is running; published to the in-page panel.

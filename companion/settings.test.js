@@ -11,6 +11,7 @@ import path from 'node:path';
 import {
   PROVIDERS,
   SettingsError,
+  claudeBackendEnv,
   applyPatch,
   emptySettings,
   loadSettings,
@@ -199,4 +200,11 @@ test('publicView never contains a key, but says whether one exists and where it 
 test('statusSummary is non-secret and names the provider', () => {
   const eff = resolveEffective(applyPatch(emptySettings(), { provider: 'local', providers: { local: { model: 'gpt-oss:20b', apiKey: 'k' } } }), {});
   assert.deepEqual(statusSummary(eff), { provider: 'local', label: 'Local model', model: 'gpt-oss:20b' });
+});
+
+test('the Claude backend environment drops stray keys for the subscription and sets exactly the chosen key otherwise', () => {
+  const env = { PATH: '/bin', ANTHROPIC_API_KEY: 'stray', ANTHROPIC_AUTH_TOKEN: 'tok' };
+  assert.deepEqual(claudeBackendEnv(null, env), { PATH: '/bin' });
+  assert.deepEqual(claudeBackendEnv('sk-ant-chosen', env), { PATH: '/bin', ANTHROPIC_API_KEY: 'sk-ant-chosen' });
+  assert.equal(env.ANTHROPIC_API_KEY, 'stray', 'the input is not changed');
 });

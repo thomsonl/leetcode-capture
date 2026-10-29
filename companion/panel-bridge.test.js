@@ -57,6 +57,7 @@ test('parseSseBlock extracts the JSON payload and ignores comments and junk', ()
 function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
   const published = [];
   const dropped = [];
+  const rpcResults = [];
   const inboxClients = new Set();
   let inboxConnections = 0;
   const server = http.createServer((req, res) => {
@@ -73,6 +74,14 @@ function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
       req.on('data', (c) => (body += c));
       req.on('end', () => {
         dropped.push(JSON.parse(body).problemSlug);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    } else if (req.method === 'POST' && req.url === '/panel/rpc-result') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        rpcResults.push({ body: JSON.parse(body), header: req.headers['x-lc-companion'] });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{"ok":true}');
       });
@@ -101,6 +110,7 @@ function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
         baseUrl: `http://127.0.0.1:${server.address().port}`,
         published,
         dropped,
+        rpcResults,
         flat: () => published.flat(),
         send: (message) => {
           for (const res of inboxClients) res.write(`id: 1\ndata: ${JSON.stringify(message)}\n\n`);
@@ -231,6 +241,62 @@ test('a relay that predates the panel (404 on the inbox) reports "unsupported"',
   t.after(() => bridge.stop());
   bridge.start();
   await until(() => states.includes('unsupported'), 3000, 'unsupported state');
+});
+
+test('an rpc inbox message goes to onRpc, never onMessage, and its answer is posted back with the companion header', async (t) => {
+  const relay = await startStubRelay();
+  t.after(() => relay.close());
+  const received = [];
+  const calls = [];
+  let release;
+  const slow = new Promise((r) => (release = r));
+  const bridge = createPanelBridge({
+    baseUrl: relay.baseUrl,
+    onMessage: (m) => received.push(m),
+    onRpc: async (method, params) => {
+      calls.push([method, params]);
+      if (method === 'test') await slow;
+      if (method === 'boom') throw new Error('kaput');
+      return { ok: true, result: { method } };
+    },
+  });
+  t.after(() => bridge.stop());
+  bridge.start();
+  await until(() => relay.inboxOpen() === 1, 3000, 'inbox open');
+  relay.send({ type: 'rpc', id: 'r1', method: 'test', params: { patch: {} } });
+  relay.send({ type: 'rpc', id: 'r2', method: 'get', params: {} });
+  relay.send({ id: 7, text: 'still a chat message', problemSlug: 'two-sum' });
+  relay.send({ type: 'rpc', id: 'r3', method: 'boom' });
+  relay.send({ type: 'rpc', method: 'get' }); // no id: ignored
+  await until(() => relay.rpcResults.length === 2 && received.length === 1, 3000, 'fast answers');
+  assert.deepEqual(
+    relay.rpcResults.map((r) => r.body),
+    [
+      { id: 'r2', response: { ok: true, result: { method: 'get' } } },
+      { id: 'r3', response: { ok: false, error: { message: 'kaput' } } },
+    ],
+    'a slow call does not hold up later calls or chat messages'
+  );
+  assert.ok(relay.rpcResults.every((r) => r.header === '1'));
+  release();
+  await until(() => relay.rpcResults.length === 3, 3000, 'slow answer');
+  assert.equal(relay.rpcResults[2].body.id, 'r1');
+  assert.equal(calls.length, 3);
+  assert.equal(received[0].text, 'still a chat message');
+});
+
+test('setConfig publishes a config event and publishes it again after the inbox reconnects', async (t) => {
+  const relay = await startStubRelay();
+  t.after(() => relay.close());
+  const bridge = createPanelBridge({ baseUrl: relay.baseUrl, onMessage: () => {} });
+  t.after(() => bridge.stop());
+  bridge.setConfig({ provider: 'local', label: 'Local model', model: 'm1' });
+  await bridge.drain();
+  assert.deepEqual(relay.flat(), [{ type: 'config', provider: 'local', label: 'Local model', model: 'm1' }]);
+  bridge.start();
+  await until(() => relay.flat().filter((e) => e.type === 'config').length >= 2, 3000, 'config on connect');
+  relay.dropInbox();
+  await until(() => relay.flat().filter((e) => e.type === 'config').length >= 3, 6000, 'config on reconnect');
 });
 
 // ---- end to end: real companion.js + real relay + stub model ----------------
@@ -647,5 +713,197 @@ test('end to end: a companion killed mid-reply leaves the reply interrupted, not
       ['turn-start', false],
       ['turn-end', true],
     ]
+  );
+});
+
+// ---- end to end: switching the tutor's model from the options page ----------
+//
+// A real companion.js and the real relay it starts, two stub models, and this
+// test playing both the Tutor panel and the extension's options page (POST
+// /settings/rpc with an extension Origin). The settings file is a temp path.
+
+const EXTENSION_ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+
+function startRecordingModel(name) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      requests.push({ body: JSON.parse(body), authorization: req.headers.authorization || null });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `${name} reply ${requests.length}` } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}/v1` })));
+}
+
+function freePort() {
+  return new Promise((resolve) => {
+    const s = http.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+function postJson(port, route, body, headers) {
+  return new Promise((resolve, reject) => {
+    const r = http.request(
+      { host: '127.0.0.1', port, path: route, method: 'POST', headers: { 'Content-Type': 'application/json', ...headers } },
+      (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (text += c));
+        res.on('end', () => resolve({ status: res.statusCode, text }));
+      }
+    );
+    r.on('error', reject);
+    r.end(JSON.stringify(body));
+  });
+}
+
+test('end to end: a provider change saved from the options page takes over the next message and resets the held code', async (t) => {
+  const modelA = await startRecordingModel('A');
+  const modelB = await startRecordingModel('B');
+  const port = await freePort();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-swap-e2e-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+  const settingsFile = path.join(scratch, 'config', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({ version: 1, provider: 'local', providers: { local: { model: 'model-a', baseUrl: modelA.url, contextTokens: 32768 } } })
+  );
+  const env = { ...process.env };
+  for (const name of [
+    'COMPANION_BACKEND',
+    'COMPANION_MODEL',
+    'COMPANION_BASE_URL',
+    'COMPANION_API_KEY',
+    'COMPANION_LOCAL_NUM_CTX',
+    'VAULT_AUTO_SUMMARY',
+    'COMPANION_AUTO_CLEAR_CONTEXT',
+    'COMPANION_LOCAL_MAX_HISTORY_TURNS',
+  ]) {
+    delete env[name];
+  }
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...env,
+      LEETCODE_CAPTURE_SETTINGS: settingsFile,
+      COMPANION_LOCAL_API: 'openai',
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: capturesPath,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (c) => (out += c.toString()));
+  child.stderr.on('data', (c) => (out += c.toString()));
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  let panel = null;
+  t.after(async () => {
+    if (panel) panel.close();
+    child.kill();
+    await exited;
+    modelA.server.close();
+    modelB.server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  await until(() => out.includes('companion: backend=local (Local model) model=model-a'), 10000, 'the banner naming the saved model');
+  let relayUp = false;
+  for (let i = 0; i < 100 && !relayUp; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    relayUp = await fetch(`http://127.0.0.1:${port}/capture`, { method: 'OPTIONS' }).then(
+      () => true,
+      () => false
+    );
+    // eslint-disable-next-line no-await-in-loop
+    if (!relayUp) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(relayUp, 'relay server never came up');
+  panel = connectPanel(port);
+  await until(() => out.includes('in-page panel connected'), 10000, 'the panel bridge');
+  await until(() => panel.events.some((e) => e.type === 'config' && e.model === 'model-a'), 10000, 'the first config event');
+  const firstConfig = panel.events.find((e) => e.type === 'config');
+  assert.deepEqual({ provider: firstConfig.provider, label: firstConfig.label, model: firstConfig.model }, { provider: 'local', label: 'Local model', model: 'model-a' });
+
+  const code = 'def twoSum(nums, target):\n    seen = {}\n    return []';
+  const message = (text) =>
+    postJson(
+      port,
+      '/panel/message',
+      { text, problemSlug: 'two-sum', snapshot: { code, language: 'python3', problemTitle: 'Two Sum' } },
+      { origin: LEETCODE }
+    );
+  const turnEnds = () => panel.events.filter((e) => e.type === 'turn-end').length;
+
+  assert.equal((await message('first question')).status, 202);
+  await until(() => turnEnds() === 1, 10000, 'the first reply');
+  assert.equal(modelA.requests.length, 1);
+  assert.match(JSON.stringify(modelA.requests[0].body.messages), /seen = \{\}/, 'the first message carries the full code');
+
+  assert.equal((await message('second question')).status, 202);
+  await until(() => turnEnds() === 2, 10000, 'the second reply');
+  const second = modelA.requests[1].body.messages;
+  assert.equal(second[second.length - 1].content.includes('seen = {}'), false, 'unchanged code is not sent again');
+
+  // A web page cannot reach the settings route.
+  const fromPage = await postJson(port, '/settings/rpc', { method: 'get', params: {} }, { origin: LEETCODE });
+  assert.equal(fromPage.status, 403);
+
+  // The options page saves model B, with an API key.
+  const saved = await postJson(
+    port,
+    '/settings/rpc',
+    { method: 'save', params: { patch: { provider: 'local', providers: { local: { model: 'model-b', baseUrl: modelB.url, apiKey: 'sk-test-secret-key-123' } } } } },
+    { origin: EXTENSION_ORIGIN, 'sec-fetch-mode': 'cors' }
+  );
+  assert.equal(saved.status, 200, saved.text);
+  const savedBody = JSON.parse(saved.text);
+  assert.equal(savedBody.ok, true, saved.text);
+  assert.equal(savedBody.result.active.model, 'model-b');
+  assert.equal(savedBody.result.settings.providers.local.hasKey, true);
+  assert.ok(!saved.text.includes('sk-test-secret-key-123'), 'the key never goes back to the page');
+  const onDisk = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  assert.equal(onDisk.providers.local.model, 'model-b');
+  assert.equal(fs.statSync(settingsFile).mode & 0o777, 0o600);
+
+  await until(() => panel.events.some((e) => e.type === 'config' && e.model === 'model-b'), 10000, 'the new config event');
+  assert.ok(panel.events.every((e) => !JSON.stringify(e).includes('sk-test-secret-key-123')), 'no key in any panel event');
+  await until(() => out.includes('settings saved - now using Local model (model-b)'), 5000, 'the terminal note');
+
+  assert.equal((await message('third question')).status, 202);
+  await until(() => turnEnds() === 3, 10000, 'the third reply');
+  assert.equal(modelA.requests.length, 2, 'model A gets nothing after the swap');
+  assert.equal(modelB.requests.length, 1, 'the next message goes to model B');
+  const third = modelB.requests[0];
+  assert.equal(third.body.model, 'model-b');
+  assert.equal(third.authorization, 'Bearer sk-test-secret-key-123');
+  const thirdText = JSON.stringify(third.body.messages);
+  const thirdLast = third.body.messages[third.body.messages.length - 1];
+  assert.equal(thirdLast.role, 'user');
+  assert.match(thirdLast.content, /in full:[\s\S]*seen = \{\}/, 'the swap reset the held code, so the message carries the full code again');
+  assert.ok(!thirdText.includes('first question'), 'the new backend starts a fresh conversation');
+  assert.ok(!out.includes('sk-test-secret-key-123'), 'the key is never printed');
+
+  // A panel that connects now gets the newest config right away.
+  const late = connectPanel(port);
+  t.after(() => late.close());
+  await until(() => late.events.some((e) => e.type === 'status'), 5000, 'the late panel');
+  assert.deepEqual(
+    late.events.filter((e) => e.type === 'config').map((e) => e.model),
+    ['model-b']
   );
 });

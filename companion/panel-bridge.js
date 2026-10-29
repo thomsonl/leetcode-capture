@@ -15,6 +15,14 @@
 //     events (POST /panel/drop-problem) once the tutor has moved on from it.
 //     It goes out after everything published before it, so the old
 //     problem's last events cannot land after the drop.
+//   - setConfig(config): publishes the non-secret `config` event (which
+//     provider and model the tutor uses) and publishes it again whenever the
+//     inbox reconnects, since a restarted relay has none to replay.
+//   - rpc: an inbox message `{ type: 'rpc', id, method, params }` is a call
+//     from the extension's options page (relay POST /settings/rpc). It goes to
+//     onRpc(method, params), and whatever that resolves to is posted back to
+//     POST /panel/rpc-result as `{ id, response }`. Calls run concurrently with
+//     the inbox, so a slow connection test never holds up a typed message.
 //
 // Kept free of any terminal/readline code so it can be tested against a stub
 // relay without booting companion.js.
@@ -55,6 +63,7 @@ export function createPanelBridge({
   baseUrl,
   onMessage,
   onState,
+  onRpc = null,
   fetchImpl = fetch,
   flushMs = FLUSH_MS,
   publishTimeoutMs = PUBLISH_TIMEOUT_MS,
@@ -66,6 +75,7 @@ export function createPanelBridge({
   let inboxAbort = null;
   let reconnectDelay = RECONNECT_MIN_MS;
   let state = 'connecting';
+  let config = null;
 
   function setState(next) {
     if (state === next) return;
@@ -126,6 +136,7 @@ export function createPanelBridge({
           reconnectDelay = RECONNECT_MIN_MS;
           setState('connected');
           if (busy) flushing = flushing.then(postActivity);
+          if (config) publish({ type: 'config', ...config });
           const decoder = new TextDecoder();
           let buffer = '';
           // eslint-disable-next-line no-restricted-syntax
@@ -136,7 +147,8 @@ export function createPanelBridge({
             while ((idx = buffer.indexOf('\n\n')) !== -1) {
               const message = parseSseBlock(buffer.slice(0, idx));
               buffer = buffer.slice(idx + 2);
-              if (message && typeof message.text === 'string') onMessage(message);
+              if (message && message.type === 'rpc') handleRpc(message);
+              else if (message && typeof message.text === 'string') onMessage(message);
             }
           }
         }
@@ -152,6 +164,34 @@ export function createPanelBridge({
       });
       reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
     }
+  }
+
+  async function handleRpc(message) {
+    if (typeof message.id !== 'string' || !message.id) return;
+    let response;
+    try {
+      response = onRpc
+        ? await onRpc(message.method, message.params)
+        : { ok: false, error: { message: 'this companion does not take settings calls' } };
+    } catch (err) {
+      response = { ok: false, error: { message: (err && err.message) || 'the settings call failed' } };
+    }
+    try {
+      await fetchImpl(`${baseUrl}/panel/rpc-result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...COMPANION_HEADERS },
+        body: JSON.stringify({ id: message.id, response }),
+        signal: AbortSignal.timeout(publishTimeoutMs),
+      });
+    } catch {
+      // The options page times out on its own and says so.
+    }
+  }
+
+  function setConfig(next) {
+    if (stopped || !next || typeof next !== 'object') return;
+    config = { ...next };
+    publish({ type: 'config', ...config });
   }
 
   async function postDrop(problemSlug) {
@@ -208,6 +248,7 @@ export function createPanelBridge({
     publish,
     dropProblem,
     setBusy,
+    setConfig,
     start() {
       runInbox();
     },
