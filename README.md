@@ -73,6 +73,11 @@ The Claude and ChatGPT subscriptions need the companion and relay on your comput
 The helper lets the extension start and stop them for you, so you never open a terminal for them.
 It is a small program plus a registration file that tells your browser where it is (Native Messaging), not a second extension.
 It needs Node 18 or newer.
+The npm package carries its own copy of the companion and relay, so `npx leetcode-capture-helper install` needs no checkout of this repository.
+It does not include either subscription's own program:
+
+- The Claude subscription needs Claude Code installed and signed in (`claude`, then `/login`) as the same user.
+- The ChatGPT subscription needs the `codex` CLI installed separately and signed in (`codex login`).
 
 1. In the extension's settings, choose Claude subscription or ChatGPT subscription.
 2. In the Helper section, press "Allow starting the helper" and accept the browser's prompt (the `nativeMessaging` permission, only asked for here).
@@ -93,9 +98,16 @@ What install writes, for your user only and without admin rights:
 
 - A copy of the helper in `~/.local/share/leetcode-capture-helper` (Linux), `~/Library/Application Support/leetcode-capture-helper` (macOS) or `%LOCALAPPDATA%\leetcode-capture-helper` (Windows), with a small script that runs it with the `node` you installed it with.
 - A registration file in each browser's `NativeMessagingHosts` folder (on Windows, in that folder plus a value under `HKCU\Software\...\NativeMessagingHosts`), for the browsers it finds; `--browser chrome,firefox` picks them yourself.
-- The helper runs the companion and relay from this repository's folder (the one the helper is in, or `--root <folder>`), so keep that folder where it is, with `npm install` done in `companion/`.
+- The helper runs the companion and relay from the copy inside the npm package, wherever npm put it.
+  With `npx` that is npm's npx cache: if you clear the cache, run the install command again (status and the Helper section say when the files are gone).
+  For a copy that stays put, run `npm install -g leetcode-capture-helper` and then `leetcode-capture-helper install`.
+- The capture log and the companion's state go in `app/data/` inside that data folder, not in the package.
 
-The npm package name `leetcode-capture-helper` is a placeholder that has not been published yet; until it is, run `node helper/cli.js install --chrome-id <id>` from this repository instead.
+From a checkout of this repository, `node helper/cli.js install --chrome-id <id>` runs the companion and relay from that checkout instead (with `npm install` done in `companion/`), and `--root <folder>` names another LeetCode Capture folder.
+The name `leetcode-capture-helper` was free on npm on 2026-10-29 and has not been published yet; until it is, use the checkout command above.
+
+To build the package: `npm pack` in `helper/` copies the companion, relay, `extension/shared/` and `vault-tool/vault-notes.js` (no tests, no data) into `helper/runtime/` first (`scripts/pack.mjs`, run by `prepack`), and fails if anything they import is missing or is not a dependency of the helper package; `postpack` removes the copy again, so those folders stay the only source.
+`npm run e2e:packed` in `helper/` checks the result for real: it packs, extracts, installs the dependencies, installs into a temporary home and starts the registered host with a fake browser on stdio (`--link-deps` uses the checkout's `node_modules` instead of `npm install`, for working offline).
 The Chrome id of an unpacked copy is shown in the Helper section and on `chrome://extensions`; set the published store ids in `helper/config.js` (`CHROME_EXTENSION_IDS`) once they exist, so the plain command works for everyone.
 The helper's log, with the companion's and relay's output, is `app/helper.log` inside that data folder.
 
