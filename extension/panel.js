@@ -1003,6 +1003,8 @@
     .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; }
+    .user-text.collapsed { max-height: 220px; overflow: hidden; }
+    .user button.more { display: block; width: auto; height: auto; margin-top: 4px; padding: 2px 0; color: var(--muted); font: inherit; font-size: 12px; }
     .tutor { min-width: 0; }
     .tutor > :first-child { margin-top: 0; }
     .tutor > :last-child { margin-bottom: 0; }
@@ -1634,7 +1636,19 @@
       return chip;
     }
     if (item.kind === "notice") return el("div", "notice", item.text);
-    return el("div", "user", item.text);
+    if (item.text.length <= 1200) return el("div", "user", item.text);
+    const bubble = el("div", "user");
+    const body = el("div", "user-text collapsed", item.text);
+    const more = el("button", "more", "Show more");
+    more.type = "button";
+    more.setAttribute("aria-expanded", "false");
+    more.addEventListener("click", () => {
+      const expanded = body.classList.toggle("collapsed") === false;
+      more.textContent = expanded ? "Show less" : "Show more";
+      more.setAttribute("aria-expanded", String(expanded));
+    });
+    bubble.append(body, more);
+    return bubble;
   }
 
   function patchTutor(entry, item) {

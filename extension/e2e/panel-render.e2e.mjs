@@ -558,6 +558,19 @@ try {
     check(JSON.stringify(m.text) === JSON.stringify(['AB', 'CD', 'EF', '<img src=x>']) && m.images === 0, JSON.stringify(m));
   });
 
+  await scenario('an 8000-character user message collapses and can expand', async () => {
+    await page.eval(`window.__ev({ type: 'user', problemSlug: 'two-sum', text: 'x'.repeat(8000) })`);
+    await settle();
+    const before = await page.eval(`(() => { const n = window.__qa('.user').at(-1); return { height: n.getBoundingClientRect().height,
+      button: n.querySelector('button')?.textContent || '' }; })()`);
+    check(before.height < 500 && before.button === 'Show more', JSON.stringify(before));
+    await page.eval(`window.__qa('.user').at(-1).querySelector('button').click()`);
+    await settle();
+    const after = await page.eval(`(() => { const n = window.__qa('.user').at(-1); return { height: n.getBoundingClientRect().height,
+      button: n.querySelector('button')?.textContent || '', text: n.textContent.length }; })()`);
+    check(after.height > before.height && after.button === 'Show less' && after.text >= 8000, JSON.stringify(after));
+  });
+
   await scenario('double Enter sends once, and the textarea is read-only while the POST is in flight', async () => {
     await page.eval(`(() => { window.__postDelayMs = 400; window.__posts.length = 0; })()`);
     await page.eval(`(() => {
