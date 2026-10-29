@@ -103,7 +103,7 @@ try {
     await page.screenshot(path.join(SHOTS, '01-offline.png'), { width: 1100, height: 760 });
   });
 
-  await scenario('header row: like the Submissions row, flush at the top, 32px, full width, a hairline below', async () => {
+  await scenario('header row: like the Submissions row, flush at the top, 32px, 1px in from each side, a hairline below', async () => {
     await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e1' })`);
     await settle();
     const m = await page.eval(`(() => {
@@ -126,7 +126,7 @@ try {
         font: cs.fontSize + '/' + cs.lineHeight,
         statusColor: cs.color,
         headColor: hs.color,
-        tabColor: getComputedStyle(document.querySelector('.flexlayout__tab_button--unselected:not([data-lc-tutor-tab])')).color,
+        rowColor: getComputedStyle(document.querySelector('#pane-subs .row-label')).color,
         rect: { top: head.top - host.top, left: head.left - host.left, width: head.width, hostWidth: host.width, height: head.height },
         padding: hs.paddingLeft + ' ' + hs.paddingRight,
         statusLeft: status.getBoundingClientRect().left - host.left,
@@ -145,13 +145,16 @@ try {
     check(m.text === 'Connected' && m.iconFirst, `status: ${m.text}`);
     check(m.font === '14px/20px', `status font: ${m.font}`);
     const r = m.rect;
-    check(r.top === 0 && r.left === 0 && r.width === r.hostWidth && r.height === 32, `header box: ${JSON.stringify(r)}`);
-    check(m.padding === '12px 12px' && m.statusLeft === 12, `header padding: ${m.padding}, status at ${m.statusLeft}`);
+    // The real Submissions row sits 1px in from each side of the pane (x=11,
+    // width 776 in a pane at x=10, width 778), so its text starts at 13px.
+    check(r.top === 0 && r.left === 1 && r.width === r.hostWidth - 2 && r.height === 32, `header box: ${JSON.stringify(r)}`);
+    check(m.padding === '12px 12px' && m.statusLeft === 13, `header padding: ${m.padding}, status at ${m.statusLeft}`);
     // color-mix(in srgb, <the Description pane's white body text> 10%, transparent)
     check(/^1px solid (rgba\(255, 255, 255, 0\.1\)|color\(srgb 1 1 1 \/ 0\.1\))$/.test(m.border), `header border: ${m.border}`);
     check(m.otherBorders === '0px 0px 0px', `only a bottom border: ${m.otherBorders}`);
-    // The secondary text color is the page's own (sampled, not hardcoded).
-    check(m.headColor === m.tabColor && m.statusColor === m.tabColor, `header text ${m.headColor} / status ${m.statusColor} vs page ${m.tabColor}`);
+    // The text color is the Submissions row's own (sampled, not hardcoded).
+    check(m.rowColor === 'rgba(239, 242, 246, 0.6)', `fixture row color: ${m.rowColor}`);
+    check(m.headColor === m.rowColor && m.statusColor === m.rowColor, `header text ${m.headColor} / status ${m.statusColor} vs the Submissions row ${m.rowColor}`);
     check(m.scrollTop === 0, `gap under the header: ${m.scrollTop}`);
     check(/ask a question/.test(m.empty), `online empty copy: ${m.empty}`);
     // color-mix(in srgb, rgb(245,245,245) 30%, transparent)
@@ -168,7 +171,7 @@ try {
       return {
         border: hs.borderBottomColor,
         color: hs.color,
-        tabColor: getComputedStyle(document.querySelector('.flexlayout__tab_button--unselected:not([data-lc-tutor-tab])')).color,
+        rowColor: getComputedStyle(document.querySelector('#pane-subs .row-label')).color,
       };
     })()`);
     await page.screenshot(path.join(SHOTS, '02b-header-light.png'), { width: 1100, height: 760 });
@@ -176,7 +179,38 @@ try {
     await settle();
     // The light fixture's Description text is rgb(38, 38, 38).
     check(/^(rgba\(38, 38, 38, 0\.1\)|color\(srgb 0\.149\d* 0\.149\d* 0\.149\d* \/ 0\.1\))$/.test(m.border), `light border: ${m.border}`);
-    check(m.color === m.tabColor, `light header text ${m.color} vs page ${m.tabColor}`);
+    check(m.rowColor === 'rgba(26, 26, 26, 0.6)' && m.color === m.rowColor, `light header text ${m.color} vs the Submissions row ${m.rowColor}`);
+  });
+
+  await scenario('header text before Submissions was ever opened: the measured row color in dark, the tab strip in light', async () => {
+    const colors = () => page.eval(`({
+      head: getComputedStyle(window.__q('.head')).color,
+      tab: getComputedStyle(document.querySelector('.flexlayout__tab_button--unselected:not([data-lc-tutor-tab])')).color,
+    })`);
+    // No Submissions pane yet (LeetCode mounts it on first open). A theme
+    // change makes the panel sample again.
+    await page.eval(`(() => { window.__subs = document.getElementById('pane-subs'); window.__subs.remove(); document.documentElement.classList.add('light'); })()`);
+    await settle();
+    const light = await colors();
+    await page.eval(`document.documentElement.classList.remove('light')`);
+    await settle();
+    const dark = await colors();
+    await page.eval(`(() => { document.querySelector('.flexlayout__layout').appendChild(window.__subs); document.documentElement.classList.add('light'); })()`);
+    await settle();
+    await page.eval(`document.documentElement.classList.remove('light')`);
+    await settle();
+    const back = await colors();
+    check(dark.head === 'rgba(239, 242, 246, 0.6)', `dark fallback: ${dark.head}`);
+    check(light.head === light.tab && light.tab === 'rgba(38, 38, 38, 0.6)', `light fallback: ${JSON.stringify(light)}`);
+    check(back.head === 'rgba(239, 242, 246, 0.6)', `with the pane back: ${back.head}`);
+  });
+
+  await scenario('while the Tutor tab is selected, the native selected label takes the tab strip color, not the row color', async () => {
+    const c = await page.eval(`({
+      selected: getComputedStyle(document.querySelector('.flexlayout__tab_button--selected:not([data-lc-tutor-tab])')).color,
+      tab: getComputedStyle(document.querySelector('.flexlayout__tab_button--unselected:not([data-lc-tutor-tab])')).color,
+    })`);
+    check(c.selected === c.tab && c.tab === 'rgba(255, 255, 255, 0.6)', JSON.stringify(c));
   });
 
   await scenario('the pane made inert is the one under the tabset, not the first in DOM order', async () => {

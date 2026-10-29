@@ -36,6 +36,10 @@
   #pane-code { left: 576px; top: 44px; width: 440px; height: 664px; background: rgb(30, 30, 30); color: rgb(212, 212, 212); }
   #pane-desc { left: 8px; top: 44px; width: 560px; height: 664px; color: rgb(255, 255, 255); font-size: 14px; line-height: 21px; }
   #pane-subs { display: none; }
+  /* The real Submissions pane opens with a slim row whose labels are a blue
+     grey, not the tab strip's white at 60% (measured in the dark theme). */
+  .border-b { display: flex; height: 32px; padding: 0 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+  .row-label { color: rgba(239, 242, 246, 0.6); }
   /* Light theme, toggled by the e2e script through a class on <html> (the
      panel re-samples its colors when that changes). */
   html.light { color-scheme: light; }
@@ -44,6 +48,7 @@
   html.light .flexlayout__tab_button--selected { color: rgb(38, 38, 38); }
   html.light .flexlayout__tab_button--unselected { color: rgba(38, 38, 38, 0.6); }
   html.light #pane-desc { color: rgb(38, 38, 38); }
+  html.light .row-label { color: rgba(26, 26, 26, 0.6); }
 </style>
 <script>
   (() => {
@@ -117,11 +122,13 @@
       </div>
       <div class="flexlayout__tabset_content"></div>
     </div>
-    <div class="flexlayout__tab" id="pane-desc">
+    <div class="flexlayout__tab" id="pane-desc" data-layout-path="/ts0/t0">
       <p>Given an array of integers, return indices of the two numbers such that they add up to a target. <button id="desc-button">focusable description control</button></p>
       <ul><li>First native item</li><li>Second native item</li></ul>
     </div>
-    <div class="flexlayout__tab" id="pane-subs">Submissions</div>
+    <div class="flexlayout__tab" id="pane-subs" data-layout-path="/ts0/t1">
+      <div class="border-b"><div><svg width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h16v16H4z"/></svg><span class="row-label">Status</span></div></div>
+    </div>
   </div>
 </body>
 </html>

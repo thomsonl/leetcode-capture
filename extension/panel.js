@@ -768,9 +768,10 @@
   // 1px border, and the browser's default (non-thin) scrollbar. There is no
   // big title: none of the native tabs except Description has one, and
   // Submissions opens with a slim muted row, which the header row copies:
-  // flush at the top of the pane and full width, 32px tall with 12px side
-  // padding, secondary-color text and a 10% hairline under it (white at 10%
-  // in the dark theme).
+  // flush at the top of the pane and 1px in from each side of it (the pane
+  // itself lines up with the Description pane exactly), 32px tall with 12px
+  // side padding, the row's own secondary text color and a 10% hairline under
+  // it (white at 10% in the dark theme).
   const PANEL_CSS = `
     :host { display: none; position: absolute; z-index: 20; box-sizing: border-box; }
     :host([data-active]) { display: block; }
@@ -783,7 +784,7 @@
     .scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 20px 16px; color-scheme: var(--scheme); }
     .head {
       flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      height: 32px; padding: 0 12px; border-bottom: 1px solid var(--head-line); color: var(--muted);
+      height: 32px; margin: 0 1px; padding: 0 12px; border-bottom: 1px solid var(--head-line); color: var(--muted);
     }
     .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .head-right { flex: none; }
@@ -910,6 +911,26 @@
     return (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255 > 0.5;
   }
 
+  // The text color of the slim row at the top of the native Submissions pane
+  // (its "Status" column label), which the Tutor header copies. flexlayout
+  // gives a tab button the path "<tabset>/tb<i>" and its pane "<tabset>/t<i>".
+  // The pane only exists once Submissions has been opened, and is usually
+  // hidden; a hidden element still has a computed color. Null when not found.
+  function submissionsRowColor(m) {
+    const button = [...m.container.querySelectorAll(".flexlayout__tab_button")].find(
+      (b) => !b.hasAttribute(TAB_ATTR) && labelOf(b) === "submissions"
+    );
+    const match = button ? /^(.*)\/tb(\d+)$/.exec(button.getAttribute("data-layout-path") || "") : null;
+    if (!match) return null;
+    const panePath = `${match[1]}/t${match[2]}`;
+    const pane = [...m.layout.querySelectorAll(".flexlayout__tab")].find((p) => p.getAttribute("data-layout-path") === panePath);
+    const row = pane ? pane.querySelector(".border-b") : null;
+    const leaf = row ? labelLeaves(row).find((n) => !n.closest("svg")) : null;
+    if (!leaf) return null;
+    const color = getComputedStyle(leaf).color;
+    return color && color !== "rgba(0, 0, 0, 0)" && color !== "transparent" ? color : null;
+  }
+
   // The colors are read from LeetCode's own rendered elements rather than
   // hardcoded, so the panel follows whatever theme the page is in.
   function sampleTheme(m) {
@@ -922,7 +943,14 @@
     const selected = buttons.find((b) => b.classList.contains("flexlayout__tab_button--selected"));
     const unselected = buttons.find((b) => b.classList.contains("flexlayout__tab_button--unselected"));
     const fg = pick(selected || unselected, "color", "rgb(245, 245, 245)");
-    const muted = pick(unselected, "color", "rgba(255, 255, 255, 0.6)");
+    // The tab strip's secondary color: what a native tab label turns to
+    // while the Tutor tab is the selected one.
+    const tabMuted = pick(unselected, "color", "rgba(255, 255, 255, 0.6)");
+    const light = isLight(pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
+    // Secondary text inside the panel is the content's own, which in the
+    // dark theme is a slightly blue grey, not the tab strip's white at 60%.
+    // Measured on the real Submissions row; used until that row can be read.
+    const muted = submissionsRowColor(m) || (light ? tabMuted : "rgba(239, 242, 246, 0.6)");
     const style = m.host.style;
     style.setProperty("--bg", pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
     style.setProperty("--fg", fg);
@@ -942,7 +970,6 @@
     // The status green comes from the page's own Submit button, so a light
     // theme gets its own, darker shade; the fallback is for a page that has
     // no such button on screen yet.
-    const light = isLight(pick(m.tabset, "backgroundColor", "rgb(38, 38, 38)"));
     const submit = document.querySelector('[data-e2e-locator="console-submit-button"]');
     style.setProperty("--green", pick(submit, "color", light ? "#0e8a3a" : "#2cbb5d"));
     // Not sampled: the first anchor in the native pane is a plain-text link
@@ -950,7 +977,7 @@
     // surface instead.
     style.setProperty("--link", light ? "#0b63e5" : "#4b9bff");
     style.setProperty("--red", "#ef4743");
-    document.documentElement.style.setProperty("--lc-tutor-muted", muted);
+    document.documentElement.style.setProperty("--lc-tutor-muted", tabMuted);
   }
 
   // ---- the tab button --------------------------------------------------
