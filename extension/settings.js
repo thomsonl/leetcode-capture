@@ -157,6 +157,234 @@
     return `The browser did not allow the extension to reach ${host}, so the tutor can't use it. Press the button again and choose Allow.`;
   }
 
+  // ---- the helper app (Native Messaging) ----------------------------------------
+  //
+  // For a provider that runs through the helper, the extension can start the
+  // companion and relay itself once the helper app is installed and the
+  // optional nativeMessaging permission is granted. The worker owns the
+  // connection (shared/helper-launcher.js); this page shows its state, asks
+  // for the permission and shows the install command.
+
+  const HELPER_HOST = "dev.thomsonklee.leetcode_capture";
+  const HELPER_PACKAGE = "leetcode-capture-helper";
+  const NATIVE = { permissions: ["nativeMessaging"] };
+  let helperInfo = null; // the worker's view, see background.js helperView
+  let helperProbe = null; // "installed" | "not-installed" | { error } from a direct ping, or null
+  let helperTimer = null;
+  let helperError = null;
+
+  function installCommand() {
+    const id = api.runtime.id;
+    return /^[a-p]{32}$/.test(id) ? `npx ${HELPER_PACKAGE} install --chrome-id ${id}` : `npx ${HELPER_PACKAGE} install`;
+  }
+
+  async function workerHelper(type) {
+    try {
+      return await api.runtime.sendMessage({ type });
+    } catch {
+      return null;
+    }
+  }
+
+  // Pings the helper directly, which only tells whether it is installed: it
+  // starts nothing until the worker asks.
+  function probeHelper() {
+    return new Promise((resolve) => {
+      if (typeof api.runtime.connectNative !== "function") {
+        resolve("not-installed");
+        return;
+      }
+      let port;
+      let done = false;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try {
+          port.disconnect();
+        } catch {
+          // already gone
+        }
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish({ error: "The helper did not answer." }), 4000);
+      try {
+        port = api.runtime.connectNative(HELPER_HOST);
+      } catch (err) {
+        finish({ error: err && err.message ? err.message : "Could not start the helper." });
+        return;
+      }
+      port.onMessage.addListener((message) => {
+        if (message && message.type === "pong") finish("installed");
+      });
+      port.onDisconnect.addListener(() => {
+        const reason = (port.error && port.error.message) || (api.runtime.lastError && api.runtime.lastError.message) || "";
+        finish(/not found|no such native application|not registered|forbidden/i.test(reason) ? "not-installed" : { error: reason || "The helper stopped." });
+      });
+      port.postMessage({ type: "ping", id: 1 });
+    });
+  }
+
+  async function refreshHelper({ retry = false, probe = false } = {}) {
+    helperInfo = await workerHelper(retry ? "lc-tutor:helper-retry" : "lc-tutor:helper-status");
+    if (helperInfo && helperInfo.permission && (probe || helperProbe === null) && helperInfo.state !== "running" && helperInfo.state !== "connecting") {
+      helperProbe = await probeHelper();
+    }
+    if (helperInfo && !helperInfo.permission) helperProbe = null;
+    // Running proves it is installed, for when it stops again.
+    if (helperInfo && helperInfo.state === "running") helperProbe = "installed";
+    drawHelper();
+  }
+
+  // What to show: [light ("ok" | "bad" | null), label].
+  function helperSummary() {
+    if (!helperInfo) return [null, "Checking"];
+    if (!helperInfo.permission) return [null, "Not allowed yet"];
+    if (helperInfo.state === "running") {
+      const host = helperInfo.host || {};
+      if (host.error) return ["bad", "Error"];
+      if (host.relay && host.relay.state === "external") return ["ok", "Running (started by hand)"];
+      return ["ok", "Running"];
+    }
+    if (helperInfo.state === "connecting") return [null, "Starting"];
+    if (helperInfo.state === "not-installed" || helperProbe === "not-installed") return ["bad", "Not installed"];
+    if (helperProbe === "installed") return ["ok", "Installed"];
+    if (helperProbe && helperProbe.error) return ["bad", "Error"];
+    return [null, "Checking"];
+  }
+
+  function helperErrorText() {
+    if (helperError) return helperError;
+    if (!helperInfo || !helperInfo.permission) return null;
+    if (helperInfo.state === "running" && helperInfo.host && helperInfo.host.error) return `The helper says: ${helperInfo.host.error}`;
+    if (helperInfo.state === "error" && helperInfo.error) return `The helper stopped: ${helperInfo.error}`;
+    if (helperProbe && helperProbe.error && helperInfo.state !== "running") return `The helper could not be reached: ${helperProbe.error}`;
+    return null;
+  }
+
+  function commandRow(command, label) {
+    const status = h("span", { class: "result", role: "status", "aria-live": "polite" });
+    const copy = h("button", {
+      type: "button",
+      class: "btn",
+      text: "Copy",
+      "aria-label": `Copy the ${label} command`,
+      onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(command);
+          status.textContent = "Copied";
+        } catch {
+          status.textContent = "Select the command and copy it";
+        }
+      },
+    });
+    return h("div", { class: "helper-step" }, h("div", { class: "helper-command" }, h("code", { text: command }), copy), status);
+  }
+
+  function drawHelper() {
+    const card = $("helper-card");
+    if (card.hidden) return;
+    const [light, label] = helperSummary();
+    const state = $("helper-state");
+    if (light === "ok") state.setAttribute("data-ok", "");
+    else state.removeAttribute("data-ok");
+    if (light === "bad") state.setAttribute("data-state", "bad");
+    else state.removeAttribute("data-state");
+    $("helper-state-text").textContent = label;
+
+    const body = $("helper-body");
+    body.textContent = "";
+    if (helperInfo && !helperInfo.permission) {
+      body.appendChild(
+        h(
+          "div",
+          { class: "helper-step" },
+          h("p", { class: "hint", text: "First, let the extension start the helper app. The browser asks once." }),
+          h(
+            "div",
+            { class: "actions" },
+            h("button", {
+              type: "button",
+              id: "helper-permission",
+              class: "btn primary",
+              text: "Allow starting the helper",
+              onclick: () => {
+                helperError = null;
+                // Straight from the click, before any await.
+                let asked;
+                try {
+                  asked = Promise.resolve(api.permissions.request(NATIVE));
+                } catch {
+                  asked = Promise.resolve(false);
+                }
+                asked
+                  .then(Boolean, () => false)
+                  .then((granted) => {
+                    if (!granted) helperError = "The browser did not allow it, so the extension can't start the helper. Press the button again and choose Allow.";
+                    return refreshHelper({ probe: true });
+                  });
+              },
+            })
+          )
+        )
+      );
+    } else if (helperInfo) {
+      const installed = helperInfo.state === "running" || helperProbe === "installed";
+      if (!installed) {
+        body.appendChild(h("p", { class: "hint", text: "Install the helper once by running this in a terminal, then press Check again:" }));
+        body.appendChild(commandRow(installCommand(), "install"));
+      } else {
+        body.appendChild(
+          h("p", {
+            class: "hint",
+            text:
+              helperInfo.state === "running"
+                ? "The tutor is running. It stops 30 seconds after you close the last LeetCode problem tab."
+                : "It starts by itself when you open a LeetCode problem.",
+          })
+        );
+      }
+      body.appendChild(
+        h(
+          "div",
+          { class: "actions" },
+          h("button", {
+            type: "button",
+            id: "helper-check",
+            class: "btn",
+            text: "Check again",
+            onclick: () => {
+              helperError = null;
+              refreshHelper({ retry: true, probe: true });
+            },
+          })
+        )
+      );
+      if (installed) {
+        body.appendChild(h("p", { class: "hint", text: "To remove it, run:" }));
+        body.appendChild(commandRow(`npx ${HELPER_PACKAGE} uninstall`, "uninstall"));
+      }
+    }
+    const error = helperErrorText();
+    $("helper-error").hidden = !error;
+    $("helper-error").textContent = error || "";
+  }
+
+  function renderHelper() {
+    const show = Boolean(selected && catalog[selected] && runtimeOf(selected) === "helper");
+    const card = $("helper-card");
+    const wasHidden = card.hidden;
+    card.hidden = !show;
+    if (!show) {
+      if (helperTimer) clearInterval(helperTimer);
+      helperTimer = null;
+      return;
+    }
+    drawHelper();
+    if (wasHidden) refreshHelper();
+    if (!helperTimer) helperTimer = setInterval(() => refreshHelper(), 5000);
+  }
+
   // ---- state helpers -----------------------------------------------------------
 
   function runtimesOf(id) {
@@ -476,6 +704,7 @@
     for (const node of [...fieldset.children]) if (node.tagName !== "LEGEND") node.remove();
     for (const id of ORDER) if (catalog[id]) fieldset.appendChild(providerCard(id));
     renderBehavior();
+    renderHelper();
     renderOffline();
     renderConnection();
     renderFoot();

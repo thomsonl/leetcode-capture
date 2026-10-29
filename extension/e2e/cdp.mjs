@@ -156,8 +156,12 @@ class Page {
 
 // Without `extensionDir`, launches a plain browser (no extension, no worker to
 // wait for), for scripts that inject a content script into a local fixture.
-export async function launch({ extensionDir = null, port = 9300 + Math.floor(Math.random() * 600) } = {}) {
+// `env` is added to the browser's environment (a Native Messaging host it
+// starts inherits it), and `setupProfile(dir)` runs on the fresh profile
+// folder before the browser starts. `args` are extra command-line switches.
+export async function launch({ extensionDir = null, port = 9300 + Math.floor(Math.random() * 600), env = {}, setupProfile = null, args = [] } = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-e2e-profile-'));
+  if (setupProfile) setupProfile(profile);
   const child = spawn(
     findChromium(),
     [
@@ -167,11 +171,12 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profile}`,
       ...(extensionDir ? [`--load-extension=${extensionDir}`, `--disable-extensions-except=${extensionDir}`] : []),
+      ...args,
       '--no-first-run',
       '--no-default-browser-check',
       'about:blank',
     ],
-    { stdio: ['ignore', 'ignore', 'pipe'] }
+    { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...env } }
   );
   let stderr = '';
   child.stderr.on('data', (c) => (stderr += c.toString()));
@@ -283,6 +288,7 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
     async listTargets() {
       return json('/json/list');
     },
+    profile,
     async close() {
       for (const p of pages) p.close();
       process.removeListener('exit', reap);
@@ -293,10 +299,11 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
 }
 
 // A copy of the extension for a test run, with `extraHosts` added to its
-// host_permissions, so permission checks for stub servers pass without the
-// browser's permission prompt (which a headless browser cannot answer).
+// host_permissions and `extraPermissions` to its permissions, so permission
+// checks pass without the browser's permission prompt (which a headless
+// browser cannot answer).
 // Returns { dir, cleanup }.
-export function extensionCopy(extensionDir, { extraHosts = [] } = {}) {
+export function extensionCopy(extensionDir, { extraHosts = [], extraPermissions = [] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-e2e-extension-'));
   fs.cpSync(extensionDir, dir, {
     recursive: true,
@@ -305,6 +312,7 @@ export function extensionCopy(extensionDir, { extraHosts = [] } = {}) {
   const manifestPath = path.join(dir, 'manifest.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   manifest.host_permissions = [...(manifest.host_permissions || []), ...extraHosts];
+  manifest.permissions = [...(manifest.permissions || []), ...extraPermissions];
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }

@@ -32,6 +32,16 @@
         </div>
       </section>
 
+      <section class="card" id="helper-card" aria-labelledby="helper-heading" hidden>
+        <div class="helper-head">
+          <h2 id="helper-heading">Helper</h2>
+          <p id="helper-state" class="connection" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="helper-state-text">Checking</span></p>
+        </div>
+        <p class="help">The Claude and ChatGPT subscriptions run through a small helper app on your computer, which needs Node. Once it is installed, the extension starts the tutor when you open a LeetCode problem and stops it 30 seconds after you close the last one.</p>
+        <div id="helper-body"></div>
+        <p id="helper-error" class="result" data-kind="error" role="alert" hidden></p>
+      </section>
+
       <section class="card" aria-labelledby="behavior-heading">
         <h2 id="behavior-heading">Behavior</h2>
         <div id="behavior"></div>

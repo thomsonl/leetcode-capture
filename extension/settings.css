@@ -128,9 +128,20 @@ input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
 
 .foot { color: var(--muted); font-size: 12px; line-height: 16px; }
 
-form[data-disabled] .card, form[data-disabled] .savebar { opacity: 0.55; pointer-events: none; }
+/* The Helper card stays usable: it is how a missing helper gets set up. */
+form[data-disabled] .card:not(#helper-card), form[data-disabled] .savebar { opacity: 0.55; pointer-events: none; }
 
 @media (max-width: 520px) {
   .fields { padding-left: 12px; }
   .page-head { flex-wrap: wrap; }
 }
+
+.helper-head { display: flex; align-items: center; gap: 12px; }
+.helper-head h2 { margin-bottom: 4px; }
+.helper-head .connection[data-state="bad"] .dot { background: var(--red); }
+.helper-step { display: grid; gap: 8px; margin: 0 0 12px; }
+.helper-step:last-child { margin-bottom: 0; }
+.helper-command { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.helper-command code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; border-radius: 6px; background: var(--fill); border: 1px solid var(--line); font: 12px/20px Menlo, Menlo-fallback, sans-serif; }
+.helper-command .btn { flex: none; }
+#helper-error[hidden] { display: none; }
