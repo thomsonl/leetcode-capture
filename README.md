@@ -89,18 +89,50 @@ Nothing is sent anywhere else.
 The relay's panel routes only answer requests whose `Host` is its own loopback address and whose `Origin`, if any, is `https://leetcode.com`, because unlike capture ingestion they can read your code back.
 Publishing tutor replies and reading the messages you type are reserved for the companion: those routes refuse every request a web page can make, including leetcode.com itself (see `companionOnlyRejection` in `relay-server/panel-broker.js`).
 
+## Settings
+
+The extension has a settings page where you choose which LLM the tutor uses.
+Open it with the gear in the Tutor tab's header (the tab also names the model it is using there), or from the extension's "Options" in `chrome://extensions` or `about:addons`.
+The companion must be running for the page to load or save anything.
+
+The providers:
+
+- **Claude subscription** (the default): your Claude Code sign-in (Pro or Max). Run `claude` once to sign in.
+- **Anthropic API key**: pay as you go with a key from console.anthropic.com.
+- **Local model**: Ollama, LM Studio or any OpenAI-compatible server on your machine, with its address, model name and context window (see "Local model backend" below).
+- **OpenAI API key**: pay as you go with a key from platform.openai.com, or any OpenAI-compatible service at another address.
+- **ChatGPT subscription** (experimental): your Codex CLI sign-in (`codex login`). It has only been tested against a stand-in for `codex`, not a real ChatGPT account.
+
+"Test connection" sends one short prompt with what is on the page, without saving anything.
+"Save" checks that the choice can work, writes it, and switches the tutor over between turns, never in the middle of a reply.
+The new model starts a fresh conversation and gets your full code with your next message.
+The page also has the auto-clear and vault options described below.
+
+Settings are saved in `~/.config/leetcode-capture/settings.json` (`%APPDATA%` on Windows, or the path in `LEETCODE_CAPTURE_SETTINGS`), readable only by you (mode 0600).
+API keys are kept only in that file and in the companion's memory, and are sent only to the provider you picked.
+The settings page never gets a key back, only whether one is saved and where it came from.
+The subscription providers remove `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` and `CODEX_API_KEY` from the environment they run with, so a stray key can never bill you instead of your subscription.
+
+Environment variables still work and win over the saved settings, one field at a time: `COMPANION_BACKEND` (the provider id: `claude`, `anthropic`, `local`, `openai` or `chatgpt`), `COMPANION_MODEL`, `COMPANION_BASE_URL`, `COMPANION_API_KEY`, `COMPANION_LOCAL_NUM_CTX`, `COMPANION_LOCAL_MAX_HISTORY_TURNS`, `COMPANION_AUTO_CLEAR_CONTEXT` and `VAULT_AUTO_SUMMARY`.
+A field set that way is locked on the page, which names the variable.
+`ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are used for their providers when no key is saved.
+
+The page talks to the relay at `POST /settings/rpc`, which only answers the extension's own pages (an `Origin` of `chrome-extension://<id>` or `moz-extension://<id>`, plus the same `Host` check as the panel routes), so neither leetcode.com nor any other website can read or change your settings.
+The relay passes each call to the companion over its existing connection and waits up to two minutes for the answer.
+Settings are never typed into the Tutor tab itself, because scripts on leetcode.com can see what is typed into the page.
+
 ## Optional features
 
 - **Local model backend.**
-  Run entirely against a local model instead of Claude, with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI and others) and any model: run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `leetcode -local` with the launcher).
-  `COMPANION_BASE_URL` points at the server's OpenAI-compatible root (default `http://localhost:11434/v1`, Ollama's), and `COMPANION_API_KEY` is sent as a bearer token if the server needs one.
+  Run entirely against a local model instead of Claude, with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI and others) and any model: pick "Local model" on the settings page, or run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `leetcode -local` with the launcher).
+  The server address (`COMPANION_BASE_URL`) is the server's OpenAI-compatible root (default `http://localhost:11434/v1`, Ollama's), and an API key (`COMPANION_API_KEY`) is sent as a bearer token if the server needs one.
   The context window settings (the defaults work for most):
-  - `COMPANION_LOCAL_NUM_CTX` (default 8192) is the most the companion budgets for, and what Ollama is asked for through its native API.
+  - The context window (the settings page's "Context window (tokens)", or `COMPANION_LOCAL_NUM_CTX`; default 8192) is the most the companion budgets for, and what Ollama is asked for through its native API.
   - `COMPANION_LOCAL_API` is `auto` (default), `openai` or `native`.
     With `auto` the companion asks the server once at startup whether it is Ollama (`GET /api/version`) and uses Ollama's native chat API only if it is, at any address or port, since that is the only API that honors a requested window; anything else uses the standard OpenAI-compatible API.
     Set it explicitly to skip the guess.
   - At startup the companion also asks the server for the model's real window where it can: Ollama (`/api/show`, and `/api/ps` for a loaded model on the OpenAI-compatible API), LM Studio (`/api/v0/models`), llama.cpp server (`/props`) and vLLM (`/v1/models`).
-    It budgets for the smaller of that and `COMPANION_LOCAL_NUM_CTX`.
+    It budgets for the smaller of that and the configured window.
     Every probe has a short timeout and is ignored if it fails, so an unknown server just uses the configured window.
   - On any server, if a reply reports far fewer prompt tokens than were sent (under 70 percent), the server silently cut the prompt to fit a smaller window: the companion prints one warning and budgets for the window the server really kept from then on.
   - `COMPANION_LOCAL_RESERVE_TOKENS` (default 2600) is held back for the model's thinking and answer; the prompt gets the rest.
@@ -109,10 +141,10 @@ Publishing tutor replies and reading the messages you type are reserved for the 
 
 - **Auto-clear context on problem switch.**
   On by default: starting a new problem resets the tutor's memory so an old problem doesn't linger as context forever.
-  Disable with `COMPANION_AUTO_CLEAR_CONTEXT=0`.
+  Turn it off on the settings page or with `COMPANION_AUTO_CLEAR_CONTEXT=0`.
 
 - **Obsidian vault integration (experimental).**
   Logs your attempts as notes into an Obsidian vault.
-  Run `vault-tool/log-session.js` to manually log the current problem's session (the capture log is cleared once you move on), or set `VAULT_AUTO_SUMMARY=1` to have the companion turn every Submit into a vault note automatically as you go.
+  Run `vault-tool/log-session.js` to manually log the current problem's session (the capture log is cleared once you move on), or turn on the vault auto-summary on the settings page (or set `VAULT_AUTO_SUMMARY=1`) to have the companion turn every Submit into a vault note automatically as you go.
   Point either at your own vault via `vault.config.json` (copy `vault.config.example.json`) or the `VAULT_PATH`/`VAULT_ALGORITHMS_SUBFOLDER` env vars.
   These features are experimental: the star ratings and proficiency scores they write are LLM assumptions.

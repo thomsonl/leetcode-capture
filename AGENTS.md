@@ -762,7 +762,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - `LocalBackend`'s context window works with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI) and any model; nothing may assume Ollama or a particular model.
   The window budgeted for is `contextWindow()`, the single place it is decided (`resolveContextWindow` in `context-budget.js`): the smallest of `COMPANION_LOCAL_NUM_CTX` (default 8192, also what Ollama's native API is asked for), what the startup probes found, and what a reply showed the server really kept.
-  A settings field for the window only needs to feed `numCtx`.
+  The options page's "Context window (tokens)" field (`contextTokens` in `companion/settings.js`, locked by `COMPANION_LOCAL_NUM_CTX`) is what feeds `numCtx`.
   The probes (`companion/local-server.js`, no Node API) run once in the background at startup and the first message waits at most for their 1.5 s timeouts: `GET /api/version` identifies Ollama (then `COMPANION_LOCAL_API=auto` uses the native API, at any address), and `/api/show`, `/api/ps`, LM Studio's `/api/v0/models`, llama.cpp's `/props` and vLLM's `/v1/models` report windows; any failure or unknown shape is ignored.
   Test model stubs must answer non-chat routes with a 404 (each stub has a one-line guard), since every companion subprocess now probes its stub.
   Every request is fitted to the budget before it is sent (`fitToBudget`): the oldest whole exchanges are dropped, never the pinned statement, the pinned code or the current message, and it is refused (naming each part's size) only when those alone are over.
@@ -784,7 +784,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     `Sec-Fetch-Site` other than `none`, or a missing `X-LC-Companion: 1` header is refused. A missing Origin alone
     proves nothing (a page's `fetch(url, { mode: "no-cors" })` sends none); the custom header needs a preflight, which
     the relay refuses. This keeps web pages out, not other local processes. `relay-server/panel-broker.test.js` covers
-    each rule; the new settings routes must reuse the same helper. Every `/panel/` route also refuses a
+    each rule; `POST /panel/rpc-result` (the settings answers) goes through the same helper. Every `/panel/` route also refuses a
     `Sec-Fetch-Mode` other than `cors`: a page's no-cors fetch, `<img>` or `<iframe>` carries no Origin and, unreadable
     as it is, used to hold one of the 20 panel-stream slots. Both real callers send `cors` (Node's fetch included).
   - The header's status light reads the relay's `status` event: `busy` (set by the companion on companion-only
@@ -820,6 +820,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     `content.js`'s Ctrl/Cmd+Enter shortcut ignores events whose composed path includes `#lc-tutor-panel-host`.
   - To test against the real page without loading the unpacked extension, run the relay + companion (with a stub
     model) and inject `panel.js` by `new Function(code)()` through the browser tool; leetcode's CSP allows it.
+
+- Settings (which LLM the tutor uses, plus the auto-clear and vault options) are edited on the extension's options page (`extension/settings.html`, `settings.js`), never in the Tutor panel, since leetcode.com's own scripts can read anything typed into the page.
+  The panel's gear sends `{ type: 'lc-tutor:open-settings' }` to `extension/background.js`, which calls `openOptionsPage`; the manifest declares `background` with both `service_worker` (Chrome) and `scripts` (Firefox), so `npm run lint:amo` always shows one warning about `service_worker` being ignored on Firefox.
+  The page calls `POST /settings/rpc`, which takes only an extension `Origin` (`chrome-extension://<32 letters a-p>` or `moz-extension://<uuid>`) plus the loopback Host check, and the relay forwards it down the companion's inbox as `{ type: 'rpc', id, method, params }` and waits up to 120 s for the companion-only `POST /panel/rpc-result` (503 with no companion, 504 on timeout).
+  The companion owns everything else: `companion/settings.js` (file, validation, env var > saved file > default per field, a set env var locks its field, `publicView` never carries a key), `settings-rpc.js` (get, save, test, models; a save builds the backend before writing anything) and `makeBackend(effective)` in `companion.js` for the five providers (`local`, `claude`, `anthropic`, `openai`, `chatgpt`).
+  A save swaps `backend` through `queueTurn`, so it never lands mid-turn, and calls `ledger.forgetHeld()` so the next message carries the full code; a save that changes only options keeps the running backend.
+  The companion publishes a non-secret `config` event (`statusSummary`: provider, label, model) at start, after each save and on every inbox reconnect; the relay keeps only the newest one, outside the conversation buffer, and sends it to each panel after the replay.
+  `ClaudeBackend` passes its environment through the Agent SDK's `env` option (`claudeBackendEnv`): `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed for the subscription and set to the saved key for the API-key provider; `CodexBackend` likewise drops `OPENAI_API_KEY` and `CODEX_API_KEY`.
+  `CodexBackend` pins the held code and the statement like `LocalBackend` (through `context-budget.js`'s `buildMessages`), and is tested only against a fake `codex`.
+  Tests must never touch the real `~/.config/leetcode-capture/settings.json`: `companion/test-isolation.js` (loaded by `npm test` with `--import`) points `LEETCODE_CAPTURE_SETTINGS` at a path that does not exist for every spawned companion, and a test that needs a file sets its own temp path.
+  `companion/panel-bridge.test.js` has the hot-swap test (two stub models, a save through `/settings/rpc`), and `extension/e2e/settings-page.e2e.mjs` ends with a live scenario against a real companion and relay on a free port (the browser redirects the page's `localhost:8135` requests there, so the relay sees the page's real Origin).
 
 ## Maintaining this file
 
