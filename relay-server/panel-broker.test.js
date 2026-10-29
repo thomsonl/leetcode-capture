@@ -17,7 +17,13 @@ const LEETCODE = "https://leetcode.com";
 // Every companion-only route needs this header (see panel-broker.js).
 const COMPANION = { "x-lc-companion": "1" };
 
-function request({ method = "GET", route, headers = {}, body, port = PORT }) {
+// Every helper below gives up after a few seconds. Several routes answer with
+// a never-ending stream when a check is broken (a refused /panel/inbox becomes
+// a live one), and a helper that waited for the end of that response would
+// hang the run instead of failing the test.
+const HELPER_TIMEOUT_MS = 3000;
+
+function request({ method = "GET", route, headers = {}, body, port = PORT, timeout = HELPER_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request(
@@ -37,6 +43,9 @@ function request({ method = "GET", route, headers = {}, body, port = PORT }) {
       }
     );
     req.on("error", reject);
+    req.setTimeout(timeout, () => {
+      req.destroy(new Error(`${method} ${route} did not finish within ${timeout} ms (an open stream where a refusal was expected?)`));
+    });
     if (payload) req.write(payload);
     req.end();
   });
@@ -71,10 +80,12 @@ function openSse({ route, headers = {}, port = PORT }) {
   return {
     events,
     close: () => req.destroy(),
-    ready: () =>
-      new Promise((resolve) => {
+    ready: (ms = HELPER_TIMEOUT_MS) =>
+      new Promise((resolve, reject) => {
+        const deadline = Date.now() + ms;
         const check = () => {
           if (statusCode !== null) resolve({ statusCode, headers: responseHeaders });
+          else if (Date.now() > deadline) reject(new Error(`${route} sent no response within ${ms} ms`));
           else setTimeout(check, 10);
         };
         check();
@@ -124,7 +135,8 @@ async function startServer(t, port = PORT) {
   return { stop };
 }
 
-test("panel broker", async (t) => {
+// A whole-test ceiling too, so a hang nobody anticipated still ends the run.
+test("panel broker", { timeout: 60000 }, async (t) => {
   await startServer(t);
 
   await t.test("rejects a request whose Host is not the relay's own loopback address (DNS rebinding)", async () => {
