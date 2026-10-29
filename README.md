@@ -62,8 +62,9 @@ A message you type in the terminal before your first Run or Submit stays in the 
 - A Run (the button or Ctrl+') is never sent to the tutor on its own. It is recorded as the newest code for that problem, and its chip says "Kept for your next message".
 - A Submit is sent automatically, but only if the code changed since the tutor last saw it. Otherwise the tab notes that it was unchanged and nothing is sent.
 - When you send a message from the Tutor tab, the tab reads the live editor and sends it along. If the code changed since the tutor last saw it, your message goes with a diff (line numbered, with a little context), not the whole code again. If nothing changed, your message goes as typed.
-- The live code goes along only if it fits the relay's limits (100,000 characters of code, 50,000 of problem statement, 256 KB for the whole message). Code past that is never cut short: the message goes without it, the tab says so, and the tutor uses your newest Run or Submit instead.
+- The live code goes along only if it fits the relay's limits (100,000 characters of code, 50,000 of problem statement, 256 KB for the whole message). Code past that is never cut short: the message goes without any code and the tab says so.
 - A message typed in the terminal cannot read the editor, so it uses the newest recorded Run or Submit instead.
+- Code is only ever read from the editor itself, never guessed. If the tab cannot read your editor, a Run or Submit is not recorded at all and a message goes without code, and the Tutor tab says "Couldn't read your editor, so the tutor has not seen this code."
 - The tutor gets the full code once, the first time (and again after a reset), and whenever a diff would be almost as long as the code itself.
 - What the tutor holds is tracked in memory only, and only counts once a reply came back, so a failed call never makes the companion think the tutor saw code it did not.
 

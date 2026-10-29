@@ -1808,8 +1808,11 @@ rl.on('line', (line) => {
 // A typed message (terminal or panel), inside the turn queue: prefixed with
 // the code update when the code changed since the tutor last saw it (see
 // code-ledger.js), and the code counted as held once the reply came back.
-async function sendChatTurn({ label, text, problemId, preamble = null }) {
-  const plan = problemId ? ledger.planUpdate(problemId) : { kind: 'none' };
+// codeUnavailable: a panel message whose editor code could not be read. It
+// goes with no code update at all (the newest Run or Submit does not stand
+// in for the live code), and the tutor is told why.
+async function sendChatTurn({ label, text, problemId, preamble = null, codeUnavailable = false }) {
+  const plan = problemId && !codeUnavailable ? ledger.planUpdate(problemId) : { kind: 'none' };
   const message = buildChatMessage({
     text,
     plan,
@@ -2090,7 +2093,8 @@ function panelSnapshot(raw) {
 // joins the same queue as terminal-typed messages and captures, and is echoed
 // in the terminal under a [panel] label so the two views never diverge. The
 // panel sends the live editor code with it when it could read it; without
-// that, the newest recorded Run or Submit stands in, as for the terminal.
+// that the message goes with no code at all (a terminal message, which has no
+// editor to read, uses the newest Run or Submit instead).
 function handlePanelMessage(message) {
   resetScrollIfNeeded();
   // The relay already strips control characters from panel messages, but
@@ -2125,14 +2129,14 @@ function handlePanelMessage(message) {
         },
       });
     }
-    const preamble =
-      previousId === problemSlug
-        ? null
-        : (plan) =>
-            `(The student is now working on the LeetCode problem "${problemSlug}"${
-              plan.kind === 'none' ? ' and has not shared any code for it yet' : ''
-            }.)`;
-    await sendChatTurn({ label, text, problemId: problemSlug, preamble });
+    const codeUnavailable = !snapshot;
+    const preamble = () => {
+      const notes = [];
+      if (previousId !== problemSlug) notes.push(`(The student is now working on the LeetCode problem "${problemSlug}".)`);
+      if (codeUnavailable) notes.push("(The student's editor could not be read, so their current code is not included.)");
+      return notes.length ? notes.join('\n') : null;
+    };
+    await sendChatTurn({ label, text, problemId: problemSlug, preamble, codeUnavailable });
   });
 }
 

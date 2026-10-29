@@ -529,11 +529,12 @@ test('end to end: switching problems in the panel tracks what the tutor has real
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(requests.length, 1, 'a Run must not reach the model');
 
-  // 3. A panel question on B: a new problem with no code seen, and A is
-  // forgotten (its context, its code, and its chat in the relay).
+  // 3. A panel question on B, with no editor code (it could not be read): a
+  // new problem, and A is forgotten (its context, its code, and its chat in
+  // the relay).
   relay.send({ text: 'what about brackets?', problemSlug: 'valid-parentheses' });
   await until(() => requests.length === 2, 10000, 'the question on B');
-  assert.match(lastPrompt(), /valid-parentheses\\" and has not shared any code for it yet/);
+  assert.match(lastPrompt(), /working on the LeetCode problem \\"valid-parentheses\\"\.\)\\n\(The student's editor could not be read/);
   assert.ok(!lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's context is cleared on the switch");
   assert.ok(!lastPrompt().includes('return []'), "A's code is not carried over");
   await until(() => turnEnds() === 1, 10000, 'the B turn-end');
@@ -543,17 +544,21 @@ test('end to end: switching problems in the panel tracks what the tutor has real
   // switch, so it starts over like a new problem.
   relay.send({ text: 'back to two sum', problemSlug: 'two-sum' });
   await until(() => requests.length === 3, 10000, 'the question back on A');
-  assert.match(lastPrompt(), /two-sum\\" and has not shared any code for it yet/);
+  assert.match(lastPrompt(), /working on the LeetCode problem \\"two-sum\\"\.\)\\n\(The student's editor could not be read/);
   assert.ok(!lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's old statement was dropped");
   assert.ok(!lastPrompt().includes('brackets'), "B's chat is gone");
   await until(() => turnEnds() === 2, 10000, 'the second A turn-end');
   assert.deepEqual(relay.dropped, ['two-sum', 'valid-parentheses']);
 
-  // 5. Another question on A: same problem, no reset, no preamble.
+  // 5. Another question on A: same problem, no reset, so only the note that
+  // the editor could not be read.
   relay.send({ text: 'and the edge cases?', problemSlug: 'two-sum' });
   await until(() => requests.length === 4, 10000, 'the follow-up on A');
   const lastMessages = requests[requests.length - 1].messages;
-  assert.equal(lastMessages[lastMessages.length - 1].content, 'and the edge cases?');
+  assert.equal(
+    lastMessages[lastMessages.length - 1].content,
+    "(The student's editor could not be read, so their current code is not included.)\n\nand the edge cases?"
+  );
   await until(() => turnEnds() === 3, 10000, 'the follow-up turn-end');
 
   const events = relay.flat();

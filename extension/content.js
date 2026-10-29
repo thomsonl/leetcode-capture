@@ -1,7 +1,7 @@
 // LeetCode Capture - content script
 //
 // Hooks the Run and Submit buttons on a LeetCode problem page, reads the
-// current Monaco editor content at the moment of the click, and POSTs a
+// current Monaco editor model at the moment of the click, and POSTs a
 // capture payload to the local relay server. No other network calls are
 // made from this extension.
 
@@ -81,44 +81,13 @@
   ]);
 
   // Monaco is a virtualized/windowed editor: it only keeps DOM nodes for
-  // the lines currently rendered in the viewport (plus a small overscan
-  // buffer), and removes lines from the DOM entirely once they scroll out
-  // of view. That makes getEditorCodeFromDom() below correct only for
-  // whatever happens to be on screen at capture time - fine for a
-  // screenful of code, silently incomplete beyond that. getEditorCode()
-  // therefore prefers reading Monaco's actual editor model (the full,
-  // unwindowed source) via a page-world injection, and only falls back to
-  // the DOM scrape if that fails for any reason (extension resource
-  // blocked, page script CSP, Monaco not loaded yet, etc.) so a capture is
-  // still better than none.
-  function getEditorCodeFromDom() {
-    // Monaco renders each line of code as DOM text inside `.view-lines`.
-    const viewLines = document.querySelector(".monaco-editor .view-lines");
-    if (!viewLines) return null;
-
-    const lineEls = Array.from(viewLines.querySelectorAll(".view-line"));
-    if (lineEls.length === 0) return null;
-
-    // Monaco positions lines absolutely with inline `top` styles; sort by
-    // that so the extracted text is in visual (source) order regardless of
-    // DOM insertion order.
-    lineEls.sort((a, b) => {
-      const topA = parseInt(a.style.top || "0", 10);
-      const topB = parseInt(b.style.top || "0", 10);
-      return topA - topB;
-    });
-
-    // Monaco's rendered `.view-line` DOM uses U+00A0 (non-breaking space)
-    // for whitespace, not a plain U+0020 space - confirmed live
-    // (chrome-devtools-axi against a real leetcode.com problem page: a
-    // `.view-line`'s textContent came back with charCode 160 where the
-    // actual source has an ordinary space). So this replace is a real
-    // normalization back to plain spaces, not a no-op.
-    return lineEls
-      .map((line) => line.textContent.replace(/ /g, " "))
-      .join("\n");
-  }
-
+  // the lines on screen (plus a small overscan), so the rendered
+  // `.view-lines` DOM is silently incomplete for anything longer than a
+  // screenful. Code is therefore read only from Monaco's editor model (the
+  // full source) through a page-world injection (inject.js). There is no
+  // fallback: when the model cannot be read, nothing is captured or sent,
+  // and the Tutor panel says so (a partial copy would read to the tutor as
+  // deleted code).
   // Injects inject.js as a real <script> tag so it runs in the page's own
   // MAIN world (where the `monaco` global lives) rather than this content
   // script's isolated world. See inject.js for why this approach (rather
@@ -145,8 +114,7 @@
   // Asks inject.js (running in the page's MAIN world) for the current
   // editor model's full text over a CustomEvent round-trip on `document` -
   // both worlds share the same DOM, so this needs no postMessage. Resolves
-  // to `null` (rather than rejecting) on timeout so callers can fall back
-  // to the DOM scrape uniformly. `requestEvents`/`responseEvents` are
+  // to `null` (rather than rejecting) on timeout, the same as no editor. `requestEvents`/`responseEvents` are
   // injectable (default `document`) purely so content.test.js can exercise
   // this round-trip with a plain mock EventTarget, without a real DOM.
   // See inject.js for why `detail` is JSON-stringified rather than a plain
@@ -185,34 +153,27 @@
     });
   }
 
+  // The full editor code from the Monaco model, or null when it cannot be
+  // read (inject.js blocked, Monaco not loaded yet, no visible editor, or no
+  // answer in time).
   async function getEditorCode() {
     try {
       await injectPageScript();
       const modelResult = await requestModelCode();
-      if (modelResult && typeof modelResult.code === "string") {
-        console.log("[leetcode-capture] editor code read from Monaco model (full source, not just what's on screen)");
-        return modelResult.code;
-      }
-      // injectPageScript() resolved but the round-trip came back empty/null -
-      // e.g. requestModelCode() timed out, or inject.js couldn't find an
-      // editor. This is the silent-fallback case that made PR #16 look like
-      // a fix while actually still truncating for real users: log loudly so
-      // it's never invisible again.
-      console.warn("[leetcode-capture] model-based editor read returned no code, falling back to DOM scrape (may be truncated to what's on screen)");
+      if (modelResult && typeof modelResult.code === "string") return modelResult.code;
+      console.warn("[leetcode-capture] could not read the editor model; nothing was captured");
     } catch (err) {
-      console.warn("[leetcode-capture] model-based editor read failed, falling back to DOM scrape (may be truncated to what's on screen)", err);
+      console.warn("[leetcode-capture] could not read the editor model; nothing was captured", err);
     }
-    return getEditorCodeFromDom();
+    return null;
   }
 
   // Answers panel.js's request for the live editor code at the moment the
   // student sends a Tutor message (see requestEditorSnapshot there): the same
   // reads a capture makes, over a request/response CustomEvent pair with a
-  // JSON-string detail. Only the Monaco model counts here, never the DOM
-  // scrape: a scrape can be cut to what is on screen, and the companion
-  // would then tell the tutor that the rest of the code was deleted. With no
-  // model read the answer is null, and the companion falls back to the
-  // newest recorded Run or Submit. `requestEvents`/`responseEvents` and
+  // JSON-string detail. With no model read the answer is null: the message
+  // then goes without code and the panel says the editor could not be read.
+  // `requestEvents`/`responseEvents` and
   // `readModelCode` are injectable for content.test.js.
   async function answerSnapshotRequest(event, responseEvents = document, readModelCode = defaultReadModelCode) {
     let requestId = null;
@@ -268,7 +229,9 @@
     return last !== undefined && now - last < CAPTURE_DEDUP_WINDOW_MS;
   }
 
-  async function sendCapture(trigger) {
+  // `events` (where the panel listens) and `readCode` are injectable for
+  // content.test.js.
+  async function sendCapture(trigger, { events = document, readCode = getEditorCode } = {}) {
     const now = Date.now();
     if (isDuplicateCapture(trigger, now, lastCaptureAt)) {
       console.log(`[leetcode-capture] skipping duplicate ${trigger} capture (already captured within the last ${CAPTURE_DEDUP_WINDOW_MS}ms)`);
@@ -278,11 +241,12 @@
 
     // Lets panel.js (the in-page Tutor tab) step aside so LeetCode's own
     // result tab is visible, whichever tab was underneath it.
-    document.dispatchEvent(new Event("leetcode-capture:capture-start"));
+    events.dispatchEvent(new Event("leetcode-capture:capture-start"));
 
-    const code = await getEditorCode();
+    const code = await readCode();
     if (code === null) {
-      console.warn("[leetcode-capture] editor content not found, skipping capture");
+      // Nothing is guessed: no capture at all, and the panel tells the student.
+      events.dispatchEvent(new CustomEvent("leetcode-capture:editor-read-failed", { detail: JSON.stringify({ trigger }) }));
       return;
     }
 
@@ -478,6 +442,7 @@
       matchesSubmitShortcut,
       isDuplicateCapture,
       answerSnapshotRequest,
+      sendCapture,
     };
     return;
   }

@@ -400,6 +400,36 @@ try {
     check(!!(await page.eval(`document.getElementById('leetcode-capture-inject')`)), 'inject.js was not injected');
   });
 
+  await scenario('a Run is captured from the editor model', async () => {
+    await page.eval(`(() => {
+      window.__captures.length = 0;
+      document.getElementById('editor-button').dispatchEvent(new KeyboardEvent('keydown', { key: "'", ctrlKey: true, bubbles: true }));
+    })()`);
+    await page.waitFor(`window.__captures.length === 1`, { what: 'the capture POST' });
+    const capture = await page.eval('window.__captures[0]');
+    check(capture.trigger === 'run' && capture.code === await page.eval('window.__editorCode'), JSON.stringify(capture));
+    await page.eval('window.__openTutor()');
+  });
+
+  await scenario('a Run whose editor cannot be read is not captured, and the panel says so', async () => {
+    // Past content.js's 300 ms guard against a double capture of one Run.
+    await page.eval('new Promise((r) => setTimeout(r, 400))');
+    await page.eval(`(() => {
+      window.__captures.length = 0;
+      window.__noEditor = true;
+      document.getElementById('editor-button').dispatchEvent(new KeyboardEvent('keydown', { key: "'", ctrlKey: true, bubbles: true }));
+    })()`);
+    // Past content.js's 500 ms model-read timeout.
+    await page.eval('new Promise((r) => setTimeout(r, 1200))');
+    check(await page.eval(`document.querySelector('[data-lc-tutor-tab]').hasAttribute('data-unread')`), 'no unread dot for the error');
+    check((await page.eval('window.__captures.length')) === 0, `sent: ${JSON.stringify(await page.eval('window.__captures'))}`);
+    await page.eval('window.__openTutor()');
+    await settle();
+    const notices = await page.eval(`window.__qa('.notice').map((n) => n.textContent)`);
+    check(notices[notices.length - 1] === "Couldn't read your editor, so the tutor has not seen this code.", `notices: ${JSON.stringify(notices)}`);
+    await page.eval('window.__noEditor = false');
+  });
+
   await scenario('with no editor to read, the message goes without a snapshot', async () => {
     await page.eval(`(() => {
       window.__posts.length = 0;
@@ -412,6 +442,9 @@ try {
     await page.waitFor(`window.__posts.length === 1`, { what: 'the message POST' });
     const body = await page.eval('window.__posts[0]');
     check(body.text === 'no editor here' && !('snapshot' in body), JSON.stringify(body));
+    await page.waitFor(`!window.__q('.hint').hidden`, { what: 'the error' });
+    const hint = await page.eval(`window.__q('.hint').textContent`);
+    check(hint === "Couldn't read your editor, so the tutor has not seen this code.", `hint: ${hint}`);
     await page.eval('window.__noEditor = false');
   });
 
@@ -430,7 +463,7 @@ try {
     check(body.text === 'huge file' && !('snapshot' in body), `body keys: ${Object.keys(body)}`);
     await page.waitFor(`!window.__q('.hint').hidden`, { what: 'the note' });
     const hint = await page.eval(`window.__q('.hint').textContent`);
-    check(hint === 'Your code is too long to send with a message, so the tutor sees your last Run or Submit.', `hint: ${hint}`);
+    check(hint === 'Your code is too long to send with a message, so the tutor has not seen this code.', `hint: ${hint}`);
     check((await page.eval(`window.__q('textarea').value`)) === '', 'the message was not cleared after the send');
     await page.eval(`(() => { window.__editorCode = window.__savedEditorCode; const t = window.__q('textarea'); t.value = 'a'; t.dispatchEvent(new Event('input', { bubbles: true })); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     check(await page.eval(`window.__q('.hint').hidden`), 'typing did not clear the note');

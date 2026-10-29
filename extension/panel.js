@@ -719,8 +719,7 @@
   // `document`, the same JSON-string protocol content.js and inject.js use.
   // Resolves to { code, language, problemTitle, problemDescription } or
   // null when nothing answers in time or the editor could not be read; the
-  // message then goes without it and the companion uses the newest recorded
-  // Run or Submit instead. `target` is injectable for panel.test.js.
+  // message then goes without code and the panel says so. `target` is injectable for panel.test.js.
   const SNAPSHOT_REQUEST = "leetcode-capture:snapshot-request";
   const SNAPSHOT_RESPONSE = "leetcode-capture:snapshot-response";
   function requestEditorSnapshot(target, timeoutMs = 1500) {
@@ -765,7 +764,7 @@
   // like deleted code. So when it does not fit, the description goes first
   // (the tutor already has it from earlier turns or a capture), then the
   // whole snapshot, and `codeLeftOut` tells the caller to say so; the
-  // companion then uses the newest Run or Submit instead.
+  // message then goes without any code.
   function buildMessageBody(text, problemSlug, snapshot) {
     const bare = JSON.stringify({ text, problemSlug });
     if (!snapshot || typeof snapshot.code !== "string") return { body: bare, codeLeftOut: false };
@@ -820,6 +819,11 @@
   const ACTIVE_ATTR = "data-lc-tutor-active";
   const TUTOR_COLOR = "rgb(150, 115, 255)";
   const MAX_MESSAGE_CHARS = 8000;
+  // A message, Run or Submit whose code could not be read from the editor
+  // model goes without code (a Run or Submit is not captured at all); see
+  // content.js. Nothing stands in for it.
+  const EDITOR_READ_FAILED = "Couldn't read your editor, so the tutor has not seen this code.";
+  const CODE_TOO_LONG = "Your code is too long to send with a message, so the tutor has not seen this code.";
 
   const state = createState();
   let relayReachable = null; // null until the first connect attempt settles
@@ -1621,8 +1625,8 @@
         // had scrolled up to reread something.
         mounted.stickUntil = Date.now() + 4000;
         p.scroll.scrollTop = p.scroll.scrollHeight;
-        if (codeLeftOut) {
-          p.hint.textContent = "Your code is too long to send with a message, so the tutor sees your last Run or Submit.";
+        if (codeLeftOut || !snapshot) {
+          p.hint.textContent = codeLeftOut ? CODE_TOO_LONG : EDITOR_READ_FAILED;
           p.hint.hidden = false;
         }
       } else if (res.status === 503) {
@@ -1755,6 +1759,15 @@
     // even in the case the page's own selection doesn't visibly change (the
     // result tab was already the one underneath).
     document.addEventListener("leetcode-capture:capture-start", () => deactivate());
+    // A Run or Submit content.js could not read: it was not captured, so the
+    // only trace is this note in the current problem's transcript.
+    document.addEventListener("leetcode-capture:editor-read-failed", () => {
+      const slug = currentSlug();
+      if (!slug) return;
+      const affected = applyEvent(state, { type: "notice", problemSlug: slug, text: EDITOR_READ_FAILED });
+      if (!active) setUnread(true);
+      noteApplied(affected);
+    });
 
     streamLoop();
   }

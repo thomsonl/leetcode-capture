@@ -364,7 +364,7 @@ test('activity on another problem resets everything, and the next message carrie
 
   // The first message on B carries B's statement and its full code, and
   // nothing of A.
-  await c.panel('where do I start?', 'house-robber');
+  await c.panel('where do I start?', 'house-robber', { code: 'def rob(nums):\n    return max(nums)', language: 'Python3' });
   await until(() => c.requests.length === 3, 10000, 'the B message');
   const prompt = c.lastPrompt();
   assert.ok(!/A code|a question on A|TWO-SUM-STATEMENT/.test(prompt), `A leaked into B: ${prompt}`);
@@ -388,4 +388,20 @@ test('activity on another problem resets everything, and the next message carrie
   await until(() => c.out().includes('Reply 4'), 10000, 'the reply back on A');
   const after = await c.relayEvents();
   assert.ok(!after.some((e) => e.problemSlug === 'house-robber'), "the relay dropped B's chat on the way back");
+});
+
+test('a panel message whose editor could not be read goes without code; the newest Run does not stand in', async (t) => {
+  const c = await startCompanion(t, { port: 18218 });
+  await c.capture({ trigger: 'run', code: solution('only run') });
+  await until(() => c.out().includes('recorded your Run for Two Sum'), 10000, 'the Run note');
+  await c.panel('is this right?', 'two-sum');
+  await until(() => c.requests.length === 1, 10000, 'the message');
+  assert.ok(!c.lastPrompt().includes('# only run'), `the Run's code was sent: ${c.lastUser()}`);
+  assert.match(c.lastUser(), /The student's editor could not be read, so their current code is not included/);
+  assert.match(c.lastUser(), /is this right\?$/);
+  await c.settle();
+  // The next message that does carry the editor code sends it in full.
+  await c.panel('and now?', 'two-sum', { code: solution('typed'), language: 'Python3' });
+  await until(() => c.requests.length === 2, 10000, 'the second message');
+  assert.match(c.lastUser(), /in full:[\s\S]*# typed/);
 });

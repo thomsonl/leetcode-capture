@@ -54,6 +54,7 @@
   (() => {
     window.__eventsUrls = [];
     window.__posts = [];
+    window.__captures = [];
     window.__postDelayMs = 0;
     window.__postStatus = 202;
     let controller = null;
@@ -87,6 +88,10 @@
         }
         return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
       }
+      if (url.pathname === "/capture") {
+        window.__captures.push(JSON.parse(options.body));
+        return new Response('{"ok":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       if (url.pathname === "/panel/message") {
         window.__posts.push(JSON.parse(options.body));
         await new Promise((r) => setTimeout(r, window.__postDelayMs));
@@ -98,6 +103,9 @@
 </script>
 </head>
 <body>
+  <!-- What Monaco renders for the lines on screen (only part of the code).
+       Off screen; content.js must never read code from it. -->
+  <div class="monaco-editor" style="position: absolute; left: -9999px; top: 0;"><div class="view-lines"><div class="view-line" style="top: 0px;">class Solution:  # only what is on screen</div></div></div>
   <div class="flexlayout__layout">
     <div class="flexlayout__tab" id="pane-code"><button id="lang-button">Python3</button> class Solution: <button id="editor-button">focusable editor control</button></div>
     <div class="flexlayout__tabset">

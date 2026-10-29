@@ -22,9 +22,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `content.js`'s isolated world over
   `CustomEvent`s on `document` (`leetcode-capture:request-code` / `leetcode-capture:code-response`, matched
   by a request id) - both worlds share the same DOM, so no `postMessage` is needed.
-  `getEditorCode()` in `content.js` awaits that round-trip (500ms timeout) and falls back to the old
-  DOM-scrape (`getEditorCodeFromDom()`) if it fails for any reason, so a capture still happens even if
-  injection is ever blocked. Verified live end-to-end with chrome-devtools-axi against a real
+  `getEditorCode()` in `content.js` awaits that round-trip (500ms timeout). There is no fallback (the old
+  DOM scrape was removed): when the model cannot be read, the Run or Submit is not captured or sent at all
+  and the Tutor panel shows "Couldn't read your editor, so the tutor has not seen this code." (a
+  `leetcode-capture:editor-read-failed` event from `sendCapture`); a Tutor message then goes without code
+  and the companion adds no code update for it (the newest Run does not stand in). Verified live end-to-end with chrome-devtools-axi against a real
   leetcode.com/problems/two-sum/ page (full protocol round-trip using the real `inject.js` source, not a
   mock): full capture of a 150+ line C++ solution well beyond one screen, a short solution, and a capture
   after switching the language selector (LeetCode replaces the model in place on a language switch, still
@@ -45,19 +47,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   request-response logic against a page with a faked `monaco` global (same sandboxing approach as the WAR
   match-pattern note below) - real Firefox/Zen verification of this specific fix was not done in the PR that
   introduced it (no Firefox available in that sandbox); confirm live in Firefox/Zen before trusting this is
-  fully closed. `.view-line`'s rendered text uses U+00A0 (non-breaking space) where the real source
-  has a plain space (confirmed live via charCode) - `getEditorCodeFromDom()`'s `.replace(/ /g, " ")` (NBSP to
-  space) is a real normalization, not a no-op; the model path never has this problem since `getValue()`
-  returns the real source text directly.
+  fully closed.
 - `manifest.json`'s `web_accessible_resources[0].matches` must be a *strictly broader* match pattern than
   `content_scripts[0].matches`, not merely equal to it - PR #16's model-read fix (above) initially shipped
   with both set to the identical string `https://leetcode.com/problems/*`, and that exact pairing made real
   Chrome reject the whole extension at load time ("Invalid value for 'web_accessible_resources[0]'. Invalid
   match pattern.") - confirmed live by loading the real unpacked extension into a real Chrome instance.
-  Silent failure mode: `getEditorCode()`'s DOM-scrape fallback had zero logging, so the truncation bug PR #16
+  Silent failure mode: the DOM-scrape fallback of that time had zero logging, so the truncation bug PR #16
   was meant to fix kept happening with no visible cause. Fixed by broadening WAR's pattern to
-  `https://leetcode.com/*`; `getEditorCode()` now logs which path (model vs. DOM-scrape) produced each
-  capture and warns loudly on fallback. `extension/content.test.js` asserts WAR's matches strictly cover
+  `https://leetcode.com/*` (the fallback itself is gone now, see above). `extension/content.test.js` asserts WAR's matches strictly cover
   content_scripts's matches, specifically rejecting an identical pair. To sandbox-test extension loading
   without a system Chrome install: launch Playwright's cached Chromium
   (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome --headless=new --load-extension=<dir>
@@ -373,8 +371,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   A Submit is sent only when its code differs from what the tutor holds. A typed message leads with a numbered diff
   (`formatDiffBody` in `context-budget.js`) against the held code, or the full code when nothing is held or the diff
   passes 80% of the code. The held code advances only on `commit()` after a successful backend call, and is memory only.
-  Panel messages carry a live editor `snapshot` (content.js reads the Monaco model only, never the DOM scrape, which can
-  be truncated); terminal messages fall back to the newest Run or Submit. Caps: 256 KB per message body, 100,000 characters
+  Panel messages carry a live editor `snapshot` (content.js reads the Monaco model only); one without it goes with no
+  code update and a note to the tutor that the editor could not be read. Terminal messages, which have no editor to
+  read, use the newest Run or Submit. Caps: 256 KB per message body, 100,000 characters
   of snapshot code, 50,000 of description (`panel-broker.js`, mirrored in `panel.js`'s `buildMessageBody`, which drops the
   description and then the whole snapshot rather than send a body past them, and never truncates code). Every capture, message and reset runs inside
   `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with

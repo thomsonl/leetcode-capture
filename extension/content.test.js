@@ -28,6 +28,7 @@ const {
   matchesSubmitShortcut,
   isDuplicateCapture,
   answerSnapshotRequest,
+  sendCapture,
 } = require(path.join(__dirname, 'content.js'));
 
 // Minimal EventTarget-like mock so requestModelCode's CustomEvent
@@ -368,4 +369,23 @@ test('answerSnapshotRequest ignores a request it cannot parse', async () => {
   await answerSnapshotRequest({ detail: 'not json' }, events, async () => ({ code: 'x' }));
   await answerSnapshotRequest({ detail: JSON.stringify({}) }, events, async () => ({ code: 'x' }));
   assert.equal(answered, false);
+});
+
+test('sendCapture sends nothing when the editor model cannot be read, and tells the panel (no DOM scrape)', async (t) => {
+  const posted = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    posted.push(options && options.body);
+    return new Response('{}');
+  };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  const events = new EventTarget();
+  const seen = [];
+  events.addEventListener('leetcode-capture:capture-start', () => seen.push('start'));
+  events.addEventListener('leetcode-capture:editor-read-failed', (event) => seen.push(JSON.parse(event.detail)));
+  await sendCapture('run', { events, readCode: async () => null });
+  assert.deepEqual(seen, ['start', { trigger: 'run' }]);
+  assert.deepEqual(posted, [], 'nothing reaches the relay');
 });
