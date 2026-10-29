@@ -811,6 +811,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     the student's selection and code-block scroll on every chunk. `extension/e2e/panel-render.e2e.mjs` checks this and
     the rest of the panel's DOM behavior in headless Chromium against a local fixture (no relay, no real page); it is
     a manual script, not part of `npm test`.
+  - The tutor is told (`FORMAT_ADDENDUM` in `tutor-prompt.js`) to draw diagrams as ASCII or box-drawing in a bare fenced block within 56 columns; the panel renders such a block (`pre.plain`) verbatim with a 14px line so box lines meet, and everything else wraps with `overflow-wrap: anywhere` (table cells `break-word`, so wide tables scroll in `.table-wrap`).
+    The pane is resized live: a ResizeObserver (`observePanelSize`) keeps a following feed at the bottom, keeps the block being read in place when scrolled up (`keepScrollAnchor`, the browser's own anchoring is off), and re-fits the composer, whose cap is 30% of the pane height (`cqh`).
+    A scroll event that comes with a size change is layout, never the student scrolling up (`view.metrics`); reading it as one stopped the feed following on every resize.
+    `syncRect` also re-finds the pane under the tabset, which may catch up with a splitter drag a frame late.
   - Streams must send `Cache-Control: no-store` (and the client `cache: 'no-store'`): Chrome's HTTP cache takes a lock
     on a never-ending response, and a second identical GET (another tab asking for `/panel/events?after=0`) queued
     behind it forever while a different URL on the same host answered instantly.
