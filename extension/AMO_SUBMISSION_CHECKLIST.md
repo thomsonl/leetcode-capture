@@ -1,44 +1,85 @@
 # AMO (addons.mozilla.org) submission checklist
 
-This is preparation only. Nothing has been submitted to Mozilla. Actually creating the listing and submitting for review needs a Mozilla Add-on Developer account and is a separate, deliberate step — see "Not done here" at the bottom.
+Nothing has been submitted to Mozilla yet, as far as this repository records.
+Each field below has text ready to paste.
+The long description, single purpose and permission justifications are the same as Chrome's, in `CHROME_SUBMISSION_CHECKLIST.md`; this file only adds what differs on AMO.
 
-## Done in this pass
+## Version and what changed
 
-- **`web-ext lint` passes clean** (0 errors, 0 warnings) as of this checklist, against exactly the files that ship (see "How to rebuild the package" below for why `--ignore-files` is needed — without it, `content.test.js`/`package.json`/this checklist/the privacy policy all get bundled into the package too). Re-run before every submission:
-  ```
-  cd extension && npm run lint:amo
-  ```
-- **`strict_min_version` fixed.** It was `109.0`, but `browser_specific_settings.gecko.data_collection_permissions` (added for Mozilla's November 2025 policy — see `AGENTS.md`) isn't supported until Firefox 140 (142 for Firefox for Android). The lint step above caught this as two warnings; both are fixed by bumping `gecko.strict_min_version` to `140.0` and adding `gecko_android.strict_min_version: "142.0"`. Firefox ignores an unsupported manifest key rather than failing, so this was silent before — worth being aware this raises the effective minimum Firefox version users need, from 109 to 140.
-- **Privacy policy drafted**: `extension/PRIVACY_POLICY.md`. Factual description of the extension's actual data flow, grounded in `content.js`'s real behavior (data goes only to `localhost:8135`, nothing to the developer or a third party via the extension itself; the separately-run, optional `companion/` tool is the only path data could reach an LLM, and only if you configure and run it that way). **Read it, edit anything that doesn't match your intent, and remove its DRAFT notice before using it.** AMO requires a privacy policy (or an explicit statement of none) for any listing that declares data collection permissions, which this one does.
-- **Packaged build**: `web-ext build` produces a `.zip` of exactly what AMO would receive (source files only, no build step to worry about — see "Source code" below). See "How to rebuild the package" below for the command; the output isn't committed to git (it's a build artifact).
+Same as `CHROME_SUBMISSION_CHECKLIST.md`: upload `1.2.0` as it is in `manifest.json`, unless an earlier build was already uploaded at that version or higher.
+For the "what changed" summary, use that file's "What changed since the store-prep version" list.
 
-## Still needed before actually submitting — none of these were decided or drafted here
+## Before you start
 
-- **Icon.** `manifest.json` has no `icons` field, and there are no icon assets anywhere in `extension/`. Firefox will show a generic default icon without one; AMO's listing form also wants one. Needs actual artwork — not something to fabricate as part of a packaging pass.
-- **Screenshot(s).** AMO requires at least one for the listing. Needs a real screenshot of the extension in use against the real `leetcode.com` — not producible from an automated/sandboxed environment (see `AGENTS.md`'s note on Cloudflare blocking headless browser access to the real site). Take one from your own browser session.
-- **Listing copy**: AMO's submission form asks for a name (already have: "LeetCode Capture"), a summary (short, shows in search results), and a longer description. `manifest.json`'s own `description` field ("Captures live LeetCode editor attempts on Run/Submit and relays them to a local logging server.") is a reasonable starting point for the summary, but the longer description and any framing of "this only works if you're also running the relay server + optionally the companion tool" is real product copy worth writing deliberately rather than defaulting to.
-- **Permission justifications.** AMO's submission form asks you to justify each requested permission to the reviewer. Concrete answers, grounded in what's actually declared in `manifest.json`:
-  - `host_permissions: ["http://localhost:8135/*"]` — needed so the extension's own `fetch()` to the local relay server isn't blocked by CORS in Chrome-family browsers (see `AGENTS.md`'s CORS bullet); the relay only ever runs on the user's own machine.
-  - `content_scripts` matching `https://leetcode.com/problems/*` — the extension's entire purpose is reading the code editor and problem content on exactly these pages; it runs nowhere else.
-  - `web_accessible_resources` (`inject.js`) matching `https://leetcode.com/*` — needed to read Monaco's full editor model rather than a truncated DOM scrape (see `AGENTS.md`'s inject.js bullet); broadened beyond `content_scripts`'s own pattern only because an identical pattern pair was confirmed live to make Chrome reject the extension outright (see the WAR/matches bullet in `AGENTS.md`).
-- **Support contact / homepage URL.** AMO's listing form asks for these. Needs your own info (email, and/or a link to this repo if you want it public).
-- **Category selection.** AMO asks you to pick a listing category (e.g. "Developer Tools"). A product framing choice, not made here.
-- **Firefox for Android support decision.** The manifest fix above (`gecko_android.strict_min_version`) makes the manifest itself internally consistent, but doesn't answer whether this extension makes sense on Android at all — it depends on a local relay server running on the same machine, which isn't really an Android use case. AMO's submission flow lets you opt an extension in or out of Android distribution separately from the manifest; decide that when you actually submit.
+- Run `npm test` and `npm run lint:amo` in `extension/`.
+  The only expected lint warning is that `background.service_worker` is ignored on Firefox; the manifest declares both `service_worker` (Chrome) and `scripts` (Firefox) on purpose.
+- Run `npm run build:amo` and upload `extension/web-ext-artifacts/leetcode_capture-<version>.zip`.
+  The `--ignore-files` list in both npm scripts keeps tests, `e2e/`, `package.json` files, these Markdown files and screenshots out of the package.
 
-## Source code
+## Listing fields
 
-No build step, no bundler, no minification anywhere in `extension/` (confirmed: `content.js`/`inject.js`/`manifest.json` are the only files `web-ext build` packages, all authored source). AMO's "provide source code separately" requirement only applies to extensions containing built/minified/generated code, so this doesn't apply here — the submitted `.zip` *is* the source.
+**Name:** LeetCode Capture
 
-## How to rebuild the package
+**Summary (max 250 characters):**
 
-From `extension/`. The `--ignore-files` flag inside both npm scripts matters: without it, `web-ext build` bundles `content.test.js`, `package.json`, and these two Markdown files into the shipped package too — verified live (the first build produced a 7-file zip; this produces the intended 3: `manifest.json`, `content.js`, `inject.js`).
 ```
-npm run lint:amo    # must be 0 errors before packaging
-npm run build:amo
+A LeetCode tutor that coaches you on your Run and Submit attempts, using a local model, your own OpenAI or Anthropic API key, or your Claude or ChatGPT subscription. Your code goes only to the provider you choose.
 ```
-This produces `web-ext-artifacts/leetcode_capture-<version>.zip` (gitignored) — this is the file to upload to AMO once the "still needed" items above are actually done.
 
-## Not done here
+**Description:** paste the Description block from `CHROME_SUBMISSION_CHECKLIST.md`.
 
-- No AMO account was used and nothing was submitted to Mozilla — that needs your own Mozilla Add-on Developer account.
-- No `web-ext sign` (Mozilla's automated signing API) was run — it needs API credentials (JWT issuer/secret) from your AMO developer account, which weren't available here, and running it would actually submit the extension for signing/review.
+**Categories:** Education (AMO allows two; leave the second empty).
+
+**Homepage:** https://github.com/thomsonl/leetcode-capture
+
+**Support site:** https://github.com/thomsonl/leetcode-capture/issues
+
+**Support email:** your own, if you want one shown.
+
+**License:** the repository has no LICENSE file yet, so pick one (or "All Rights Reserved") before submitting; AMO requires a choice.
+
+**Privacy policy:** paste the text of `extension/PRIVACY_POLICY.md` (AMO takes the policy text itself, not a URL).
+
+**Screenshots:** the same set as in `CHROME_SUBMISSION_CHECKLIST.md`, taken in Firefox if you can.
+
+**Firefox for Android:** opt out.
+The extension runtime would work there, but the Tutor tab is built for LeetCode's desktop layout and the helper is desktop only.
+`gecko_android.strict_min_version` stays in the manifest so it is valid either way.
+
+## Notes to reviewer
+
+```
+No build step: every file in the package is hand-written source, with no bundler, minifier, transpiler or generated code, so the uploaded zip is the source. To reproduce it from https://github.com/thomsonl/leetcode-capture, run "npm run build:amo" in extension/ (it runs web-ext build with an ignore list for tests and docs; there are no dependencies).
+
+What it does: adds a Tutor tab to leetcode.com/problems/* pages. When the user clicks Run or Submit or types to the tutor, it reads the problem text and the editor code and sends them only to the AI provider the user picked in Settings.
+
+Permissions:
+- storage: the user's settings and, optionally, their own OpenAI or Anthropic API key, kept in local extension storage.
+- host http://localhost:8135/*: a relay on the user's own computer, used only by the optional helper runtime.
+- optional host permissions http://*/* and https://*/*: never granted at install. On Save in Settings the extension requests exactly one origin: the user's local model server, the OpenAI API (or a custom OpenAI-compatible address) or api.anthropic.com. The pattern is broad only because the model server's address is whatever the user types.
+- optional nativeMessaging: requested only when the user picks a Claude or ChatGPT subscription and presses "Allow starting the helper". It talks to the native host dev.thomsonklee.leetcode_capture.
+
+The helper is not part of this add-on. It is a separate program the user installs themselves with "npx leetcode-capture-helper install" (source in helper/ of the same repository). It registers a native messaging manifest for this add-on's id and runs the local tutor, which uses the user's own Claude or ChatGPT sign-in. Without it, the add-on still works fully with a local model or an API key.
+
+inject.js is a web accessible resource added to the page as a script tag, so it can read the full text of LeetCode's Monaco editor model; it only answers the content script over a CustomEvent and makes no network requests.
+
+To test without any account: install Ollama, run "ollama pull qwen2.5:0.5b" (any small model works), set OLLAMA_ORIGINS to the moz-extension:// origin shown in Settings, choose "Local model" in Settings, press Save and allow the localhost permission, then open https://leetcode.com/problems/two-sum/ and click the Tutor tab and Submit.
+```
+
+## Data collection permissions
+
+The manifest declares `data_collection_permissions.required: ["websiteContent"]`.
+This release also sends the student's typed messages to the provider, and the user's own API key to its provider.
+Decide before submitting whether to add `personalCommunications` (the messages) and `authenticationInfo` (the API key) to the manifest's `required` list, to match the Chrome disclosure in `CHROME_SUBMISSION_CHECKLIST.md`.
+I left the manifest unchanged so that this stays your call.
+
+## Manual steps only you can do
+
+1. Create or sign in to a Mozilla Add-on Developer account.
+2. Decide on the data collection categories above.
+3. Take the screenshots on real leetcode.com.
+4. Upload the zip, fill the fields above, paste the reviewer notes, and submit.
+5. Publish the helper to npm (see the Chrome checklist), so the reviewer's `npx` command resolves.
+   Until it is published, change the reviewer note to `node helper/cli.js install` from a clone of the repository.
+
+No `web-ext sign` was run; it needs your AMO API credentials and would submit the add-on.

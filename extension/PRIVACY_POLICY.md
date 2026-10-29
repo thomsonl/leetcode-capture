@@ -1,55 +1,75 @@
 # Privacy Policy for LeetCode Capture
 
-Last updated: 2026-10-27
+Last updated: 2026-10-29
 
 ## What this extension does
 
-LeetCode Capture is a personal development tool.
-It watches for you clicking Run or Submit (or using the Run/Submit keyboard shortcuts) on a `leetcode.com/problems/*` page, reads the code currently in the editor, and sends it to a local server running on your own computer.
+LeetCode Capture is a tutor for LeetCode.
+It adds a Tutor tab to `leetcode.com/problems/*` pages, sees your Run and Submit attempts, and lets you message an AI tutor about the problem you are solving.
+You choose which AI model provider the tutor uses on the extension's Settings page.
 
 ## What data is read
 
-When you Run or Submit, the extension reads:
+The extension reads data only on `leetcode.com/problems/*` pages, and only when you click Run or Submit (or use their keyboard shortcuts) or send a message in the Tutor tab:
 
-- The problem's slug, title, description, and topic tags, all from the LeetCode page you're already viewing.
-- The language currently selected in the editor.
-- The code currently in the editor.
-- The URL of the page and a timestamp.
+- The problem's slug, title, description and topic tags, from the page you are viewing.
+- The language selected in the editor, and the code currently in the editor.
+- The message you type to the tutor.
+- The page URL and a timestamp.
 
-The extension reads nothing on any page outside `leetcode.com/problems/*`.
-It does not read your LeetCode account details, cookies, or credentials.
+It does not read your LeetCode account details, cookies, passwords or any other page.
+It does not read your browsing history.
 
 ## Where that data goes
 
-This data is sent to exactly one place: `http://localhost:8135`, a server that runs on your own machine as part of this same project (`relay-server/`).
-The extension makes no other network requests.
-It does not send data to the developer, to the browser vendor, to any analytics or tracking service, or to any third party.
-`localhost` still counts as network transmission for the purposes of store data disclosure requirements, which is why this extension declares that it handles website content even though the data never leaves your own computer through the extension itself.
+That data goes to exactly one place: the provider you chose in Settings.
 
-## What happens to the data after that
+- **A local model** (Ollama, LM Studio, llama.cpp or another OpenAI-compatible server): the extension sends it to the server address you entered, usually on your own computer.
+- **The OpenAI API or the Anthropic API with your own API key**: the extension sends it directly from your browser to `api.openai.com` (or the OpenAI-compatible address you entered) or `api.anthropic.com`.
+  That provider's own privacy policy and terms then apply to it.
+- **Your Claude or ChatGPT subscription**: the extension sends it to the optional helper you installed on your computer, through a relay server at `http://localhost:8135` on that same computer.
+  The helper runs the tutor, which uses your existing Claude or ChatGPT sign-in on that computer to reach Anthropic or OpenAI.
+  That provider's own privacy policy and terms then apply to it.
 
-The relay server writes each capture to a local log file on your computer (`relay-server/data/captures.jsonl`).
-From there, two other components in this same project, both optional and both run separately by you:
+The browser asks your permission before the extension may reach your model server or a provider's API, one address at a time, and before it may start the helper.
+The extension sends nothing to the developer.
+There are no analytics, no telemetry, no tracking, no ads and no third-party services beyond the provider you chose.
+All of the extension's code ships in the package; it loads and runs no remote code.
 
-- `vault-tool/`, a command-line tool that can turn captures into notes in a local Obsidian vault you specify. This never leaves your computer.
-- `companion/`, an optional AI tutor you can run alongside your LeetCode session. If you configure and run it, it sends capture content to whichever LLM backend you've configured it to use, either a cloud provider such as Anthropic (using your own API credentials) or a locally-running model. This is the only path by which captured code or problem content could leave your computer, and it only happens if you separately install, configure, and run this component.
+## API keys
 
-The browser extension itself never talks to any of these components directly.
-It only writes to the local relay server.
+If you enter an OpenAI or Anthropic API key, it is stored only in your browser's local extension storage, on your computer.
+If you save a key through the helper instead, it is stored only in `~/.config/leetcode-capture/settings.json` on your computer.
+A key is never sent anywhere except to its own provider, as the credential for your requests.
+The extension never shows a saved key back on the Settings page or the Tutor tab.
+
+## What is kept, and for how long
+
+- **Settings and keys**: kept in the browser's local extension storage (and, for the helper, in `~/.config/leetcode-capture/settings.json`) until you remove them.
+- **Tutor conversations**: kept in memory only, per problem, and forgotten when the tutor stops or the conversation is reset on a problem switch.
+  In the helper runtime, the local relay keeps a short queue of your Run and Submit attempts in `relay-server/data/captures.jsonl`, cleared as the tutor reads it, and the helper writes a log (`helper.log`) in its data folder.
+- **Optional notes**: if you turn on the separate vault feature, the tutor writes notes into the Obsidian vault folder you configured.
+  This is off by default.
+
+The developer stores nothing, because nothing reaches the developer.
 
 ## Data sale and use
 
-The developer does not collect, sell, or transfer your data to anyone, and does not use it for advertising, creditworthiness, or any purpose unrelated to the extension's single purpose of capturing your LeetCode attempts for your own local use.
+The developer does not collect, sell or transfer your data to anyone.
+Your data is not used for advertising, for creditworthiness or lending, or for any purpose other than tutoring you on the problem you are solving.
 
-## Data retention and control
+## Deleting your data
 
-All data stays in files on your own computer (the relay server's log file, and, if you use it, your Obsidian vault).
-You control deletion by deleting those files directly.
-Nothing is stored by the developer.
+- To remove a saved API key, use the key's Remove button on the Settings page and save.
+- To remove all settings and keys the extension stored, uninstall the extension; the browser deletes its extension storage.
+- To remove the helper and what it wrote, run `npx leetcode-capture-helper uninstall`, and delete `~/.config/leetcode-capture/settings.json` and `relay-server/data/captures.jsonl` if they exist.
+- Any notes the optional vault feature wrote are ordinary files in your vault; delete them like any other file.
+- Data already sent to a provider you chose is held under that provider's own retention policy; see your account settings with that provider.
 
 ## Changes
 
-Since this is a personal tool with source available at https://github.com/thomsonl/leetcode-capture, any change to what data is read or where it is sent will be visible in `extension/content.js`'s change history.
+Source code is available at https://github.com/thomsonl/leetcode-capture, so any change to what is read or where it is sent is visible in its history.
+This page is updated with each such change.
 
 ## Contact
 
