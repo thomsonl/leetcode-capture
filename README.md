@@ -1,12 +1,15 @@
 # leetcode-capture
 
 A browser extension that captures your LeetCode Run and Submit attempts as you work, not just your final solution.
-It streams each attempt to a companion terminal chat backed by an LLM of your choice, acting as a personal tutor that reviews your code live.
+It adds a Tutor tab to the problem page, backed by an LLM of your choice, acting as a personal tutor that reviews your code live.
+With a local model or an API key the tutor runs inside the extension itself, with nothing else to install (see "Runtimes" below).
+With a Claude or ChatGPT subscription it runs in a companion terminal chat on your computer.
 Optional add-ons can also log your progress as notes into an Obsidian vault.
 
 ## Install
 
-Pick your OS, then run its commands.
+With a local model or an API key you only need the browser extension: skip to "Then load the browser extension" below.
+For a Claude or ChatGPT subscription, pick your OS and run its commands first.
 
 **macOS**
 ```sh
@@ -33,7 +36,40 @@ Then load the browser extension.
 
 Open any `leetcode.com/problems/<slug>/` page to confirm it loaded.
 
+## Runtimes
+
+The tutor runs in one of two places, chosen per provider on the settings page ("Where the tutor runs").
+
+- **In the browser** (the extension runtime) is the default for a local model, an Anthropic API key and an OpenAI API key.
+  The extension's own background worker runs the tutor: it talks to the model directly, reads your Runs and Submits from the page, and streams replies into the Tutor tab.
+  Nothing else needs to be installed or running: no Node, no relay, no companion.
+  Settings and API keys are kept in the extension's storage (`chrome.storage.local`), and a key is only ever sent to its provider's API.
+  The conversation lives in the worker's memory only, and nothing is written to disk (no `captures.jsonl`).
+- **Through the helper** (the companion, see "Start the companion" below) is required for the Claude and ChatGPT subscriptions, because they use the sign-in of the `claude` or `codex` command on your computer.
+  Any other provider can use it too, which also gives you the terminal chat and the vault auto-summary.
+
+Who needs what:
+
+| You use | Runtime | Install |
+| --- | --- | --- |
+| A local model (Ollama, LM Studio, any OpenAI-compatible server) | In the browser | The extension only |
+| An Anthropic or OpenAI API key | In the browser | The extension only |
+| A Claude or ChatGPT subscription | Through the helper | The extension, Node and the companion |
+
+The browser asks you once per server before the extension may reach it: Save, Test connection and Find models request that site's permission (`optional_host_permissions`), so the extension holds no broad host access by default.
+If you deny it, the settings page says so and nothing is saved.
+
+**Ollama in the browser runtime.**
+Ollama only answers browser extensions it is told to trust, so set `OLLAMA_ORIGINS` to the extension's origin where Ollama runs and restart Ollama (the settings page shows the exact value, for example `OLLAMA_ORIGINS=chrome-extension://<id>`).
+On Linux with the systemd service that is `systemctl edit ollama.service` with `Environment="OLLAMA_ORIGINS=chrome-extension://<id>"`; on macOS, `launchctl setenv OLLAMA_ORIGINS chrome-extension://<id>`.
+Without it Ollama answers 403 (or the browser reports a network error), and both the settings page's test and the Tutor tab say exactly this.
+
+The browser runtime follows the same rules as the companion: the same tutor instructions, the same "What the tutor is sent" rules and reset on a problem switch, the same context fitting and summary for a small local window.
+The code for both lives once, in `extension/shared/`, which the companion imports.
+
 ## Start the companion
+
+This is the helper runtime; skip it if the tutor runs in the browser.
 
 ```sh
 cd companion
@@ -52,9 +88,10 @@ Plain `leetcode` uses whatever provider you picked on the settings page (see bel
 
 ## Tutor tab on LeetCode
 
-With the companion running, the extension adds a **Tutor** tab to the left tab strip on every problem page, next to Description, Submissions, Editorial, and Solutions.
-It mirrors the same conversation you see in the terminal: your Run and Submit attempts show up as small chips as they happen, the tutor's replies stream in, and you can type to it from the page.
-The terminal chat keeps working exactly as before, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
+The extension adds a **Tutor** tab to the left tab strip on every problem page, next to Description, Submissions, Editorial, and Solutions.
+Your Run and Submit attempts show up as small chips as they happen, the tutor's replies stream in, and you can type to it from the page.
+In the helper runtime it mirrors the companion's terminal chat, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
+In the browser runtime it talks to the extension's background worker over a port instead of the relay, and a reload replays the conversation from the worker.
 
 The header shows a small status light: green with "Connected" while the tutor is idle, yellow with "Processing" while it works on a message or Submit (including one waiting behind another), red with "Offline" when the relay can't be reached, and grey while connecting or with the tutor offline.
 
@@ -95,7 +132,7 @@ Publishing tutor replies and reading the messages you type are reserved for the 
 
 The extension has a settings page where you choose which LLM the tutor uses.
 Open it with the gear in the Tutor tab's header (the tab also names the model it is using there), or from the extension's "Options" in `chrome://extensions` or `about:addons`.
-The companion must be running for the page to load or save anything.
+For a provider that runs in the browser the page works on its own; for one that runs through the helper, the companion must be running for the page to load or save its fields.
 
 The providers:
 
@@ -110,7 +147,8 @@ The providers:
 The new model starts a fresh conversation and gets your full code with your next message.
 The page also has the auto-clear and vault options described below.
 
-Settings are saved in `~/.config/leetcode-capture/settings.json` (`%APPDATA%` on Windows, or the path in `LEETCODE_CAPTURE_SETTINGS`), readable only by you (mode 0600).
+In the browser runtime, settings and keys are saved in the extension's storage (two separate records, so a key never travels with anything else), and the page only ever gets back whether a key is saved.
+In the helper runtime, settings are saved in `~/.config/leetcode-capture/settings.json` (`%APPDATA%` on Windows, or the path in `LEETCODE_CAPTURE_SETTINGS`), readable only by you (mode 0600).
 API keys are kept only in that file and in the companion's memory, and are sent only to the provider you picked.
 The settings page never gets a key back, only whether one is saved and where it came from.
 The subscription providers remove `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` and `CODEX_API_KEY` from the environment they run with, so a stray key can never bill you instead of your subscription.

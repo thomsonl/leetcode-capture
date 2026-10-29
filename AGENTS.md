@@ -93,7 +93,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   printed above the prompt and the prompt is redrawn with the saved line/cursor reinserted
   (`printAboveInput` in `companion.js`). See `README.md` → Companion for credentials, setup, and
   the verified behavior difference between the two backends' auth.
-- Both companion backends share one tutor persona, `TUTOR_SYSTEM_PROMPT` in `companion.js`. For
+- Every backend (companion and extension) shares one tutor persona, `TUTOR_SYSTEM_PROMPT` in `extension/shared/tutor-prompt.js`. For
   the Claude backend, passing it as a plain `systemPrompt` string *replaces* Claude Code's own
   default system prompt rather than appending to it - only the SDK's `{ type: 'preset', preset:
   'claude_code' }` form preserves the default. That's intentional here (no tools, not acting as a
@@ -366,8 +366,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Agent SDK's own type definitions (`sdk.d.ts`'s `SDKPartialAssistantMessage`), not independently
   live-verified against a real Claude account.
 
-- What the tutor is sent, and the reset on a problem switch, live in `companion/code-ledger.js` (pure, no Node API, so it
-  can later run in the extension's background; `code-ledger.test.js` checks that). A Run is only recorded, never sent.
+- What the tutor is sent, and the reset on a problem switch, live in `extension/shared/code-ledger.js` (pure, no Node API, so the
+  extension's background runs it too; `extension/shared.test.js` checks that). A Run is only recorded, never sent.
   A Submit is sent only when its code differs from what the tutor holds. A typed message leads with a numbered diff
   (`formatDiffBody` in `context-budget.js`) against the held code, or the full code when nothing is held or the diff
   passes 80% of the code. The held code advances only on `commit()` after a successful backend call, and is memory only.
@@ -721,7 +721,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   case), not arbitrarily nested lists. `terminal-format.test.js` has the regression test (a long
   single-sentence bullet in a tight list, wrapped at a wide terminal width, compared byte-for-byte
   against the same content as a loose list) - confirmed it actually fails without the fix.
-- `companion/context-budget.js` holds `LocalBackend`'s context-budget logic (pre-flight size
+- `extension/shared/context-budget.js` holds `LocalBackend`'s context-budget logic (pre-flight size
   estimate, the pinned problem description, and older-turn diff compression) as pure, importable
   functions - split out from `companion.js` so it's directly unit-testable (`context-budget.test.js`)
   the same way `terminal-format.js`/`vault-summary.js` already are, rather than only reachable
@@ -763,9 +763,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - `LocalBackend`'s context window works with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI) and any model; nothing may assume Ollama or a particular model.
   The window budgeted for is `contextWindow()`, the single place it is decided (`resolveContextWindow` in `context-budget.js`): the smallest of `COMPANION_LOCAL_NUM_CTX` (default 8192, also what Ollama's native API is asked for), what the startup probes found, and what a reply showed the server really kept.
   The options page's "Context window (tokens)" field (`contextTokens` in `companion/settings.js`, locked by `COMPANION_LOCAL_NUM_CTX`) is what feeds `numCtx`.
-  The probes (`companion/local-server.js`, no Node API) run once in the background at startup and the first message waits at most for their 1.5 s timeouts: `GET /api/version` identifies Ollama (then `COMPANION_LOCAL_API=auto` uses the native API, at any address), and `/api/show`, `/api/ps`, LM Studio's `/api/v0/models`, llama.cpp's `/props` and vLLM's `/v1/models` report windows; any failure or unknown shape is ignored.
+  The probes (`extension/shared/local-server.js`, no Node API) run once in the background at startup and the first message waits at most for their 1.5 s timeouts: `GET /api/version` identifies Ollama (then `COMPANION_LOCAL_API=auto` uses the native API, at any address), and `/api/show`, `/api/ps`, LM Studio's `/api/v0/models`, llama.cpp's `/props` and vLLM's `/v1/models` report windows; any failure or unknown shape is ignored.
   Test model stubs must answer non-chat routes with a 404 (each stub has a one-line guard), since every companion subprocess now probes its stub.
-  Every request is fitted to the budget before it is sent (`fitWithSummary` in `companion/context-summary.js`), never touching the pinned statement, the pinned code or the current message, and it is refused (naming each part's size) only when those alone are over.
+  Every request is fitted to the budget before it is sent (`fitWithSummary` in `extension/shared/context-summary.js`), never touching the pinned statement, the pinned code or the current message, and it is refused (naming each part's size) only when those alone are over.
   This replaced a refusal that, with history trimmed only by count and only after a success, stuck every later message once a few long replies filled the budget (`context-window.test.js` has that scenario).
   Exchanges that must go (over the budget, past `COMPANION_LOCAL_MAX_HISTORY_TURNS`, or after a reply cut off with `finish_reason: "length"`, which would be cut off again) are condensed, at least the older half at a time so the call is not paid every turn, into one "earlier in this session" summary (at most about 300 estimated tokens), sent as a system message after the pins; a later overflow merges into it.
   It comes from one unstreamed call on the same model inside the same turn (so the turn queue never interleaves it and the panel sees nothing of it), carrying only the dropped exchanges and skipped if it would not fit; on failure, timeout (60 s), an empty reply or no fit, a digest of each exchange's first student and tutor sentence stands in, and with no room for even that the oldest are dropped by `fitToBudget` as before.
@@ -838,6 +838,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   It has no automated test: verify a change with a stub `node` on `PATH` that prints its environment, never a real companion.
   Tests must never touch the real `~/.config/leetcode-capture/settings.json`: `companion/test-isolation.js` (loaded by `npm test` with `--import`) points `LEETCODE_CAPTURE_SETTINGS` at a path that does not exist for every spawned companion, and a test that needs a file sets its own temp path.
   `companion/panel-bridge.test.js` has the hot-swap test (two stub models, a save through `/settings/rpc`), and `extension/e2e/settings-page.e2e.mjs` ends with a live scenario against a real companion and relay on a free port (the browser redirects the page's `localhost:8135` requests there, so the relay sees the page's real Origin).
+
+- Runtimes (see README.md, "Runtimes"): the tutor runs either inside the extension (the "extension" runtime, default for `local`, `anthropic` and `openai`, nothing to install) or through the helper (relay + companion, required for `claude` and `chatgpt`).
+  One copy of the tutor logic lives in `extension/shared/` (the extension folder is what gets packaged): the ledger, budget, summary, probing, sanitizing, `tutor-prompt.js`, `providers.js` (the catalog, with each provider's `runtimes`) and `LocalBackend` (`local-backend.js`), all ES modules the companion imports by relative path.
+  `extension/shared/package.json` (`"type": "module"`) is what lets Node load them; it is left out of the AMO lint and build.
+  `extension/shared.test.js` fails if any shared module imports a Node built-in, a bare package or anything outside the extension folder, or uses a Node global.
+  The extension runtime's own pieces are there too: `anthropic-backend.js` (LocalBackend with only `request()` replaced; raw fetch with `anthropic-version` and `anthropic-dangerous-direct-browser-access: true`, default model `claude-opus-5-5`, a refusal or `max_tokens` stop is an error, never a reply), `event-hub.js` (the relay's event protocol: seq, epoch, replay, config, status, dropProblem), `tutor-engine.js` (the companion's capture and message rules in one queue), `extension-settings.js` (settings and keys as two storage records, `publicView` has only `hasKey`, `explainError` adds the `OLLAMA_ORIGINS` fix to a local 403 or network error) and `tutor-service.js` (the port protocol and the options page's `lc-tutor:settings-*` calls, which answer only a sender whose URL is the extension's own origin).
+  `background.js` is a module worker (`"type": "module"` next to both `service_worker` and `scripts`) that only binds `chrome.*` to the service.
+  `content.js` hands a capture to the worker first (`lc-tutor:capture`, answered `{ handled }`) and POSTs it to the relay only when the worker leaves it (helper runtime) or cannot be asked.
+  `panel.js` always opens a port (`lc-tutor-panel`) to the worker, which says which runtime is chosen; the extension transport carries events and messages on that port (pinging every 20 s keeps the worker up), the relay transport is the old fetch/SSE code unchanged, and both feed the same `applyEvent`.
+  Host access is `optional_host_permissions` requested by the options page on Save, Test or Find models (must happen before any `await`, while the click still counts as a user gesture); the worker re-checks on `permissions.onAdded/onRemoved`.
+  Tests: `adapters.test.mjs` (stub OpenAI SSE, Ollama native, Anthropic SSE), `engine.test.mjs` (the rules through the service and a fake port), `e2e/extension-runtime.e2e.mjs` (the real extension, leetcode.com served by CDP Fetch from the fixture, a stub model, no relay) and the browser-runtime scenarios of `e2e/settings-page.e2e.mjs`.
+  The e2e scripts load a copy of the extension whose manifest pre-grants `127.0.0.1` (`extensionCopy` in `cdp.mjs`), since headless Chromium cannot answer the permission prompt, and `Page.eval` passes `userGesture: true` so a scripted click may request permissions.
 
 ## Maintaining this file
 
