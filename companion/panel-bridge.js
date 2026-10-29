@@ -9,6 +9,10 @@
 //     student typed into the panel, handed to onMessage. It reconnects with
 //     backoff for as long as the bridge runs, which is also how the panel
 //     learns whether a companion is online at all.
+//   - dropProblem(slug): asks the relay to forget one problem's buffered
+//     events (POST /panel/drop-problem) once the tutor has moved on from it.
+//     It goes out after everything published before it, so the old
+//     problem's last events cannot land after the drop.
 //
 // Kept free of any terminal/readline code so it can be tested against a stub
 // relay without booting companion.js.
@@ -147,8 +151,31 @@ export function createPanelBridge({
     }
   }
 
+  async function postDrop(problemSlug) {
+    try {
+      await fetchImpl(`${baseUrl}/panel/drop-problem`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...COMPANION_HEADERS },
+        body: JSON.stringify({ problemSlug }),
+        signal: AbortSignal.timeout(publishTimeoutMs),
+      });
+    } catch {
+      // Best effort - see the file header.
+    }
+  }
+
+  function dropProblem(problemSlug) {
+    if (stopped || typeof problemSlug !== 'string' || !problemSlug) return;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushing = flushing.then(flushQueue).then(() => postDrop(problemSlug));
+  }
+
   return {
     publish,
+    dropProblem,
     start() {
       runInbox();
     },

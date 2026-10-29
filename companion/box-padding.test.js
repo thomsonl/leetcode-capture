@@ -177,10 +177,12 @@ function makeCapture(attemptSeq) {
     problemDescription: 'Given an array of integers nums and an integer target...',
     problemTags: ['Array'],
     language: 'python3',
-    trigger: 'run',
+    // A Run would only be recorded, never answered (see code-ledger.js).
+    trigger: 'submit',
     timestamp: new Date().toISOString(),
     url: 'https://leetcode.com/problems/two-sum/',
-    code: 'def twoSum(nums, target):\n    pass',
+    // Differs per attempt: a Submit of code the tutor already holds is not sent.
+    code: `def twoSum(nums, target):\n    pass  # attempt ${attemptSeq}`,
     attemptSeq,
   };
 }
@@ -356,7 +358,7 @@ test('a short conversation in a tall window grows from the top, keeping earlier 
   for (const seq of [1, 2, 3]) {
     assert.match(
       screenText,
-      new RegExp(`\\[capture\\] Run - Two Sum \\(attempt ${seq}\\)`),
+      new RegExp(`\\[capture\\] Submit - Two Sum \\(attempt ${seq}\\)`),
       `expected capture ${seq}'s label to survive, got:\n${screenText}`
     );
   }

@@ -56,6 +56,7 @@ test('parseSseBlock extracts the JSON payload and ignores comments and junk', ()
 // of spawning a relay of its own.
 function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
   const published = [];
+  const dropped = [];
   const inboxClients = new Set();
   let inboxConnections = 0;
   const server = http.createServer((req, res) => {
@@ -64,6 +65,14 @@ function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
       req.on('data', (c) => (body += c));
       req.on('end', () => {
         published.push(JSON.parse(body).events);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    } else if (req.method === 'POST' && req.url === '/panel/drop-problem') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        dropped.push(JSON.parse(body).problemSlug);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{"ok":true}');
       });
@@ -91,6 +100,7 @@ function startStubRelay({ inboxStatus = 200, port = 0 } = {}) {
       resolve({
         baseUrl: `http://127.0.0.1:${server.address().port}`,
         published,
+        dropped,
         flat: () => published.flat(),
         send: (message) => {
           for (const res of inboxClients) res.write(`id: 1\ndata: ${JSON.stringify(message)}\n\n`);
@@ -355,7 +365,8 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
   assert.ok(JSON.stringify(requests[0].messages).includes('any hints?'));
   assert.ok(out.includes('[panel] any hints?'), 'the terminal echoes panel messages under a [panel] label');
 
-  // 2. A capture is mirrored as a capture event plus its own tutor turn.
+  // 2. A Run is mirrored as a capture chip with its note, and never reaches
+  // the model: no tutor turn.
   fs.appendFileSync(
     capturesPath,
     `${JSON.stringify({
@@ -368,12 +379,16 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
       attemptSeq: 1,
     })}\n`
   );
-  await until(() => panel.events.filter((e) => e.type === 'turn-end').length >= 2, 10000, 'capture turn-end');
+  await until(() => panel.events.some((e) => e.type === 'capture'), 10000, 'the capture event');
+  await until(() => out.includes('recorded your Run for Two Sum'), 10000, 'the Run note in the terminal');
   const capture = panel.events.find((e) => e.type === 'capture');
   assert.deepEqual(
-    { slug: capture.problemSlug, trigger: capture.trigger, seq: capture.attemptSeq, title: capture.problemTitle },
-    { slug: 'two-sum', trigger: 'run', seq: 1, title: 'Two Sum' }
+    { slug: capture.problemSlug, trigger: capture.trigger, seq: capture.attemptSeq, title: capture.problemTitle, note: capture.note },
+    { slug: 'two-sum', trigger: 'run', seq: 1, title: 'Two Sum', note: 'Kept for your next message' }
   );
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(requests.length, 1, 'a Run must not reach the model');
+  assert.equal(panel.events.filter((e) => e.type === 'turn-start').length, 1, 'no tutor turn for a Run');
 
   // 3. Switching to another problem in the panel starts a fresh tutor session.
   const before = requests.length;
@@ -457,19 +472,21 @@ test('end to end: untrusted text never reaches the terminal as escape sequences'
     trigger: 'hack\x1b]0;pwned\x07',
     attemptSeq: 1,
   });
-  await until(() => companion.text().includes('got your hack]0;pwned for Evil'), 10000, 'the capture acknowledgement');
-  await until(() => requests.length >= 2, 10000, 'the model request for the capture');
+  // Not a Submit, so it is only recorded (see code-ledger.js's sendsToTutor).
+  await until(() => companion.text().includes('recorded your hack]0;pwned for Evil'), 10000, 'the capture note');
   // The capture is for a new problem, so the reset notice (which prints the
   // problem id) was on screen too.
   await until(() => companion.text().includes('new problem detected (evil-problem)'), 10000, 'the reset notice');
-  await until(() => relay.flat().filter((e) => e.type === 'turn-end').length >= 2, 10000, 'both published turn-ends');
+  await until(() => relay.flat().filter((e) => e.type === 'turn-end').length >= 1, 10000, 'the published turn-end');
+  await until(() => relay.flat().some((e) => e.type === 'capture'), 10000, 'the published capture');
+  assert.equal(requests.length, 1, 'an unknown trigger must not reach the model');
 
   const out = companion.output();
   const at = out.indexOf(ESC);
   assert.equal(at, -1, `an ESC byte reached the terminal: ${JSON.stringify(out.subarray(Math.max(0, at - 40), at + 40).toString('utf8'))}`);
   assert.ok(!out.includes(Buffer.from([0xc2, 0x9b])), 'a C1 CSI (U+009B) reached the terminal');
   assert.ok(companion.text().includes('[panel] esc-probe [31mRED[0m ]0;pwned-title end'));
-  assert.ok(companion.text().includes('[capture] hack]0;pwned - Evil [2J[31mTitle0m (attempt 1)'));
+  assert.ok(companion.text().includes('recorded your hack]0;pwned for Evil [2J[31mTitle0m (attempt 1)'));
 
   // Nor the panel, nor the model's prompt.
   const published = JSON.stringify(relay.flat());
@@ -498,39 +515,46 @@ test('end to end: switching problems in the panel tracks what the tutor has real
   await until(() => requests.length === 1, 10000, 'the terminal message reaching the model');
   await until(() => companion.text().includes('Okay.'), 10000, 'the reply in the terminal');
 
-  // 2. A Run on problem A.
+  // 2. A Run on problem A: recorded, A becomes active, no model call (the
+  // first problem resets nothing).
   companion.capture({
     problemSlug: 'two-sum',
     problemTitle: 'Two Sum',
     problemDescription: 'TWO-SUM-DESCRIPTION-MARKER',
     trigger: 'run',
     attemptSeq: 1,
+    code: 'def twoSum(nums, target):\n    return []',
   });
-  await until(() => requests.length === 2, 10000, 'the capture reaching the model');
-  await until(() => turnEnds() === 1, 10000, 'the capture turn-end');
+  await until(() => companion.text().includes('recorded your Run for Two Sum'), 10000, 'the Run note');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(requests.length, 1, 'a Run must not reach the model');
 
-  // 3. A panel question on B: a new problem, never run.
+  // 3. A panel question on B: a new problem with no code seen, and A is
+  // forgotten (its context, its code, and its chat in the relay).
   relay.send({ text: 'what about brackets?', problemSlug: 'valid-parentheses' });
-  await until(() => requests.length === 3, 10000, 'the question on B');
-  assert.match(lastPrompt(), /valid-parentheses\\" and has not run any code for it yet/);
+  await until(() => requests.length === 2, 10000, 'the question on B');
+  assert.match(lastPrompt(), /valid-parentheses\\" and has not shared any code for it yet/);
   assert.ok(!lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's context is cleared on the switch");
-  await until(() => turnEnds() === 2, 10000, 'the B turn-end');
+  assert.ok(!lastPrompt().includes('return []'), "A's code is not carried over");
+  await until(() => turnEnds() === 1, 10000, 'the B turn-end');
+  assert.deepEqual(relay.dropped, ['two-sum'], "the relay is asked to drop A's chat");
 
-  // 4. Back to A: the tutor's context is about B now, so it is reset again,
-  // but the student did run code on A, and A's description comes back.
+  // 4. Back to A without editor code: everything about A was dropped at the
+  // switch, so it starts over like a new problem.
   relay.send({ text: 'back to two sum', problemSlug: 'two-sum' });
-  await until(() => requests.length === 4, 10000, 'the question back on A');
-  assert.doesNotMatch(lastPrompt(), /has not run any code/);
-  assert.match(lastPrompt(), /two-sum\\" again; they ran code for it earlier/);
-  assert.ok(lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's description is handed back");
-  await until(() => turnEnds() === 3, 10000, 'the second A turn-end');
+  await until(() => requests.length === 3, 10000, 'the question back on A');
+  assert.match(lastPrompt(), /two-sum\\" and has not shared any code for it yet/);
+  assert.ok(!lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's old statement was dropped");
+  assert.ok(!lastPrompt().includes('brackets'), "B's chat is gone");
+  await until(() => turnEnds() === 2, 10000, 'the second A turn-end');
+  assert.deepEqual(relay.dropped, ['two-sum', 'valid-parentheses']);
 
   // 5. Another question on A: same problem, no reset, no preamble.
   relay.send({ text: 'and the edge cases?', problemSlug: 'two-sum' });
-  await until(() => requests.length === 5, 10000, 'the follow-up on A');
+  await until(() => requests.length === 4, 10000, 'the follow-up on A');
   const lastMessages = requests[requests.length - 1].messages;
   assert.equal(lastMessages[lastMessages.length - 1].content, 'and the edge cases?');
-  await until(() => turnEnds() === 4, 10000, 'the follow-up turn-end');
+  await until(() => turnEnds() === 3, 10000, 'the follow-up turn-end');
 
   const events = relay.flat();
   assert.ok(events.every((e) => !('problemSlug' in e) || e.problemSlug), 'no event is published without a problem');

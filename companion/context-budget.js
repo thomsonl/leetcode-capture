@@ -1,12 +1,14 @@
 // companion/context-budget.js - pure helpers for LocalBackend's context-
-// budget management: the pre-flight request-size estimate and the diff-
-// based compression of older history turns. Split out from companion.js so
-// this logic - deterministic, no I/O, no readline/backend state - can be
-// unit-tested directly, the same way terminal-format.js and vault-
-// summary.js already are, rather than only reachable through a full
-// companion.js subprocess. See companion.js's LocalBackend class comment
-// and companion/AGENTS.md for the two live-confirmed failures this exists
-// to address.
+// budget management: the pre-flight request-size estimate, the line diff
+// the tutor's code updates are built from (see code-ledger.js), and the
+// outgoing message list with the pinned description and code. Split out
+// from companion.js so this logic - deterministic, no I/O, no readline or
+// backend state - can be unit-tested directly, the same way
+// terminal-format.js and vault-summary.js already are, rather than only
+// reachable through a full companion.js subprocess. It uses no Node API, so
+// it can also run inside the browser extension. See companion.js's
+// LocalBackend class comment and the top-level AGENTS.md for the
+// live-confirmed failures this exists to address.
 
 // Cheap character-based token-count estimate, used only for the pre-flight
 // size check in LocalBackend.sendMessage (companion.js) - not a real
@@ -35,65 +37,89 @@ export function estimateMessagesTokens(messages) {
 }
 
 // A simple LCS-based line diff (no external dependency - this project's own
-// "no deps" bar, see companion/'s own header comment) used only to compress
-// an older history turn's code down to what changed from the attempt before
-// it (see compressOldCaptureTurn below) - not meant to be a byte-perfect
-// unified diff, just compact enough to show what changed between two
-// attempts without resending the full code for both.
-export function diffLines(oldLines, newLines) {
-  const n = oldLines.length;
-  const m = newLines.length;
+// "no deps" bar, see companion/'s own header comment). The common leading
+// and trailing lines are matched up front, so the quadratic LCS table only
+// covers the region that actually changed: a one-line edit in a 300-line
+// solution costs a tiny table, not a 300 by 300 one. Not meant to be a
+// byte-perfect unified diff, just a correct and compact list of operations.
+// `maxCells` bounds that table: past it this returns null instead of
+// allocating it (a rewrite of a very long file), and the caller sends the
+// whole code instead.
+export function diffLines(oldLines, newLines, { maxCells = Infinity } = {}) {
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  const oldMid = oldLines.slice(prefix, oldLines.length - suffix);
+  const newMid = newLines.slice(prefix, newLines.length - suffix);
+  const n = oldMid.length;
+  const m = newMid.length;
+  if ((n + 1) * (m + 1) > maxCells) return null;
   const lcs = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      lcs[i][j] = oldLines[i] === newLines[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      lcs[i][j] = oldMid[i] === newMid[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
     }
   }
   const ops = [];
+  for (let k = 0; k < prefix; k++) ops.push({ type: 'same', line: oldLines[k] });
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (oldLines[i] === newLines[j]) {
-      ops.push({ type: 'same', line: oldLines[i] });
+    if (oldMid[i] === newMid[j]) {
+      ops.push({ type: 'same', line: oldMid[i] });
       i++;
       j++;
     } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
-      ops.push({ type: 'del', line: oldLines[i] });
+      ops.push({ type: 'del', line: oldMid[i] });
       i++;
     } else {
-      ops.push({ type: 'add', line: newLines[j] });
+      ops.push({ type: 'add', line: newMid[j] });
       j++;
     }
   }
   while (i < n) {
-    ops.push({ type: 'del', line: oldLines[i] });
+    ops.push({ type: 'del', line: oldMid[i] });
     i++;
   }
   while (j < m) {
-    ops.push({ type: 'add', line: newLines[j] });
+    ops.push({ type: 'add', line: newMid[j] });
     j++;
   }
+  for (let k = oldLines.length - suffix; k < oldLines.length; k++) ops.push({ type: 'same', line: oldLines[k] });
   return ops;
 }
 
-// Renders diffLines' ops as a compact +/- diff with 1 line of context
-// around each change, collapsing everything else to "..." - a full unified
-// diff's hunk headers aren't worth the tokens here, the model just needs to
-// see what changed since the attempt before this one.
-export function formatDiffSummary(oldCode, newCode) {
-  if (oldCode === newCode) return '(code unchanged from the previous attempt)';
-  const ops = diffLines((oldCode || '').split('\n'), (newCode || '').split('\n'));
-  const CONTEXT = 1;
+// Renders diffLines' ops as +/- lines with `context` unchanged lines around
+// each change, collapsing everything else to "...". With `lineNumbers`, every
+// unchanged or added line also carries its line number in the NEW code (a
+// removed line has none, it no longer exists there), so a reader holding the
+// old code can place each change without a unified diff's hunk headers.
+// Returns the rendered lines plus the added/removed counts, or null when
+// diffLines gave up (see its `maxCells`).
+export function formatDiffBody(oldCode, newCode, { context = 1, lineNumbers = false, maxCells } = {}) {
+  const ops = diffLines((oldCode || '').split('\n'), (newCode || '').split('\n'), { maxCells });
+  if (!ops) return null;
   const keep = new Array(ops.length).fill(false);
   ops.forEach((op, idx) => {
     if (op.type === 'same') return;
-    for (let k = Math.max(0, idx - CONTEXT); k <= Math.min(ops.length - 1, idx + CONTEXT); k++) keep[k] = true;
+    for (let k = Math.max(0, idx - context); k <= Math.min(ops.length - 1, idx + context); k++) keep[k] = true;
   });
+  const newLineCount = ops.filter((op) => op.type !== 'del').length;
+  const width = String(Math.max(1, newLineCount)).length;
   const out = [];
   let skipping = false;
   let added = 0;
   let removed = 0;
+  let newLineNo = 0;
   ops.forEach((op, idx) => {
+    if (op.type !== 'del') newLineNo++;
     if (op.type === 'add') added++;
     if (op.type === 'del') removed++;
     if (!keep[idx]) {
@@ -105,40 +131,42 @@ export function formatDiffSummary(oldCode, newCode) {
     }
     skipping = false;
     const prefix = op.type === 'add' ? '+' : op.type === 'del' ? '-' : ' ';
-    out.push(`${prefix} ${op.line}`);
+    if (lineNumbers) {
+      const number = op.type === 'del' ? ''.padStart(width) : String(newLineNo).padStart(width);
+      out.push(`${prefix} ${number} | ${op.line}`);
+    } else {
+      out.push(`${prefix} ${op.line}`);
+    }
   });
-  return `Code changed from the previous attempt (+${added}/-${removed} lines):\n${out.join('\n')}`;
+  return { body: out.join('\n'), added, removed };
 }
 
-// Replaces an older, already-reviewed capture turn's full code with a
-// compact diff against the code from the capture immediately before it -
-// the tutor only ever needs the *current* turn's code in full; older turns
-// exist purely so the conversation has continuity ("what did we already
-// discuss"), not so their own full code gets re-reviewed every single
-// request. Keeps the turn's original header line (trigger/problem/attempt)
-// so the model still knows what this turn was; the trailing
-// RUN_ADDENDUM/SUBMIT_ADDENDUM instruction is dropped entirely - it only
-// ever told the model how to respond to that turn, which is moot once the
-// turn is old. `msg` is one of LocalBackend.history's own user-turn entries
-// (`{ content, code, headerLine }`, see companion.js's sendMessage).
-export function compressOldCaptureTurn(msg, previousCode) {
-  const header = msg.headerLine || '[LeetCode capture]';
-  return `${header}\n${formatDiffSummary(previousCode, msg.code)}`;
+// The compact +/- summary with 1 line of context, under a one-line header -
+// a full unified diff's hunk headers aren't worth the tokens here, the model
+// just needs to see what changed between two attempts.
+export function formatDiffSummary(oldCode, newCode) {
+  if (oldCode === newCode) return '(code unchanged from the previous attempt)';
+  const { body, added, removed } = formatDiffBody(oldCode, newCode);
+  return `Code changed from the previous attempt (+${added}/-${removed} lines):\n${body}`;
 }
 
 // Builds the actual outgoing messages array for a LocalBackend request: the
 // leading system message, the pinned problem description right after it (if
-// one is known), then the rest of history with every *older* user turn
-// (everything except the one just pushed for this request, which is always
-// last) compressed down to a diff against the capture before it, rather
-// than resent in full. Pure function of its inputs - LocalBackend.
-// buildMessages (companion.js) is a thin wrapper passing its own fields
-// through - kept here, not as a class method, specifically so it can be
-// unit-tested without constructing a real LocalBackend/network stack.
-// `history` is never mutated: this.history remains the true, full record
-// throughout, which is what lets the pinned description stay correct
-// independent of trimHistory's own pair-splicing.
-export function buildMessages({ history, pinnedProblemContext }) {
+// one is known), then the pinned code (the latest version of the student's
+// code the tutor has been shown, which any code change in the current turn
+// applies to), then the rest of history. An older user turn that carried the
+// full code is sent as its `compactContent` instead, since that code (or a
+// newer version of it) is already pinned (only while code is pinned, so the
+// compact note never points at nothing); the turn just pushed for this
+// request is always last and always sent in full.
+//
+// Pinning is what lets history trimming (LocalBackend.trimHistory) drop the
+// turn that originally carried the full code without the tutor losing it:
+// later turns only carry diffs against it. Pure function of its inputs -
+// LocalBackend.buildMessages (companion.js) is a thin wrapper passing its
+// own fields through - so it can be unit-tested without a real backend.
+// `history` is never mutated.
+export function buildMessages({ history, pinnedProblemContext, pinnedCode = null }) {
   const messages = [history[0]]; // the leading system message
   if (pinnedProblemContext?.description) {
     messages.push({
@@ -148,25 +176,17 @@ export function buildMessages({ history, pinnedProblemContext }) {
         `(${pinnedProblemContext.slug})\n\n${pinnedProblemContext.description}`,
     });
   }
+  if (pinnedCode && typeof pinnedCode.text === 'string') {
+    messages.push({ role: 'system', content: pinnedCode.text });
+  }
 
   const rest = history.slice(1);
-  const currentTurnIndex = rest.length - 1; // the just-pushed user turn - always last, always sent in full
-  let previousCode = null;
+  const currentTurnIndex = rest.length - 1;
   for (let i = 0; i < rest.length; i++) {
     const msg = rest[i];
-    if (msg.role !== 'user' || typeof msg.code !== 'string') {
-      messages.push({ role: msg.role, content: msg.content });
-      continue;
-    }
-    if (i === currentTurnIndex || previousCode === null) {
-      // The current turn under review, or the earliest capture in this
-      // window with no earlier code to diff against yet - both sent in
-      // full.
-      messages.push({ role: 'user', content: msg.content });
-    } else {
-      messages.push({ role: 'user', content: compressOldCaptureTurn(msg, previousCode) });
-    }
-    previousCode = msg.code;
+    const compact =
+      Boolean(pinnedCode) && msg.role === 'user' && i !== currentTurnIndex && typeof msg.compactContent === 'string';
+    messages.push({ role: msg.role, content: compact ? msg.compactContent : msg.content });
   }
   return messages;
 }

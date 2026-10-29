@@ -244,12 +244,30 @@ test('a reply cut off mid-generation (finish_reason "length", non-empty content)
 
 test('a normal reply with populated `content` still prints as before', async () => {
   const out = await runCompanion({
-    stubReplyFor: () => ({ role: 'assistant', content: 'Got your run - standing by.' }),
+    stubReplyFor: () => ({ role: 'assistant', content: 'Got your submission - nice work.' }),
+    capture: makeCapture({ trigger: 'submit', attemptSeq: 1 }),
+  });
+
+  assert.match(out, /got your Submit for Two Sum - taking a look/);
+  assert.match(out, /Got your submission - nice work\./);
+});
+
+// A Run is never sent to the model (see code-ledger.js): it is recorded and
+// noted in the terminal, and the stub must never see a request for it.
+test('a Run is recorded but never reaches the model', async () => {
+  let calls = 0;
+  const out = await runCompanion({
+    stubReplyFor: () => {
+      calls += 1;
+      return { role: 'assistant', content: 'should never be printed' };
+    },
     capture: makeCapture({ trigger: 'run', attemptSeq: 1 }),
   });
 
-  assert.match(out, /got your Run for Two Sum - taking a look/);
-  assert.match(out, /Got your run - standing by\./);
+  assert.match(out, /recorded your Run for Two Sum \(attempt 1\) - not sent to the tutor/);
+  assert.equal(calls, 0);
+  assert.ok(!out.includes('should never be printed'));
+  assert.ok(!out.includes('[capture] Run'), 'no tutor turn label for a Run');
 });
 
 // companion.js is spawned with piped (non-TTY) stdio in every test in this
@@ -327,7 +345,7 @@ test('a streamed reply reaches the terminal incrementally, not only once the who
 
   try {
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    fs.appendFileSync(capturesPath, JSON.stringify(makeCapture({ trigger: 'run', attemptSeq: 1 })) + '\n');
+    fs.appendFileSync(capturesPath, JSON.stringify(makeCapture({ trigger: 'submit', attemptSeq: 1 })) + '\n');
 
     const firstDeadline = Date.now() + 8000;
     while (Date.now() < firstDeadline && !out.includes('FIRSTCHUNK-')) {
@@ -487,7 +505,9 @@ function startTrackingStubBackend() {
   });
 }
 
-function makeIdCapture({ slug, title, attemptSeq, trigger = 'run', code = 'pass' }) {
+// A Submit by default, with code that differs per attempt: a Run, or a
+// Submit of code the tutor already holds, never reaches the model.
+function makeIdCapture({ slug, title, attemptSeq, trigger = 'submit', code = `pass  # attempt ${attemptSeq}` }) {
   return {
     receivedAt: new Date().toISOString(),
     problemSlug: slug,
@@ -575,10 +595,11 @@ test('consecutive captures for the same problem do not clear context', async () 
   // this turn's own user message.
   assert.equal(requests[0].length, 3, 'first call: system + pinned description + this turn\'s user message');
   // Full continuity: system, pinned description (still pinned - same
-  // problem, not resent as a second copy), first user turn (sent in full -
-  // nothing earlier to diff it against yet), first assistant reply, second
-  // user turn - nothing truncated.
-  assert.equal(requests[1].length, 5, 'second call should still carry the first turn as history');
+  // problem, not resent as a second copy), the pinned code the tutor now
+  // holds, the first user turn (compact: its full code is the pinned code),
+  // first assistant reply, second user turn - nothing truncated.
+  assert.equal(requests[1].length, 6, 'second call should still carry the first turn as history');
+  assert.match(requests[1][2].content, /exactly as you last saw it/);
   assert.ok(!out.includes('new problem detected'), 'no reset notice should print for the same problem');
 });
 
@@ -666,7 +687,10 @@ function startExhaustionStubBackend({ thresholdChars }) {
         );
         res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`);
       } else {
-        const content = `Reply number ${requests.length}`;
+        // A long-ish reply: since later Submits only carry a diff (and the
+        // held code is pinned once, see code-ledger.js), replies are what
+        // grows the resent history turn over turn.
+        const content = `Reply number ${requests.length} ${'and some more explanation '.repeat(24)}`;
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
         res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
       }
@@ -723,7 +747,7 @@ async function runManyTurnsScenario({ turnCount, capturePort, thresholdChars, en
       fs.appendFileSync(
         capturesPath,
         JSON.stringify(
-          makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: i, code: EXHAUSTION_TEST_CODE })
+          makeIdCapture({ slug: 'two-sum', title: 'Two Sum', attemptSeq: i, code: `${EXHAUSTION_TEST_CODE}# turn ${i}\n` })
         ) + '\n'
       );
       const deadline = Date.now() + 8000;
@@ -796,14 +820,12 @@ test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation
   );
   assert.equal(requests.length, 6, 'all six turns should have gone through without an early failure');
   for (const req of requests) {
-    // system + at most 1 turn-pair still in flight (the trimmed-to pair plus
-    // this request's own new user message can transiently be 2 pairs' worth
-    // - see trimHistory's own comment: trimming runs after a reply lands,
-    // not before the next request goes out).
-    assert.ok(
-      req.length <= 1 + 2 * 2,
-      `request history should stay bounded (system + at most ~2 pairs), got ${req.length} messages`
-    );
+    // Past the leading system messages (prompt, pinned description, pinned
+    // code), at most the one kept pair plus this request's own new user
+    // message - see trimHistory's own comment: trimming runs after a reply
+    // lands, not before the next request goes out.
+    const turns = req.filter((m) => m.role !== 'system');
+    assert.ok(turns.length <= 3, `request history should stay bounded (one kept pair + the new turn), got ${turns.length} turns`);
   }
 });
 
@@ -826,7 +848,8 @@ test('trimmed history never leaves a dangling half-turn', async () => {
     // after it. makeIdCapture always supplies a problemDescription, so it's
     // present here from the very first request onward - detected rather
     // than assumed, so this test still holds if that ever changes.
-    const start = req[1]?.role === 'system' ? 2 : 1;
+    let start = 1;
+    while (req[start]?.role === 'system') start += 1; // the pinned code follows the description
     for (let i = start; i < req.length; i += 2) {
       assert.equal(req[i].role, 'user', `message ${i} should be a user turn`);
       if (i + 1 < req.length) assert.equal(req[i + 1].role, 'assistant', `message ${i + 1} should be its reply`);
@@ -1117,12 +1140,10 @@ async function runSameProblemManyTurns({ turnCount, capturePort, env = {} }) {
             slug: 'two-sum',
             title: 'Two Sum',
             attemptSeq: i,
-            trigger: i === turnCount ? 'submit' : 'run',
+            trigger: 'submit',
             // Realistic incremental edits (most lines identical between
             // attempts, only the marker comment line actually changes) -
-            // unlike a synthetic fixture where every line differs between
-            // attempts, this is the shape a diff is actually meant to
-            // compress well, and matches how a student's real
+            // the shape a diff is meant to save on, and how a student's real
             // attempt-to-attempt edits usually look.
             code:
               'def twoSum(nums, target):\n' +
@@ -1133,7 +1154,8 @@ async function runSameProblemManyTurns({ turnCount, capturePort, env = {} }) {
               '            return [seen[complement], i]\n' +
               `        # attempt ${i} marker line\n` +
               '        seen[val] = i\n' +
-              '    return []\n',
+              '    return []\n' +
+              Array.from({ length: 20 }, (_, k) => `# a note about the approach, line ${k}\n`).join(''),
           })
         ) + '\n'
       );
@@ -1269,56 +1291,43 @@ test('the pinned problem description survives trimHistory dropping the turn that
   );
 });
 
-// The compression itself: an older, already-reviewed turn's own raw code
-// must not survive verbatim into a later request - only the very first
-// capture (nothing earlier to diff against) and the current turn (never
-// compressed - see buildMessages) keep their full code.
-test('older history turns are compressed to a diff; the current turn always keeps its full code', async () => {
+// Only the first Submit carries the full code. Later ones carry a diff
+// against the code the tutor holds, which LocalBackend pins as a system
+// message, and the older full-code turn is sent in its compact form so the
+// code is not resent twice.
+test('later Submits carry only a diff; the held code is pinned and the old full-code turn is compact', async () => {
   const { requests } = await runSameProblemManyTurns({ turnCount: 4, capturePort: 18172 });
 
   assert.equal(requests.length, 4);
-  const lastRequest = requests[3];
-  const currentTurnMsg = lastRequest.find(
-    (m) => m.role === 'user' && (m.content || '').includes('attempt 4 marker line')
-  );
-  assert.ok(currentTurnMsg, "the current turn's own code should be present");
-  // Only a full, uncompressed turn carries the fenced code block
-  // formatCaptureMessage wraps real code in - a compressed turn (below)
-  // never does, since compressOldCaptureTurn drops it entirely.
-  assert.match(currentTurnMsg.content, /```/, "the current turn should still carry its full fenced code block");
+  const first = requests[0][requests[0].length - 1].content;
+  assert.match(first, /in full:/);
+  assert.match(first, /attempt 1 marker line/);
 
-  const olderTurnMsg = lastRequest.find(
-    (m) => m.role === 'user' && (m.content || '').includes('Code changed from the previous attempt')
-  );
-  assert.ok(olderTurnMsg, `expected a compressed diff for an older (non-first, non-current) turn, got: ${JSON.stringify(lastRequest)}`);
-  assert.ok(
-    !olderTurnMsg.content.includes('```'),
-    "a compressed turn should no longer carry its own fenced code block"
+  const lastRequest = requests[3];
+  const current = lastRequest[lastRequest.length - 1].content;
+  assert.match(current, /```diff/);
+  assert.match(current, /^- +\| {9}# attempt 3 marker line$/m);
+  assert.match(current, /^\+ +7 \| {9}# attempt 4 marker line$/m);
+  assert.ok(!current.includes('in full'), 'no full code once the tutor holds it');
+
+  const pinned = lastRequest.find((m) => m.role === 'system' && /exactly as you last saw it/.test(m.content));
+  assert.ok(pinned && pinned.content.includes('attempt 3 marker line'), 'the held code (attempt 3) is pinned');
+  // The first turn is still in history (no trimming here), but compact.
+  assert.ok(lastRequest.some((m) => m.role === 'user' && m.content.includes("The student's full code was shown here")));
+  assert.equal(
+    (JSON.stringify(lastRequest).match(/a note about the approach, line 19/g) || []).length,
+    1,
+    'the full code appears once, in the pinned copy'
   );
 });
 
-// Measures, not just asserts the marker text is present: a compressed
-// older turn (a small, realistic one-line edit between attempts here -
-// see runSameProblemManyTurns) should be dramatically smaller than its own
-// full code+header+fences would have been, confirming this is a real size
-// win and not just a cosmetic relabeling.
-test('a compressed older turn is measurably smaller than its own original content', async () => {
-  const { requests } = await runSameProblemManyTurns({ turnCount: 4, capturePort: 18173 });
-  const lastRequest = requests[3];
-
-  const diffMessages = lastRequest.filter(
-    (m) => m.role === 'user' && (m.content || '').includes('Code changed from the previous attempt')
-  );
-  assert.ok(diffMessages.length >= 1, 'expected at least one compressed older turn in this request');
-  const fullTurnMsg = lastRequest.find((m) => m.role === 'user' && (m.content || '').includes('```'));
-  assert.ok(fullTurnMsg, 'expected at least one full (uncompressed) turn to compare against');
-  for (const m of diffMessages) {
-    assert.ok(
-      m.content.length < fullTurnMsg.content.length / 2,
-      `expected a compressed turn (${m.content.length} chars) to be well under half a full turn's size ` +
-        `(${fullTurnMsg.content.length} chars)`
-    );
-  }
+// Measures, not just asserts the marker text: a diff turn for a one-line
+// edit is far smaller than the turn that carried the full code.
+test('a diff turn is measurably smaller than the full-code turn', async () => {
+  const { requests } = await runSameProblemManyTurns({ turnCount: 2, capturePort: 18173 });
+  const full = requests[0][requests[0].length - 1].content;
+  const diff = requests[1][requests[1].length - 1].content;
+  assert.ok(diff.length < full.length / 2, `diff turn ${diff.length} chars vs full turn ${full.length} chars`);
 });
 
 // Regression tests for the companion's displayed width tracking a live

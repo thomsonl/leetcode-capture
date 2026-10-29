@@ -111,7 +111,8 @@ function makeCapture({ trigger, attemptSeq }) {
     trigger,
     timestamp: new Date().toISOString(),
     url: 'https://leetcode.com/problems/two-sum/',
-    code: 'def twoSum(nums, target):\n    pass',
+    // Differs per attempt: a Submit of code the tutor already holds is not sent.
+    code: `def twoSum(nums, target):\n    pass  # attempt ${attemptSeq}`,
     attemptSeq,
   };
 }
@@ -169,7 +170,7 @@ test('a capture arriving while a long typed line wraps the prompt does not corru
   // ack line + label this test asserts survives) before the long-line
   // typing starts.
   await waitFor(() => out.includes('─'), 'startup box');
-  fs.appendFileSync(capturesPath, JSON.stringify(makeCapture({ trigger: 'run', attemptSeq: 1 })) + '\n');
+  fs.appendFileSync(capturesPath, JSON.stringify(makeCapture({ trigger: 'submit', attemptSeq: 1 })) + '\n');
   await waitFor(() => out.includes('Got it, standing by.'), 'first capture reply');
   await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -217,12 +218,12 @@ test('a capture arriving while a long typed line wraps the prompt does not corru
   // exactly what the prevRows bug erased.
   assert.match(
     screenText,
-    /got your Run for Two Sum/,
+    /got your Submit for Two Sum[\s\S]*\[capture\] Submit - Two Sum \(attempt 1\)/,
     `expected the first capture's ack line to survive, got:\n${screenText}`
   );
   assert.match(
     screenText,
-    /\[capture\] Run - Two Sum \(attempt 1\)/,
+    /\[capture\] Submit - Two Sum \(attempt 1\)/,
     `expected the first capture's label to survive, got:\n${screenText}`
   );
   // And the second turn's own ack/label must be present too - the bug also

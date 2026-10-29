@@ -52,6 +52,14 @@ import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from
 import { estimateMessagesTokens, buildMessages as buildLocalMessages } from './context-budget.js';
 import { createPanelBridge } from './panel-bridge.js';
 import { stripControlChars, oneLine, sanitizeCapture } from './sanitize.js';
+import {
+  createCodeLedger,
+  sendsToTutor,
+  formatPinnedCode,
+  buildSubmitMessage,
+  buildChatMessage,
+  DEFAULT_MAX_PROBLEMS,
+} from './code-ledger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -212,12 +220,14 @@ if (VAULT_AUTO_SUMMARY) validateVaultPath(VAULT_PATH);
 // this in.
 const TUTOR_SYSTEM_PROMPT = `You are a patient coding tutor holding office hours for a student working through LeetCode problems. You are a teacher, not a solution generator: your job is to help the student understand and improve their own code. You guide rather than solve by default, but if the student insists, give them what they ask for (see rule 6).
 
-Each message you receive is either the student's own code from a Run/Submit attempt (a "capture") or an ordinary chat message. Every capture message tells you explicitly, near the top, whether it was a Run or a Submit - always follow that label, not any guess of your own about which one it is.
+Each message you receive is either a Submit of the student's code (a "capture", labeled as a Submit near the top) or an ordinary chat message from the student.
 
-On a Submit capture, respond following these steps every time, in order:
+How you see the student's code: you are shown their full code once, the first time. After that you only receive the changes since the version you last saw, as a diff: each line starts with "+" (added), "-" (removed) or a space (unchanged context), then the line's number in the new code (blank for a removed line), then "|" and the line itself; "..." stands for unchanged lines left out. Apply those changes to the code you already have to know the current code. A message with no code or diff means the code has not changed since you last saw it. The student also runs their code against test cases (a "Run") without telling you: Runs are never sent to you on their own and never need a reply, and any edits they made show up in the next diff you receive.
+
+On a Submit, respond following these steps every time, in order:
 
 1. Start by acknowledging that you received their code.
-2. Look back over the conversation so far. If this is the first capture you've seen for this specific problem (Run or Submit), briefly introduce it: name the problem and describe its general category or pattern, e.g. "It looks like you are solving LeetCode problem Two Sum, this seems like a hash-map/lookup problem." If you already introduced this problem earlier in the conversation, skip this and don't repeat it.
+2. Look back over the conversation so far. If this is the first time you've seen code for this specific problem, briefly introduce it: name the problem and describe its general category or pattern, e.g. "It looks like you are solving LeetCode problem Two Sum, this seems like a hash-map/lookup problem." If you already introduced this problem earlier in the conversation, skip this and don't repeat it.
 3. Describe, in your own words, the approach their code appears to take. Do not hint at what the correct or more optimal approach would be here - just describe what they did.
 4. Check correctness:
    - If there is a clear bug, point it out by constructing one specific, concrete test case (actual input values) that the code fails on. Don't just assert that a bug exists - show the input. Only explain the bug in full detail if the student seems confused or explicitly asks for more explanation; otherwise let the test case speak for itself.
@@ -227,10 +237,7 @@ On a Submit capture, respond following these steps every time, in order:
    The same goes for anything they insist on (a fact, a clarification, an opinion, a bug explanation): tell them plainly instead of deflecting or softening.
 7. Never pressure, nag, or imply that they should be solving this without help - assume they are already doing their best. Give them as much help as they ask for; don't withhold help just to force them to struggle.
 
-On a Run capture, do not do the full Submit breakdown above - no approach description, no correctness check, no complexity evaluation. Just:
-
-1. Briefly acknowledge that you received the code and are standing by, e.g. "Got your run - let me know if you want to talk through it." If this is the first capture you've seen for this specific problem (Run or Submit), also briefly introduce the problem as in step 2 above; otherwise skip that.
-2. Stop there. Don't volunteer analysis of the code. If the student then asks a direct question about that attempt, answer it normally, drawing on the full code you were given - the restriction is only on unprompted analysis of a Run, not on your ability to discuss it when asked.
+On a chat message, answer what the student asks. When it comes with code or a diff, that is the code in front of them as they ask: use it to answer, but don't volunteer the full Submit breakdown above unless they ask for it.
 
 Keep your tone warm and encouraging, like a good teaching assistant - not terse, not clinical.`;
 
@@ -302,9 +309,11 @@ class ClaudeBackend {
   }
 
   // `problemContext` (see companion.js's captureProblemContext) is supplied
-  // on every capture-driven turn, undefined for a typed chat message - only
-  // actually used below on a fresh SDK session's very first message (see
-  // promptText).
+  // whenever a problem is known - only actually used below on a fresh SDK
+  // session's very first message (see promptText). `heldCode`/`compactText`
+  // (LocalBackend's code pinning) are not needed here: a resumed session
+  // keeps the first full code and every later diff, and a reset starts a
+  // new session.
   async sendMessage(text, { onChunk, problemContext } = {}) {
     await this.ensureLoaded();
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
@@ -580,16 +589,19 @@ class LocalBackend {
     // instead, so a long session can never lose it to trimHistory dropping
     // the turn that originally carried it.
     this.pinnedProblemContext = null;
+    // The code the tutor holds (see code-ledger.js), pinned as a system
+    // message like the description, so trimHistory dropping the turn that
+    // carried the full code never loses it: later turns only carry diffs
+    // against it. `{ text }` or null.
+    this.pinnedCode = null;
   }
 
   // `problemContext` (see companion.js's captureProblemContext) is supplied
-  // on every capture-driven turn, undefined for a typed chat message.
-  // `captureMeta` (`{ code, headerLine }`) is the raw code and header line
-  // for this turn if it's a capture, used only by buildMessages below to
-  // compress this turn once it's no longer the current one - never sent as-
-  // is; buildMessages derives the actual outgoing content from `text`/
-  // `code` fresh on every request.
-  async sendMessage(text, { onChunk, problemContext, captureMeta } = {}) {
+  // whenever a problem is known. `heldCode` is the code the tutor held
+  // before this turn (what this turn's diff, if any, applies to), and
+  // `compactText` what this turn becomes once it is older and its code is
+  // pinned instead (see context-budget.js's buildMessages).
+  async sendMessage(text, { onChunk, problemContext, heldCode, compactText } = {}) {
     // Pin the description the first time we see one for whichever problem
     // is now current - ignored on every later turn for the same problem,
     // which is exactly what keeps it from being resent every turn (see
@@ -598,11 +610,12 @@ class LocalBackend {
     if (problemContext?.description && problemContext.problemId !== this.pinnedProblemContext?.problemId) {
       this.pinnedProblemContext = problemContext;
     }
+    const pinnedText = formatPinnedCode(heldCode);
+    this.pinnedCode = pinnedText ? { text: pinnedText } : null;
     this.history.push({
       role: 'user',
       content: text,
-      code: typeof captureMeta?.code === 'string' ? captureMeta.code : null,
-      headerLine: captureMeta?.headerLine ?? null,
+      ...(typeof compactText === 'string' && compactText !== text ? { compactContent: compactText } : {}),
     });
 
     const outgoingMessages = this.buildMessages();
@@ -661,9 +674,9 @@ class LocalBackend {
   }
 
   // Builds the actual outgoing messages array for a request - the leading
-  // system prompt, the pinned problem description right after it, then the
-  // rest of history with every *older* user turn compressed down to a diff
-  // against the capture before it. The real logic lives in context-
+  // system prompt, the pinned problem description and code right after it,
+  // then the rest of history, older turns that carried the full code in
+  // their compact form. The real logic lives in context-
   // budget.js's buildMessages (pure, unit-tested directly); this is a thin
   // wrapper passing this instance's own fields through. Recomputed fresh on
   // every request rather than mutating this.history itself, so
@@ -672,7 +685,11 @@ class LocalBackend {
   // independence from history trimming both stay simple and correct -
   // this.history remains the true, full record throughout.
   buildMessages() {
-    return buildLocalMessages({ history: this.history, pinnedProblemContext: this.pinnedProblemContext });
+    return buildLocalMessages({
+      history: this.history,
+      pinnedProblemContext: this.pinnedProblemContext,
+      pinnedCode: this.pinnedCode,
+    });
   }
 
   // Standard OpenAI-compatible /v1/chat/completions request/response shape -
@@ -888,6 +905,7 @@ class LocalBackend {
   resetContext() {
     this.history = [this.systemMessage];
     this.pinnedProblemContext = null;
+    this.pinnedCode = null;
   }
 }
 
@@ -1009,11 +1027,12 @@ let panelBridge = null;
 // per-problem transcript key. Updated by captures and by panel messages.
 let panelProblemSlug = null;
 let panelTurnCounter = 0;
-// Every problem this process has seen a capture for, with the context the
-// tutor needs to discuss it (see captureProblemContext). A panel message about
-// one of these must not claim the student "has not run any code", and can hand
-// the description back to a backend whose context was reset in between.
-const capturedProblems = new Map(); // slug -> captureProblemContext(capture)
+// What code the tutor has been shown, the newest code per problem, and which
+// problem is active (see code-ledger.js). In memory only: a restart starts
+// the backends from nothing too.
+const ledger = createCodeLedger({ maxProblems: DEFAULT_MAX_PROBLEMS });
+// The capture chip's note in the panel for a Run (see handleCaptureLine).
+const RUN_PANEL_NOTE = 'Kept for your next message';
 
 function panelPublish(event) {
   if (!panelBridge) return;
@@ -1043,111 +1062,45 @@ function triggerLabel(trigger) {
   return oneLine(trigger) || 'unknown trigger';
 }
 
-function languageFenceHint(language) {
-  const known = {
-    python: 'python',
-    python3: 'python',
-    javascript: 'javascript',
-    typescript: 'typescript',
-    java: 'java',
-    'c++': 'cpp',
-    c: 'c',
-    'c#': 'csharp',
-    go: 'go',
-    golang: 'go',
-    rust: 'rust',
-    kotlin: 'kotlin',
-    swift: 'swift',
-    ruby: 'ruby',
-    scala: 'scala',
-    php: 'php',
-  };
-  return known[String(language).toLowerCase()] || '';
-}
-
-// Explicit, unconditional instruction appended to every capture message
-// telling the model which of TUTOR_SYSTEM_PROMPT's two response modes
-// applies - the code branches on capture.trigger itself rather than relying
-// on the model to infer Run vs Submit purely from the header text.
-const RUN_ADDENDUM =
-  '\n\nThis was a Run, not a Submit. Per your instructions: acknowledge only and stand by (plus the first-capture problem introduction, if this is the first capture for this problem) - do not give the approach description, correctness check, or complexity evaluation unless asked.';
+// Explicit instruction appended to every Submit message, so the model never
+// has to infer from the header text how to answer. A Run is never sent to
+// the model at all (see code-ledger.js), so it needs no instruction.
 const SUBMIT_ADDENDUM =
-  '\n\nThis was a Submit. Per your instructions: give the full breakdown - approach description, correctness check, and complexity evaluation.';
+  '\n\nThis was a Submit. Per your instructions: give the full breakdown of the code as it stands now (the code you already had with any changes above applied) - approach description, correctness check, and complexity evaluation.';
 
-// Builds the per-turn message text sent to the backend for one capture.
-// Deliberately does NOT embed the full problem description here - see "send
-// the problem description once per problem" below (captureProblemContext,
-// maybeResetContextForCapture's sibling): the header line's title/slug is
-// still a short reference on every single turn, but the full description
-// text is handled separately so each backend can send it once per problem
-// rather than repeating it on every capture. Returns the raw code and
-// header line alongside the formatted text (not just the text alone) so
-// LocalBackend can compress an *older* turn down to a diff against the
-// capture before it without needing to re-parse code back out of already-
-// formatted message text (see "compress older history turns",
-// compressOldCaptureTurn).
-function formatCaptureMessage(capture) {
+// The header line of a Submit message: which problem, and that it is a
+// Submit. The code part (full or a diff) comes from code-ledger.js. The full
+// problem description is not repeated here on every turn; each backend gets
+// it once per problem through captureProblemContext.
+function captureHeaderLine(capture) {
   const title = capture.problemTitle || capture.problemSlug || '(unknown problem)';
   const slug = capture.problemSlug || 'unknown-slug';
-  const language = capture.language || 'unknown language';
-  const label = triggerLabel(capture.trigger);
-  const code = typeof capture.code === 'string' ? capture.code : '';
-  const fence = '```';
-
-  const headerLine = `[LeetCode capture] ${label} - ${title} (${slug})`;
-  const lines = [headerLine, `Language: ${language}`, '', `${fence}${languageFenceHint(language)}`, code, fence];
-  const addendum = capture.trigger === 'submit' ? SUBMIT_ADDENDUM : RUN_ADDENDUM;
-  return { text: lines.join('\n') + addendum, code, headerLine };
+  return `[LeetCode capture] ${triggerLabel(capture.trigger)} - ${title} (${slug})`;
 }
 
 // --- automatic context reset on problem switch (AUTO_CLEAR_CONTEXT) --------
 //
-// TUTOR_SYSTEM_PROMPT's own "if this is the first capture you've seen for
-// this specific problem" wording is a soft, prompt-level ask - the model is
-// trusted to notice a switch and treat it as a fresh introduction, but
-// nothing actually stops the old problem's full code/discussion from being
-// resent as context on every turn (ClaudeBackend's resumed session,
-// LocalBackend's resent history array) forever, even long after the
-// conversation has moved on. This tracks the identifier of the problem
-// currently being discussed and hard-resets the backend's own continuity
-// mechanism (see each backend's resetContext, above) the instant a capture
-// for a different one arrives, rather than leaving it to the model's
-// judgment alone.
+// The active problem is whichever one the student last sent a message, Run
+// or Submit from. Activity on a different problem hard-resets the backend's
+// own continuity (see each backend's resetContext, above) instead of leaving
+// it to the model to notice the switch, drops what the ledger knew about the
+// old problem (code-ledger.js's activate), and asks the relay to drop the old
+// problem's buffered chat. captures.jsonl keeps every Run and Submit with its
+// full code regardless; nothing else about an old problem is kept.
 //
 // Identifier: capture.problemSlug, falling back to capture.problemTitle when
-// slug is absent - slug preferred as the more stable/canonical identifier
-// (matches formatCaptureMessage's own title/slug fallback, just in the
-// opposite preference order, since that one is choosing what to *display*).
-//
-// In-memory only, not persisted to .companion-state.json (unlike the
-// capture-log tail offset): a restart already gives both backends a
-// completely fresh session/history regardless of what problem they're later
-// told about - ClaudeBackend's sessionId and LocalBackend's history are
-// themselves never persisted - so tracking this across a restart wouldn't
-// change the backend's actual behavior, only whether the first capture
-// after a restart happens to print a reset notice. The "previousId === null"
-// case below (this process's very first capture) already skips the notice
-// and the resetContext call for exactly that reason, so a restart already
-// behaves correctly without persistence. Persisting it would add
-// bookkeeping to reproduce behavior that already falls out for free.
-let currentProblemId = null;
+// slug is absent. The very first problem this process sees resets nothing
+// (there is no prior context to clear), so a restart needs no persisted
+// state either.
 
 function captureProblemId(capture) {
   return capture.problemSlug || capture.problemTitle || null;
 }
 
-// The same problem-identity signal as captureProblemId above, bundled with
-// the actual description text - passed to backend.sendMessage on every
-// capture-driven turn (see handleCaptureLine) so each backend can decide
-// for itself, from its own state, whether it already has this problem's
-// description and can skip resending it (LocalBackend.sendMessage pins the
-// first one it sees per problem; ClaudeBackend.sendMessage only prepends it
-// on a fresh SDK session's first message) - see "send the problem
-// description once per problem" in each backend for the full rationale.
-// Deliberately no separate "have we sent this yet" tracking lives here:
-// each backend already has to track its own continuity state (pinned
-// context / session id) for other reasons, so asking it to also decide this
-// avoids a second, possibly-inconsistent copy of the same decision.
+// The problem statement bundled with its id, passed to backend.sendMessage
+// so each backend can decide for itself, from its own state, whether it
+// already has it (LocalBackend pins the first one it sees per problem;
+// ClaudeBackend only prepends it on a fresh SDK session's first message).
 function captureProblemContext(capture) {
   const description =
     typeof capture.problemDescription === 'string' && capture.problemDescription.trim()
@@ -1161,20 +1114,19 @@ function captureProblemContext(capture) {
   };
 }
 
-// Updates the tracked problem and, if this capture is for a different one
-// than last seen, resets the backend's context. Returns a notice line to
-// print via printAboveInput (so it takes part in the same
-// turn-boundary/history recording as everything else), or null if nothing
-// happened - same problem, the very first capture this process has seen (no
-// prior context to reset), or the toggle is off.
-function maybeResetContextForCapture(capture) {
-  const problemId = captureProblemId(capture);
-  const previousId = currentProblemId;
-  currentProblemId = problemId;
-  if (previousId === null || problemId === previousId) return null;
-  if (!AUTO_CLEAR_CONTEXT) return null;
+// Makes problemId the active problem, resetting everything about the old one
+// when it changed (and AUTO_CLEAR_CONTEXT is on). Runs inside the turn queue,
+// so a reset never lands in the middle of a backend call.
+function activateProblem(problemId, slug) {
+  const result = ledger.activate(problemId, { slug, resetOnSwitch: AUTO_CLEAR_CONTEXT });
+  if (!result.reset) return result;
   backend.resetContext();
-  return dim(`companion: new problem detected (${oneLine(problemId) || 'unknown'}) - clearing tutor context`);
+  if (result.dropped && result.dropped.slug && panelBridge) panelBridge.dropProblem(result.dropped.slug);
+  printAboveInput(
+    consumeTurnBoundary() + dim(`companion: new problem detected (${oneLine(problemId) || 'unknown'}) - clearing tutor context`)
+  );
+  panelPublish({ type: 'notice', problemSlug: slug || null, text: 'New problem detected. Started a fresh tutor session.' });
+  return result;
 }
 
 // --- vault auto-summary (VAULT_AUTO_SUMMARY) --------------------------------
@@ -1595,28 +1547,35 @@ function startSpinner() {
   };
 }
 
-// onReply, when given, runs on the raw reply before it's printed and may
-// return a transformed string - used by handleCaptureLine to peel the vault
-// auto-summary's JSON block back off a Submit reply (see extractVaultBlock)
-// before it ever reaches the terminal. That stripping can only happen once
-// the reply is complete, so a turn with onReply set never streams - see the
-// non-streaming branch below.
-function sendAndPrint(label, text, { onReply, problemContext, captureMeta, panelMeta } = {}) {
-  // Same reasoning as handleCaptureLine's own call to this: a typed
-  // message is new activity too, so it always returns the view to the
-  // live bottom first if the user was scrolled up reading history.
+// Runs one queued task as a turn: the view snaps back to the live bottom
+// first (new activity, even if the user was scrolled up reading history),
+// and turnActive is set while it runs. Every capture, panel message and typed
+// message goes through here, so the ledger's reads and writes, context
+// resets and backend calls all happen in arrival order, one at a time.
+function queueTurn(task) {
   resetScrollIfNeeded();
   return enqueue(async () => {
     turnActive = true;
     try {
-      await sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta, panelMeta });
+      return await task();
     } finally {
       turnActive = false;
     }
   });
 }
 
-async function sendAndPrintTurn(label, text, { onReply, problemContext, captureMeta, panelMeta } = {}) {
+// Sends one message and prints (and mirrors to the panel) the reply.
+// Resolves true once the backend answered with a real reply, false on an
+// error or an empty reply, so the caller only records the code as held by
+// the tutor when it really got it.
+//
+// onReply, when given, runs on the raw reply before it's printed and may
+// return a transformed string - used by handleCaptureLine to peel the vault
+// auto-summary's JSON block back off a Submit reply (see extractVaultBlock)
+// before it ever reaches the terminal. That stripping can only happen once
+// the reply is complete, so a turn with onReply set never streams - see the
+// non-streaming branch below.
+async function sendAndPrintTurn(label, text, { onReply, problemContext, heldCode, compactText, panelMeta } = {}) {
   // Mirrors this turn to the in-page panel (see "in-page panel bridge"
   // above): a start marker, each streamed chunk, then one end event carrying
   // the authoritative full text (or the error), so a panel that connects
@@ -1690,7 +1649,8 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
           writeReplyPiece(streamer.push(chunk));
         },
         problemContext,
-        captureMeta,
+        heldCode,
+        compactText,
       });
     } catch (err) {
       stopSpinner();
@@ -1701,7 +1661,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
       drawBox();
       turnBoundaryPending = true;
       panelEnd({ error: `Error talking to the backend (${BACKEND}): ${err.message}` });
-      return;
+      return false;
     }
 
     // Defense in depth: even if the backend resolves with an
@@ -1727,7 +1687,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
       panelEnd({ text: reply });
     }
     turnBoundaryPending = true;
-    return;
+    return !isEmpty;
   }
 
   // Non-streaming path (vault auto-summary's Submit turns): the whole
@@ -1735,7 +1695,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
   // shape as before streaming existed.
   let reply;
   try {
-    reply = await backend.sendMessage(text, { problemContext, captureMeta });
+    reply = await backend.sendMessage(text, { problemContext, heldCode, compactText });
   } catch (err) {
     stopSpinner();
     clearBottomRows();
@@ -1745,7 +1705,7 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
     drawBox();
     turnBoundaryPending = true;
     panelEnd({ error: `Error talking to the backend (${BACKEND}): ${err.message}` });
-    return;
+    return false;
   }
   stopSpinner();
   clearBottomRows();
@@ -1766,6 +1726,8 @@ async function sendAndPrintTurn(label, text, { onReply, problemContext, captureM
   turnBoundaryPending = true;
   if (isEmpty) panelEnd({ error: 'The backend returned an empty reply.' });
   else panelEnd({ text: displayText });
+  // The tutor got the code even if the vault block was all it wrote back.
+  return typeof reply === 'string' && reply.trim() !== '';
 }
 
 rl.on('line', (line) => {
@@ -1828,8 +1790,29 @@ rl.on('line', (line) => {
   // through printAboveInput or anything else that records it.
   if (process.stdout.isTTY) recordHistory(`${promptString()}${text}\n`);
   panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
-  sendAndPrint(null, text);
+  // The terminal cannot read the live editor, so the code reference is the
+  // newest Run or Submit recorded for the active problem.
+  queueTurn(() => sendChatTurn({ label: null, text, problemId: ledger.activeProblemId }));
 });
+
+// A typed message (terminal or panel), inside the turn queue: prefixed with
+// the code update when the code changed since the tutor last saw it (see
+// code-ledger.js), and the code counted as held once the reply came back.
+async function sendChatTurn({ label, text, problemId, preamble = null }) {
+  const plan = problemId ? ledger.planUpdate(problemId) : { kind: 'none' };
+  const message = buildChatMessage({
+    text,
+    plan,
+    preamble: typeof preamble === 'function' ? preamble(plan) : preamble,
+  });
+  const ok = await sendAndPrintTurn(label, message.text, {
+    problemContext: (problemId && ledger.context(problemId)) || undefined,
+    heldCode: problemId ? ledger.held(problemId) : null,
+    compactText: message.compactText,
+    panelMeta: { problemSlug: panelProblemSlug },
+  });
+  if (ok && (plan.kind === 'full' || plan.kind === 'diff')) ledger.commit(problemId, plan);
+}
 
 rl.on('close', () => {
   stopping = true;
@@ -1896,6 +1879,8 @@ async function handleCaptureLine(line) {
   const label = dim(
     `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`
   );
+  const problemId = captureProblemId(capture);
+  const sends = sendsToTutor(capture.trigger);
   if (capture.problemSlug) panelProblemSlug = capture.problemSlug;
   panelPublish({
     type: 'capture',
@@ -1903,93 +1888,129 @@ async function handleCaptureLine(line) {
     problemTitle: capture.problemTitle || null,
     trigger: capture.trigger,
     attemptSeq: Number.isInteger(capture.attemptSeq) ? capture.attemptSeq : null,
+    ...(sends ? {} : { note: RUN_PANEL_NOTE }),
   });
+  const shownTitle = capture.problemTitle || capture.problemSlug || 'this problem';
 
-  // Detected and (if AUTO_CLEAR_CONTEXT is on) acted on before anything else
-  // for this capture, so a reset - if one happens - is this turn's true
-  // first output rather than something that shows up after the ack line
-  // below. See "automatic context reset on problem switch" above.
-  const resetNotice = maybeResetContextForCapture(capture);
-  if (capture.problemSlug) capturedProblems.set(capture.problemSlug, captureProblemContext(capture));
-  let turnPrefix = consumeTurnBoundary();
-  if (resetNotice) {
-    printAboveInput(turnPrefix + resetNotice);
-    turnPrefix = '';
-    panelPublish({
-      type: 'notice',
-      problemSlug: capture.problemSlug || null,
-      text: 'New problem detected. Started a fresh tutor session.',
-    });
-  }
-
-  // Print an instant, local, non-LLM acknowledgement before the backend call
-  // below even starts - the tutor persona's own step 1 (acknowledging receipt
-  // in its own words) still happens too, but that's baked into the real reply
-  // and can lag several seconds behind, longer for Submit. This line is just
-  // a deterministic confirmation that the capture arrived, and (absent a
-  // reset notice above) is this capture-driven turn's true first output, so
-  // it's what consumes the pending turn-boundary blank line (see
-  // consumeTurnBoundary) - sendAndPrint itself won't add a second one before
-  // the label that follows.
-  printAboveInput(
-    turnPrefix +
-      dim(
-        `companion: got your ${triggerLabel(capture.trigger)} for ${capture.problemTitle || capture.problemSlug || 'this problem'} - taking a look...`
-      ),
-  );
-
-  // Only Submits (not Runs) drive the vault auto-summary, and only when the
-  // toggle is on - see the "vault auto-summary" section above. When active,
-  // one extra instruction is appended to the same message so the single
-  // reply carries both the tutoring commentary and the structured vault
-  // data; no second LLM call.
-  let vaultContext = null;
-  if (VAULT_AUTO_SUMMARY && capture.trigger === 'submit') {
-    try {
-      vaultContext = prepareVaultContext({
-        capture,
-        vaultPath: VAULT_PATH,
-        algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER,
+  // Everything else happens in the turn queue, in arrival order: the reset
+  // (if this capture is for another problem) first, then recording the code,
+  // then (a changed Submit only) the backend call.
+  await queueTurn(async () => {
+    if (problemId) {
+      activateProblem(problemId, capture.problemSlug || null);
+      ledger.record(problemId, {
+        code: typeof capture.code === 'string' ? capture.code : undefined,
+        language: capture.language || null,
+        slug: capture.problemSlug || null,
+        context: captureProblemContext(capture),
       });
-    } catch (err) {
-      printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
     }
-  }
-  const { text: captureText, code, headerLine } = formatCaptureMessage(capture);
-  const message = captureText + (vaultContext ? vaultContext.addendum : '');
 
-  await sendAndPrint(label, message, {
-    onReply: vaultContext
-      ? (reply) => {
-          const { displayText, vaultData } = extractVaultBlock(reply, {
-            warn: (msg) => printAboveInput(dim(`companion: warning: ${msg}`)),
-          });
-          if (vaultData) {
-            try {
-              writeVaultAutoSummary({ capture, vaultContext, vaultData });
-            } catch (err) {
-              printAboveInput(dim(`companion: warning: vault auto-summary write failed (${err.message})`));
+    // A Run (or anything else that is not a Submit) is only recorded: the
+    // tutor sees what changed with the student's next message.
+    if (!sends) {
+      printAboveInput(
+        consumeTurnBoundary() +
+          dim(
+            `companion: recorded your ${triggerLabel(capture.trigger)} for ${shownTitle} (attempt ${capture.attemptSeq ?? '?'}) - not sent to the tutor; it sees the changes with your next message`
+          )
+      );
+      turnBoundaryPending = true;
+      return;
+    }
+
+    const plan = problemId ? ledger.planUpdate(problemId) : { kind: 'none' };
+    if (plan.kind === 'unchanged' || plan.kind === 'none') {
+      const why = plan.kind === 'unchanged' ? 'is unchanged since the tutor last saw it' : 'carried no code';
+      printAboveInput(
+        consumeTurnBoundary() +
+          dim(`companion: your Submit for ${shownTitle} (attempt ${capture.attemptSeq ?? '?'}) ${why} - not sent`)
+      );
+      turnBoundaryPending = true;
+      panelPublish({
+        type: 'notice',
+        problemSlug: capture.problemSlug || null,
+        text:
+          plan.kind === 'unchanged'
+            ? 'Submit unchanged since the tutor last saw it, so it was not sent.'
+            : 'That Submit carried no code, so it was not sent.',
+      });
+      return;
+    }
+
+    // An instant, local, non-LLM acknowledgement before the backend call
+    // starts: the tutor's own acknowledgement is baked into its reply and can
+    // lag several seconds behind.
+    printAboveInput(consumeTurnBoundary() + dim(`companion: got your Submit for ${shownTitle} - taking a look...`));
+
+    // Only Submits drive the vault auto-summary, and only when the toggle is
+    // on - see the "vault auto-summary" section above. One extra instruction
+    // rides on the same message; no second LLM call.
+    let vaultContext = null;
+    if (VAULT_AUTO_SUMMARY) {
+      try {
+        vaultContext = prepareVaultContext({
+          capture,
+          vaultPath: VAULT_PATH,
+          algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER,
+        });
+      } catch (err) {
+        printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
+      }
+    }
+    const message = buildSubmitMessage({
+      headerLine: captureHeaderLine(capture),
+      plan,
+      addendum: SUBMIT_ADDENDUM + (vaultContext ? vaultContext.addendum : ''),
+    });
+    const ok = await sendAndPrintTurn(label, message.text, {
+      onReply: vaultContext
+        ? (reply) => {
+            const { displayText, vaultData } = extractVaultBlock(reply, {
+              warn: (msg) => printAboveInput(dim(`companion: warning: ${msg}`)),
+            });
+            if (vaultData) {
+              try {
+                writeVaultAutoSummary({ capture, vaultContext, vaultData });
+              } catch (err) {
+                printAboveInput(dim(`companion: warning: vault auto-summary write failed (${err.message})`));
+              }
+            } else {
+              printAboveInput(
+                dim('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write')
+              );
             }
-          } else {
-            printAboveInput(
-              dim('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write')
-            );
+            return displayText;
           }
-          return displayText;
-        }
-      : undefined,
-    // See "send the problem description once per problem" (captureProblemContext) -
-    // supplied on every capture-driven turn; each backend decides for
-    // itself whether it's actually new information worth including.
-    problemContext: captureProblemContext(capture),
-    captureMeta: { code, headerLine },
-    panelMeta: { problemSlug: capture.problemSlug || null },
+        : undefined,
+      problemContext: ledger.context(problemId) || captureProblemContext(capture),
+      heldCode: ledger.held(problemId),
+      compactText: message.compactText,
+      panelMeta: { problemSlug: capture.problemSlug || null },
+    });
+    if (ok) ledger.commit(problemId, plan);
   });
+}
+
+// The live editor code the panel read at send time (see extension/panel.js
+// and content.js), or null. Only the fields the tutor needs, made safe the
+// same way a capture is; the code itself is left exactly as typed.
+function panelSnapshot(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.code !== 'string') return null;
+  const clean = sanitizeCapture({
+    code: raw.code,
+    language: typeof raw.language === 'string' ? raw.language : null,
+    problemTitle: typeof raw.problemTitle === 'string' ? raw.problemTitle : null,
+    problemDescription: typeof raw.problemDescription === 'string' ? raw.problemDescription : null,
+  });
+  return clean;
 }
 
 // A message typed into the in-page panel (delivered by panel-bridge.js). It
 // joins the same queue as terminal-typed messages and captures, and is echoed
-// in the terminal under a [panel] label so the two views never diverge.
+// in the terminal under a [panel] label so the two views never diverge. The
+// panel sends the live editor code with it when it could read it; without
+// that, the newest recorded Run or Submit stands in, as for the terminal.
 function handlePanelMessage(message) {
   resetScrollIfNeeded();
   // The relay already strips control characters from panel messages, but
@@ -1998,41 +2019,41 @@ function handlePanelMessage(message) {
   const text = stripControlChars(message.text).trim();
   const problemSlug = oneLine(message.problemSlug) || null;
   if (!text) return;
-  let outgoing = text;
-  let problemContext;
-  // The tutor only learns a problem's description from captures, so a panel
-  // question about another problem than the one its context is about would
-  // otherwise be answered against whatever it discussed last. Compared with
-  // currentProblemId (what the backend's context really is about, kept by
-  // captures too), not with the panel's own last slug: those differ after a
-  // capture without a slug, and a terminal message never moves either.
-  if (problemSlug && problemSlug !== currentProblemId) {
-    const previousId = currentProblemId;
-    currentProblemId = problemSlug;
-    if (previousId !== null && AUTO_CLEAR_CONTEXT) {
-      backend.resetContext();
-      printAboveInput(consumeTurnBoundary() + dim(`companion: new problem detected (${problemSlug}) - clearing tutor context`));
-      panelPublish({
-        type: 'notice',
-        problemSlug,
-        text: 'New problem detected. Started a fresh tutor session.',
-      });
-    }
-    const known = capturedProblems.get(problemSlug);
-    if (known) {
-      // Back on a problem the student already ran code for: say so instead
-      // of claiming they have not, and hand its description back, since a
-      // reset in between dropped it (each backend skips it if it still has
-      // it, see captureProblemContext).
-      problemContext = known;
-      outgoing = `(The student is now looking at the LeetCode problem "${problemSlug}" again; they ran code for it earlier in this session.)\n\n${text}`;
-    } else {
-      outgoing = `(The student is now looking at the LeetCode problem "${problemSlug}" and has not run any code for it yet.)\n\n${text}`;
-    }
-  }
+  const snapshot = panelSnapshot(message.snapshot);
   if (problemSlug) panelProblemSlug = problemSlug;
   panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
-  sendAndPrint(dim(`[panel] ${text}`), outgoing, { problemContext, panelMeta: { problemSlug: panelProblemSlug } });
+  const label = dim(`[panel] ${text}`);
+  queueTurn(async () => {
+    if (!problemSlug) {
+      await sendChatTurn({ label, text, problemId: ledger.activeProblemId });
+      return;
+    }
+    // A message from another problem than the active one resets the tutor
+    // (see activateProblem), and the tutor is told which problem is on screen.
+    const { previousId } = activateProblem(problemSlug, problemSlug);
+    if (snapshot) {
+      ledger.record(problemSlug, {
+        code: snapshot.code,
+        language: snapshot.language,
+        slug: problemSlug,
+        context: {
+          problemId: problemSlug,
+          title: snapshot.problemTitle || problemSlug,
+          slug: problemSlug,
+          description:
+            snapshot.problemDescription && snapshot.problemDescription.trim() ? snapshot.problemDescription : null,
+        },
+      });
+    }
+    const preamble =
+      previousId === problemSlug
+        ? null
+        : (plan) =>
+            `(The student is now working on the LeetCode problem "${problemSlug}"${
+              plan.kind === 'none' ? ' and has not shared any code for it yet' : ''
+            }.)`;
+    await sendChatTurn({ label, text, problemId: problemSlug, preamble });
+  });
 }
 
 async function poll() {

@@ -1,9 +1,9 @@
 // Unit tests for context-budget.js's pure helpers - the pre-flight token
-// estimate and the diff-based compression of older LocalBackend history
-// turns. Direct/fast, unlike companion.test.js's subprocess-level coverage
-// of the same features end to end (the pre-flight refusal, the pinned
-// description surviving trimHistory, and the compression's effect on a
-// real request) - see companion.test.js for those.
+// estimate, the line diff, and the outgoing LocalBackend message list with
+// its pinned description and code. Direct/fast, unlike companion.test.js's
+// subprocess-level coverage of the same features end to end (the pre-flight
+// refusal, the pinned description and code surviving trimHistory) - see
+// companion.test.js for those.
 //
 // Run with: node --test context-budget.test.js
 
@@ -15,7 +15,7 @@ import {
   estimateMessagesTokens,
   diffLines,
   formatDiffSummary,
-  compressOldCaptureTurn,
+  formatDiffBody,
   buildMessages,
 } from './context-budget.js';
 
@@ -87,37 +87,49 @@ test('formatDiffSummary collapses long unchanged runs to "..." rather than repri
   assert.ok(keptLines.length <= 4, `expected only a couple of context lines to survive, got ${keptLines.length}`);
 });
 
-test('compressOldCaptureTurn keeps the original header line and drops the addendum/full code', () => {
-  const msg = {
-    headerLine: '[LeetCode capture] Run - Two Sum (two-sum)',
-    code: 'def twoSum(nums, target):\n    return []\n',
-    content: 'irrelevant - compressOldCaptureTurn never reads this field',
-  };
-  const compressed = compressOldCaptureTurn(msg, 'def twoSum(nums, target):\n    pass\n');
-  assert.match(compressed, /^\[LeetCode capture\] Run - Two Sum \(two-sum\)\n/);
-  assert.ok(!compressed.includes('This was a'), 'the RUN/SUBMIT addendum should not survive compression');
-  assert.match(compressed, /Code changed from the previous attempt/);
+test('diffLines matches the common head and tail first, and gives up past maxCells', () => {
+  const head = Array.from({ length: 500 }, (_, i) => `head ${i}`);
+  const tail = Array.from({ length: 500 }, (_, i) => `tail ${i}`);
+  // Only the one middle line differs, so a tiny table is enough even with a
+  // limit far below 1000 by 1000.
+  const ops = diffLines([...head, 'old', ...tail], [...head, 'new', ...tail], { maxCells: 16 });
+  assert.equal(ops.length, 1002);
+  assert.deepEqual(
+    ops.filter((op) => op.type !== 'same'),
+    [
+      { type: 'del', line: 'old' },
+      { type: 'add', line: 'new' },
+    ]
+  );
+  assert.equal(diffLines(['a', 'b', 'c'], ['x', 'y', 'z'], { maxCells: 4 }), null);
+  assert.equal(formatDiffBody('a\nb\nc', 'x\ny\nz', { maxCells: 4 }), null);
 });
 
-test('compressOldCaptureTurn falls back to a generic header when none is recorded', () => {
-  const compressed = compressOldCaptureTurn({ code: 'x = 1\n' }, 'x = 0\n');
-  assert.match(compressed, /^\[LeetCode capture\]\n/);
+test('formatDiffBody numbers unchanged and added lines by the new code, and shows the context asked for', () => {
+  const oldCode = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].join('\n');
+  const newCode = ['a', 'b', 'c', 'D', 'e', 'f', 'g', 'h'].join('\n');
+  const { body, added, removed } = formatDiffBody(oldCode, newCode, { context: 1, lineNumbers: true });
+  assert.equal(added, 2);
+  assert.equal(removed, 1);
+  assert.deepEqual(body.split('\n'), ['...', '  3 | c', '-   | d', '+ 4 | D', '  5 | e', '...', '  7 | g', '+ 8 | h']);
 });
 
 // --- buildMessages -----------------------------------------------------
 
-function userTurn(content, code, headerLine = '[LeetCode capture] Run - Two Sum (two-sum)') {
-  return { role: 'user', content, code, headerLine };
+function userTurn(content, compactContent) {
+  return { role: 'user', content, compactContent };
 }
 
+const PINNED = { text: 'PINNED CODE v2' };
+
 test('buildMessages with no pinned description and a single turn sends system + that turn in full', () => {
-  const history = [{ role: 'system', content: 'SYS' }, userTurn('full text v1', 'code v1')];
+  const history = [{ role: 'system', content: 'SYS' }, userTurn('full text v1', 'compact v1')];
   const messages = buildMessages({ history, pinnedProblemContext: null });
   assert.deepEqual(messages, [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'full text v1' }]);
 });
 
 test('buildMessages inserts the pinned description as its own system message right after the leading system prompt', () => {
-  const history = [{ role: 'system', content: 'SYS' }, userTurn('full text v1', 'code v1')];
+  const history = [{ role: 'system', content: 'SYS' }, userTurn('full text v1', 'compact v1')];
   const pinnedProblemContext = { problemId: 'two-sum', title: 'Two Sum', slug: 'two-sum', description: 'Add two numbers.' };
   const messages = buildMessages({ history, pinnedProblemContext });
   assert.equal(messages[0].content, 'SYS');
@@ -128,68 +140,49 @@ test('buildMessages inserts the pinned description as its own system message rig
 });
 
 test('buildMessages omits the pinned-description message entirely when no description is known', () => {
-  const history = [{ role: 'system', content: 'SYS' }, userTurn('full text v1', 'code v1')];
+  const history = [{ role: 'system', content: 'SYS' }, userTurn('full text v1', 'compact v1')];
   const messages = buildMessages({ history, pinnedProblemContext: { problemId: 'x', description: null } });
   assert.equal(messages.length, 2);
   assert.ok(messages.every((m) => !m.content.includes('Problem currently being discussed')));
 });
 
-test('buildMessages sends the first capture turn in full (nothing earlier to diff against)', () => {
+test('buildMessages pins the held code after the description, and sends older turns compact', () => {
   const history = [
     { role: 'system', content: 'SYS' },
-    userTurn('full text v1', 'code v1'),
+    userTurn('full code v1', 'compact v1'),
     { role: 'assistant', content: 'reply 1' },
-    userTurn('full text v2', 'code v2'),
+    { role: 'user', content: 'a typed question' },
+    { role: 'assistant', content: 'reply 2' },
+    userTurn('diff v1 to v2', 'compact diff'),
   ];
-  const messages = buildMessages({ history, pinnedProblemContext: null });
-  // system, turn1 (full, first ever), assistant1, turn2 (full, current)
-  assert.equal(messages.length, 4);
-  assert.equal(messages[1].content, 'full text v1');
-  assert.equal(messages[3].content, 'full text v2');
+  const pinnedProblemContext = { title: 'Two Sum', slug: 'two-sum', description: 'D' };
+  const messages = buildMessages({ history, pinnedProblemContext, pinnedCode: PINNED });
+  assert.deepEqual(
+    messages.map((m) => m.content),
+    ['SYS', 'Problem currently being discussed: Two Sum (two-sum)\n\nD', 'PINNED CODE v2', 'compact v1', 'reply 1', 'a typed question', 'reply 2', 'diff v1 to v2']
+  );
+  assert.equal(messages[2].role, 'system');
 });
 
-test('buildMessages compresses an older turn (neither the first nor the current) to a diff', () => {
+test('buildMessages keeps older turns in full while no code is pinned', () => {
   const history = [
     { role: 'system', content: 'SYS' },
-    userTurn('full text v1', 'code v1'),
+    userTurn('full code v1', 'compact v1'),
     { role: 'assistant', content: 'reply 1' },
-    userTurn('full text v2', 'code v2'),
-    { role: 'assistant', content: 'reply 2' },
-    userTurn('full text v3', 'code v3'),
+    userTurn('question', 'question'),
   ];
-  const messages = buildMessages({ history, pinnedProblemContext: null });
-  // system, turn1 (full - first ever), assistant1, turn2 (COMPRESSED -
-  // neither first nor current), assistant2, turn3 (full - current).
-  assert.equal(messages.length, 6);
-  assert.equal(messages[1].content, 'full text v1');
-  assert.notEqual(messages[3].content, 'full text v2');
-  assert.match(messages[3].content, /Code changed from the previous attempt/);
-  assert.equal(messages[5].content, 'full text v3');
-});
-
-test('buildMessages leaves typed chat turns (no code field) untouched, never compressed', () => {
-  const history = [
-    { role: 'system', content: 'SYS' },
-    userTurn('full text v1', 'code v1'),
-    { role: 'assistant', content: 'reply 1' },
-    { role: 'user', content: 'a typed follow-up question', code: null },
-    { role: 'assistant', content: 'reply 2' },
-    userTurn('full text v3', 'code v3'),
-  ];
-  const messages = buildMessages({ history, pinnedProblemContext: null });
-  assert.equal(messages[3].content, 'a typed follow-up question');
+  const messages = buildMessages({ history, pinnedProblemContext: null, pinnedCode: null });
+  assert.equal(messages[1].content, 'full code v1');
 });
 
 test('buildMessages never mutates the history array it was given', () => {
   const history = [
     { role: 'system', content: 'SYS' },
-    userTurn('full text v1', 'code v1'),
+    userTurn('full text v1', 'compact v1'),
     { role: 'assistant', content: 'reply 1' },
-    userTurn('full text v2', 'code v2'),
-    { role: 'assistant', content: 'reply 2' },
-    userTurn('full text v3', 'code v3'),
+    userTurn('full text v2', 'compact v2'),
   ];
   const before = JSON.parse(JSON.stringify(history));
-  buildMessages({ history, pinnedProblemContext: null });
+  buildMessages({ history, pinnedProblemContext: null, pinnedCode: PINNED });
   assert.deepEqual(history, before);
 });
