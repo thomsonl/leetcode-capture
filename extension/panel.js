@@ -1268,11 +1268,15 @@
   function buildPanel() {
     const host = document.createElement("div");
     host.id = HOST_ID;
+    host.style.setProperty("min-width", "0", "important");
+    host.style.setProperty("max-width", "100%", "important");
     const root = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = PANEL_CSS;
 
     const wrap = el("div", "wrap");
+    wrap.style.setProperty("min-width", "0", "important");
+    wrap.style.setProperty("max-width", "100%", "important");
     wrap.setAttribute("role", "tabpanel");
     wrap.setAttribute("aria-label", "Tutor");
     // A slim header row like the one Submissions opens with, fixed at the

@@ -947,6 +947,29 @@ try {
     })()`);
     await settle();
   };
+  await scenario('the panel fits 240, 292 and 400 px panes despite LeetCode minimum width', async () => {
+    for (const width of [240, 292, 400]) {
+      await resizePane(width, 420);
+      const m = await page.eval(`(() => {
+        const host = document.getElementById('lc-tutor-panel-host');
+        const originalParent = host.parentElement;
+        const probe = document.createElement('div');
+        probe.className = 'flexlayout__tab';
+        probe.style.cssText = 'position:absolute;left:0;top:0;width:${width}px;height:420px;padding:0';
+        document.body.appendChild(probe);
+        probe.appendChild(host);
+        const wrap = window.__q('.wrap');
+        const pane = document.getElementById('pane-desc');
+        const result = { host: host.getBoundingClientRect().width, wrap: wrap.getBoundingClientRect().width,
+          pane: pane.getBoundingClientRect().width, hostMin: getComputedStyle(host).minWidth,
+          wrapMin: getComputedStyle(wrap).minWidth };
+        originalParent.appendChild(host);
+        probe.remove();
+        return result;
+      })()`);
+      check(m.host <= width + 1 && m.wrap <= width + 1 && m.pane === width, `${width}px: ${JSON.stringify(m)}`);
+    }
+  });
   const DIAGRAM_SLUG = 'diagram-lab';
   const TREE = ['        1', '      ┌─┴─┐', '      2   3', '     ┌┴┐  └┐', '     4 5   6'].join('\n');
   const GRAPH = ['A ──▶ B ──▶ C', '│     │     ▲', '▼     ▼     │', 'D ──▶ E ────┘'].join('\n');
