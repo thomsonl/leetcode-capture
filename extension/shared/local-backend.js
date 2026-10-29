@@ -69,22 +69,16 @@ export const DEFAULT_WINDOW_SETTING = 'COMPANION_LOCAL_NUM_CTX';
 export function resolveReplyText({ content, reasoning, finishReason, advice }) {
   const trimmedContent = content && content.trim();
   const trimmedReasoning = reasoning && reasoning.trim();
-  // A truncated generation (finishReason "length") is unsafe to show even
-  // when `content` is non-empty: the model was still mid-answer when it got
-  // cut off, so whatever content it had written so far is a partial reply,
-  // not a complete one - showing it as-is silently passes off an incomplete
-  // answer as though the tutor had finished responding. This check has to
-  // run before the `trimmedContent` early-return below, not after, or a
-  // non-empty-but-truncated reply would return successfully and never reach
-  // it at all.
+  // A cut-off answer is a failed turn, even when visible content exists.
+  // Keep that content on the error so callers can mark it as partial.
   if (finishReason === 'length' && (trimmedContent || trimmedReasoning)) {
     const err = new Error(
-      'local backend reply was cut off before finishing (likely ran out of context while still ' +
-        '"thinking") - discarding it rather than showing incomplete/partial content as the reply; ' +
+      'local backend reply was cut off before finishing; ' +
         (advice ||
           'try a shorter capture, clearing context, or a model/server configuration with more context')
     );
     err.cutOff = true; // LocalBackend frees room for the next message on this one
+    err.partialReply = trimmedContent || '';
     throw err;
   }
   if (trimmedContent) return trimmedContent;

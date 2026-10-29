@@ -1121,6 +1121,7 @@ async function sendAndPrintTurn(label, text, options = {}) {
 }
 
 async function sendAndPrintTurnBody(label, text, { onReply, problemContext, heldCode, compactText, panelMeta } = {}) {
+  const cutOffNote = 'The reply was cut off because the model ran out of room.';
   // Mirrors this turn to the in-page panel (see "in-page panel bridge"
   // above): a start marker, each streamed chunk, then one end event carrying
   // the authoritative full text (or the error), so a panel that connects
@@ -1198,14 +1199,22 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, held
         compactText,
       });
     } catch (err) {
+      if (err.cutOff) {
+        if (!anyChunk && err.partialReply) writeReplyPiece(streamer.push(err.partialReply));
+        writeReplyPiece(streamer.finish());
+      }
       stopSpinner();
       clearBottomRows();
-      const errorLine = `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n`;
+      const errorLine = `${err.cutOff && !stylingEnabled() && anyChunk ? '\n' : ''}` +
+        `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n` +
+        (err.cutOff ? `${dim(cutOffNote)}\n` : '');
       recordHistory(errorLine);
       process.stdout.write(errorLine);
       drawBox();
       turnBoundaryPending = true;
-      panelEnd({ error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
+      panelEnd(err.cutOff
+        ? { text: err.partialReply || undefined, error: cutOffNote + ' Open Settings and check Context window (tokens).' }
+        : { error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
       return false;
     }
 
@@ -1244,12 +1253,22 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, held
   } catch (err) {
     stopSpinner();
     clearBottomRows();
-    const errorLine = `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n`;
+    const partial = err.cutOff ? (err.partialReply || '').split('<<<VAULT_JSON>>>')[0].trim() : '';
+    if (partial) {
+      const body = indentContinuation(renderMarkdown(partial));
+      const shown = `${stylingEnabled() ? turnMarker() : ''}${body.endsWith('\n') ? body : `${body}\n`}`;
+      recordHistory(shown);
+      process.stdout.write(shown);
+    }
+    const errorLine = `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n` +
+      (err.cutOff ? `${dim(cutOffNote)}\n` : '');
     recordHistory(errorLine);
     process.stdout.write(errorLine);
     drawBox();
     turnBoundaryPending = true;
-    panelEnd({ error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
+    panelEnd(err.cutOff
+      ? { text: partial || undefined, error: cutOffNote + ' Open Settings and check Context window (tokens).' }
+      : { error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
     return false;
   }
   stopSpinner();

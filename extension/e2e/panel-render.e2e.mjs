@@ -746,6 +746,18 @@ try {
     await page.screenshot(path.join(SHOTS, '04-restart.png'), { width: 1100, height: 760 });
   });
 
+  await scenario('a cut-off reply keeps partial text and points panel users to Settings', async () => {
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'cutoff-panel', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'cutoff-panel', text: 'The first part of my answer.' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'cutoff-panel', problemSlug: 'two-sum',
+      error: 'local backend reply was cut off before finishing; raise COMPANION_LOCAL_NUM_CTX' })`);
+    await settle();
+    const m = await page.eval(`(() => { const t = window.__qa('.tutor').at(-1); return { text: t.textContent, error: t.querySelector('.err')?.textContent || '' }; })()`);
+    check(m.text.includes('The first part of my answer.'), JSON.stringify(m));
+    check(m.error.includes('The reply was cut off because the model ran out of room'), JSON.stringify(m));
+    check(m.error.includes('Context window (tokens)') && !m.error.includes('COMPANION_LOCAL_NUM_CTX'), JSON.stringify(m));
+  });
+
   await scenario('the companion exiting mid-reply: a cut reply and a not-yet-started one stop typing and say so', async () => {
     const NOTE = 'The tutor stopped before this reply finished.';
     await page.eval(`window.__ev({ type: 'turn-start', turnId: 'cut', problemSlug: 'two-sum' })`);

@@ -246,6 +246,9 @@ test('a reply cut off mid-generation (finish_reason "length", non-empty content)
   // this is the actual bug/fix boundary (see comment above).
   assert.match(out, /error talking to backend/);
   assert.match(out, /cut off before finishing/);
+  assert.match(out, /The reply was cut off because the model ran out of room/);
+  assert.match(out, /Nice work on the hash-map approach/);
+  assert.doesNotMatch(out, /discarding it rather than showing/);
 });
 
 test('a normal reply with populated `content` still prints as before', async () => {

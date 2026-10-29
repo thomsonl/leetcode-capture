@@ -1645,7 +1645,13 @@
       entry.node.appendChild(node);
       entry.blocks.push({ key: keys[k], node });
     }
-    if (item.error) entry.tail.push(el("p", "err", item.error));
+    if (item.error) {
+      const cutOff = /cut off before finishing/i.test(item.error);
+      const message = cutOff
+        ? "The reply was cut off because the model ran out of room. Open Settings and check Context window (tokens)."
+        : item.error.replaceAll("COMPANION_LOCAL_NUM_CTX", "Context window (tokens) in Settings");
+      entry.tail.push(el("p", "err", message));
+    }
     // One note for every way a reply can be cut off: the relay restarted, or
     // the companion went away mid-reply.
     if (item.interrupted) entry.tail.push(el("p", "note", INTERRUPTED_NOTE));
