@@ -12,6 +12,12 @@
 // it. Clone mode (the bridge blocked): the injected tab still works over the
 // same real layout.
 //
+// Every scenario runs twice, once per fixture variant (see fixture.jsx): a
+// layout whose tabs have names, and one like leetcode.com's, whose tabs are
+// known only by component, whose onRenderTab draws nothing for the Tutor
+// tab and whose older Model has no addChangeListener. Each variant runs in
+// its own child process (LAYOUT_VARIANT), with its own browser and port.
+//
 // Setup once (dev only, never packaged):
 //   (cd extension/e2e/flexlayout && npm install)
 // Run (manual, not part of `npm test`):
@@ -22,8 +28,24 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { launch } from './cdp.mjs';
+
+if (!process.env.LAYOUT_VARIANT) {
+  let failures = 0;
+  for (const variant of ['named', 'leetcode']) {
+    console.log(`\n==== fixture variant: ${variant}`);
+    const run = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { stdio: 'inherit', env: { ...process.env, LAYOUT_VARIANT: variant } });
+    if (run.status !== 0) failures += 1;
+  }
+  process.exit(failures ? 1 : 0);
+}
+const LEETCODE = process.env.LAYOUT_VARIANT === 'leetcode';
+const QUERY = LEETCODE ? '?leetcode' : '';
+// What the bridge stores to name a native tab: its component.
+const COMPONENTS = { Description: 'description', Editorial: 'editorial', Solutions: 'solutions', Submissions: 'submissions', Code: 'code', Testcase: 'testcase', 'Test Result': 'result' };
+const anchor = (label) => COMPONENTS[label] || label;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = '/tmp/lc-layout-shots';
@@ -231,7 +253,7 @@ function input(p) {
 const browser = await launch();
 try {
   // ---- native mode ------------------------------------------------------
-  const p = await browser.openPage(`${origin}/problems/two-sum/description/`);
+  const p = await browser.openPage(`${origin}/problems/two-sum/description/${QUERY}`);
   await p.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
   await p.waitFor(`!!(window.__fx && document.querySelector('.flexlayout__tab_button'))`, { what: 'the flexlayout fixture' });
   await p.eval(HELPERS);
@@ -305,6 +327,11 @@ try {
     const attrs = await p.eval(`(() => { const b = ${tutorButton}; return { draggable: b.getAttribute('draggable'), native: b.hasAttribute('data-lc-tutor-button'), icon: getComputedStyle(b, '::before').content }; })()`);
     check(attrs.draggable === 'true' && attrs.native, JSON.stringify(attrs));
     check(attrs.icon !== 'none', `no Tutor icon: ${attrs.icon}`);
+    if (LEETCODE) {
+      const fork = await p.eval(`(() => { const m = window.__fx.model(); let named = 0; m.visitNodes((n) => { if (n.getType() === 'tab' && n.getName() !== '[Unnamed Tab]') named += 1; }); return { named, json: m.toJson().layout.children[0].children[0].name === undefined, add: typeof m.addChangeListener, hook: typeof m._setChangeListener }; })()`);
+      // Only the Tutor tab carries a name; this script is not the bridge, so it sees addChangeListener.
+      check(fork.named === 1 && fork.json && fork.hook === 'function', `not LeetCode-like: ${JSON.stringify(fork)}`);
+    }
   });
 
   // Enough feed to scroll.
@@ -493,7 +520,7 @@ try {
   await q.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
   const qio = input(q);
   async function boot(storage = STORAGE_OK) {
-    const nav = await q.send('Page.navigate', { url: `${origin}/problems/two-sum/description/` });
+    const nav = await q.send('Page.navigate', { url: `${origin}/problems/two-sum/description/${QUERY}` });
     if (nav.errorText) throw new Error(nav.errorText);
     await q.waitFor(`!!(window.__fx && document.querySelector('.flexlayout__tab_button'))`, { what: 'the flexlayout fixture' });
     await q.eval(HELPERS);
@@ -529,7 +556,7 @@ try {
     await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qstrip('Code'));
     await afterMove();
     const value = await stored();
-    check(value && value.mode === 'tabset' && JSON.stringify(value.anchors) === '["Code"]' && value.after === 'Code', `stored ${JSON.stringify(value)}`);
+    check(value && value.mode === 'tabset' && JSON.stringify(value.anchors) === JSON.stringify([anchor('Code')]) && value.after === anchor('Code'), `stored ${JSON.stringify(value)}`);
     const text = JSON.stringify(value);
     check(!/two-sum|class Solution|lc-tutor|tabset_|\/ts\d|ts-left|ts-code/.test(text), `stored value carries page data or ids: ${text}`);
     check(Object.keys(value).every((k) => ['v', 'mode', 'anchors', 'after', 'index', 'side', 'ratio'].includes(k)), text);
@@ -556,7 +583,7 @@ try {
       await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qcontent('Description', fx, fy));
       await afterMove();
       const value = await stored();
-      check(value.mode === 'dock' && value.side === side && value.anchors.includes('Description'), `stored ${JSON.stringify(value)}`);
+      check(value.mode === 'dock' && value.side === side && value.anchors.includes(anchor('Description')), `stored ${JSON.stringify(value)}`);
       await boot();
       check(JSON.stringify(await tutorLabels()) === '["Tutor"]', `after reload: ${await tutorLabels()}`);
       const rel = await q.eval(`(() => { const t = window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect(); const d = ${qtabset('Description')}.getBoundingClientRect(); return { dx: (t.left + t.width / 2) - (d.left + d.width / 2), dy: (t.top + t.height / 2) - (d.top + d.height / 2), tw: t.width, th: t.height, dw: d.width, dh: d.height }; })()`);
@@ -611,7 +638,7 @@ try {
   });
 
   await scenario('spot: storage that fails means the default spot, and the tab still moves', async () => {
-    await q.eval(`localStorage.setItem('__ext:tutorTabPosition', JSON.stringify({ v: 1, mode: 'tabset', anchors: ['Code'], after: 'Code', index: 1 }))`);
+    await q.eval(`localStorage.setItem('__ext:tutorTabPosition', JSON.stringify({ v: 1, mode: 'tabset', anchors: ${JSON.stringify([anchor('Code')])}, after: ${JSON.stringify(anchor('Code'))}, index: 1 }))`);
     await boot(STORAGE_FAILS);
     check(JSON.stringify(await tutorLabels()) === '["Description","Tutor","Editorial","Solutions","Submissions"]', `failing storage: ${await tutorLabels()}`);
     await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qstrip('Code'));
@@ -622,7 +649,7 @@ try {
   q.close();
 
   // ---- clone mode (the bridge cannot load) --------------------------------
-  const c = await browser.openPage(`${origin}/problems/two-sum/description/`);
+  const c = await browser.openPage(`${origin}/problems/two-sum/description/${QUERY}`);
   await c.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
   await c.waitFor(`!!(window.__fx && document.querySelector('.flexlayout__tab_button'))`, { what: 'the flexlayout fixture' });
   await c.eval(HELPERS);

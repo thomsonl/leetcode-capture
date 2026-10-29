@@ -11,6 +11,14 @@
 // the account), a "Default layout" reset that replaces the Model, and a
 // factory that renders nothing for a component it does not know.
 //
+// Two variants, picked by the page URL. The default one names every tab.
+// `?leetcode` copies what the real page was found to do instead: its tabs
+// have no names (getName() returns the library's "[Unnamed Tab]" and the
+// JSON has no `name`), so a tab is known only by its component; its
+// onRenderTab draws labels and icons by component and nothing at all for a
+// component it does not know; and it runs an older fork with no
+// addChangeListener on the Model (only a single `_setChangeListener` hook).
+//
 // Test hooks on window.__fx: model(), saved (every JSON the app saved),
 // reset(), remount() (a new <Layout> over the same model, so React rebuilds
 // the whole layout DOM) and rerender() (same <Layout>, new props).
@@ -55,7 +63,53 @@ const DEFAULT_LAYOUT = {
   },
 };
 
-const KNOWN = new Set(['description', 'editorial', 'solutions', 'submissions', 'code', 'testcase', 'result']);
+const LEETCODE = new URLSearchParams(location.search).has('leetcode');
+
+const LABELS = {
+  description: 'Description',
+  editorial: 'Editorial',
+  solutions: 'Solutions',
+  submissions: 'Submissions',
+  code: 'Code',
+  testcase: 'Testcase',
+  result: 'Test Result',
+};
+const KNOWN = new Set(Object.keys(LABELS));
+
+function unnamed(json) {
+  if (Array.isArray(json)) return json.map(unnamed);
+  if (!json || typeof json !== 'object') return json;
+  const out = {};
+  for (const [key, value] of Object.entries(json)) if (!(key === 'name' && json.type === 'tab')) out[key] = unnamed(value);
+  return out;
+}
+const START_LAYOUT = LEETCODE ? unnamed(DEFAULT_LAYOUT) : DEFAULT_LAYOUT;
+
+// The older fork's Model: no addChangeListener or removeChangeListener for
+// anyone outside the library. This library's own Layout still needs them,
+// so they stay visible to code in this bundle and are hidden from every
+// other script (the bridge is loaded from its own file).
+function newModel() {
+  const m = Model.fromJson(START_LAYOUT);
+  if (!LEETCODE) return m;
+  for (const method of ['addChangeListener', 'removeChangeListener']) {
+    const real = m[method];
+    Object.defineProperty(m, method, {
+      configurable: true,
+      get() {
+        return /layout-bridge\.js/.test(new Error().stack || '') ? undefined : real;
+      },
+    });
+  }
+  // The fork's own hook: one listener at a time.
+  let single = null;
+  m._setChangeListener = (fn) => {
+    if (single) Model.prototype.removeChangeListener.call(m, single);
+    single = fn || null;
+    if (single) Model.prototype.addChangeListener.call(m, single);
+  };
+  return m;
+}
 
 function factory(node) {
   const component = node.getComponent();
@@ -83,12 +137,25 @@ function factory(node) {
       </div>
     );
   }
-  if (KNOWN.has(component)) return <div className="pane" id={`pane-${component}`}>{node.getName()} content</div>;
+  if (KNOWN.has(component)) return <div className="pane" id={`pane-${component}`}>{LABELS[component]} content</div>;
   // A component this app does not know (the Tutor tab is one): nothing.
   return null;
 }
 
 function onRenderTab(node, values) {
+  if (LEETCODE) {
+    // A switch on the component, as on leetcode.com: nothing for one it
+    // does not know.
+    const label = LABELS[node.getComponent()];
+    values.content = label ? (
+      <div className="label">
+        <div>{label}</div>
+        <div className="ghost">{label}</div>
+      </div>
+    ) : null;
+    if (label) values.leading = <svg width="1em" height="1em" viewBox="0 0 24 24" className="tab-icon"><path fill="currentColor" d="M4 4h16v16H4z" /></svg>;
+    return;
+  }
   const name = node.getName();
   values.content = (
     <div className="label">
@@ -108,7 +175,7 @@ function onRenderTab(node, values) {
 const saved = [];
 
 function App() {
-  const [model, setModel] = useState(() => Model.fromJson(DEFAULT_LAYOUT));
+  const [model, setModel] = useState(newModel);
   const [layoutKey, setLayoutKey] = useState(0);
   const [, setTick] = useState(0);
   const onModelChange = useCallback((m) => {
@@ -119,14 +186,15 @@ function App() {
     saved,
     Actions,
     DockLocation,
-    reset: () => setModel(Model.fromJson(DEFAULT_LAYOUT)),
+    variant: LEETCODE ? 'leetcode' : 'named',
+    reset: () => setModel(newModel()),
     remount: () => setLayoutKey((k) => k + 1),
     rerender: () => setTick((t) => t + 1),
   };
   return (
     <div className="app">
       <div className="nav">
-        <button id="default-layout" onClick={() => setModel(Model.fromJson(DEFAULT_LAYOUT))}>Default layout</button>
+        <button id="default-layout" onClick={() => setModel(newModel())}>Default layout</button>
       </div>
       <div className="main">
         <Layout key={layoutKey} model={model} factory={factory} onRenderTab={onRenderTab} onModelChange={onModelChange} realtimeResize />
