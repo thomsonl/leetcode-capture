@@ -47,6 +47,8 @@ Your Run/Submit clicks on LeetCode show up in that chat as they happen (see "Wha
 Type `/exit` (or press Ctrl+C) to quit.
 
 Optional shortcut: symlink the launcher once (`ln -s "$(pwd)/bin/leetcode" ~/.local/bin/leetcode`), then just run `leetcode` from anywhere instead of the three commands above.
+Plain `leetcode` uses whatever provider you picked on the settings page (see below), or the Claude subscription if you have not picked one.
+`leetcode -local`, `-claude`, `-anthropic`, `-openai` or `-chatgpt` uses that provider for this run only, by setting `COMPANION_BACKEND`, so the settings page shows the provider as locked until you restart without the flag.
 
 ## Tutor tab on LeetCode
 
@@ -124,7 +126,7 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
 ## Optional features
 
 - **Local model backend.**
-  Run entirely against a local model instead of Claude, with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI and others) and any model: pick "Local model" on the settings page, or run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `leetcode -local` with the launcher).
+  Run entirely against a local model instead of Claude, with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM, text-generation-webui, LocalAI and others) and any model: pick "Local model" on the settings page, or run `COMPANION_MODEL=<model> COMPANION_BACKEND=local node companion.js` (or `COMPANION_MODEL=<model> leetcode -local` with the launcher, which takes the model from the settings page when `COMPANION_MODEL` is unset).
   The server address (`COMPANION_BASE_URL`) is the server's OpenAI-compatible root (default `http://localhost:11434/v1`, Ollama's), and an API key (`COMPANION_API_KEY`) is sent as a bearer token if the server needs one.
   The context window settings (the defaults work for most):
   - The context window (the settings page's "Context window (tokens)", or `COMPANION_LOCAL_NUM_CTX`; default 8192) is the most the companion budgets for, and what Ollama is asked for through its native API.

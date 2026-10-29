@@ -2,15 +2,29 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: leetcode [-local]" >&2
-  echo "  leetcode         start the companion with the Claude backend" >&2
-  echo "  leetcode -local  start the companion with the local Ollama backend" >&2
+  echo "usage: leetcode [-local | -claude | -anthropic | -openai | -chatgpt]" >&2
+  echo "  leetcode             start the companion with the provider chosen on the extension's" >&2
+  echo "                       settings page (Claude subscription if nothing is saved yet)" >&2
+  echo "  leetcode -<provider> use that provider for this run only (sets COMPANION_BACKEND," >&2
+  echo "                       which locks the provider on the settings page while it runs)" >&2
 }
 
 if [ "$#" -eq 0 ]; then
-  export COMPANION_BACKEND=claude
-elif [ "$#" -eq 1 ] && [ "$1" = "-local" ]; then
-  export COMPANION_BACKEND=local
+  : # no override: the saved settings (or their default) decide
+elif [ "$#" -eq 1 ]; then
+  case "$1" in
+    -local | -claude | -anthropic | -openai | -chatgpt)
+      export COMPANION_BACKEND="${1#-}"
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
 else
   usage
   exit 1
