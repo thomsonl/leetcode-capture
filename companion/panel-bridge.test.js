@@ -627,6 +627,13 @@ test('end to end: switching problems in the panel tracks what the tutor has real
   assert.ok(!lastPrompt().includes('TWO-SUM-DESCRIPTION-MARKER'), "A's context is cleared on the switch");
   assert.ok(!lastPrompt().includes('return []'), "A's code is not carried over");
   await until(() => turnEnds() === 1, 10000, 'the B turn-end');
+  const switchedEvents = relay.flat().filter((event) => event.problemSlug === 'valid-parentheses');
+  const noticeIndex = switchedEvents.findIndex((event) => event.type === 'notice');
+  const userIndex = switchedEvents.findIndex((event) => event.type === 'user');
+  assert.ok(
+    noticeIndex >= 0 && userIndex >= 0 && noticeIndex < userIndex,
+    `the reset notice should precede its message: ${JSON.stringify(switchedEvents.map((event) => event.type))}`
+  );
   assert.deepEqual(relay.dropped, ['two-sum'], "the relay is asked to drop A's chat");
 
   // 4. Back to A without editor code: everything about A was dropped at the

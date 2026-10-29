@@ -246,6 +246,21 @@ test('activity on another problem resets the tutor, drops the old chat, and the 
   assert.match(backend.calls.at(-1).text, /now working on the LeetCode problem "two-sum"/);
 });
 
+test('a problem-switch notice appears before the panel message that triggered it', async () => {
+  const { service } = await setup();
+  await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: LOCAL } }, OPTIONS_PAGE);
+  await service.handleMessage(capture('run', code1, 'two-sum'), CONTENT_SCRIPT);
+  await settle(service);
+  const port = fakePort();
+  service.connectPort(port);
+  port.send({ type: 'message', id: 1, text: 'new question', problemSlug: 'add-two-numbers', snapshot: { code: code2 } });
+  await settle(service);
+  const events = service.hub.events().filter((event) => event.problemSlug === 'add-two-numbers');
+  const notice = events.findIndex((event) => event.type === 'notice');
+  const user = events.findIndex((event) => event.type === 'user');
+  assert.ok(notice >= 0 && user >= 0 && notice < user, JSON.stringify(events.map((event) => event.type)));
+});
+
 test('saving a different model swaps the backend and the next message carries the full code again', async () => {
   const { service, backends } = await setup();
   await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: LOCAL } }, OPTIONS_PAGE);

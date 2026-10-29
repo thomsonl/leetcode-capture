@@ -1665,17 +1665,19 @@ function handlePanelMessage(message) {
   if (!text) return;
   const snapshot = panelSnapshot(message.snapshot);
   if (problemSlug) panelProblemSlug = problemSlug;
-  panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
+  const messageProblemSlug = panelProblemSlug;
   const label = dim(`[panel] ${text}`);
   const releaseBusy = holdBusy();
   queueTurn(async () => {
     if (!problemSlug) {
+      panelPublish({ type: 'user', text, problemSlug: messageProblemSlug });
       await sendChatTurn({ label, text, problemId: ledger.activeProblemId });
       return;
     }
     // A message from another problem than the active one resets the tutor
     // (see activateProblem), and the tutor is told which problem is on screen.
     const { previousId } = activateProblem(problemSlug, problemSlug);
+    panelPublish({ type: 'user', text, problemSlug });
     if (snapshot) {
       ledger.record(problemSlug, {
         code: snapshot.code,

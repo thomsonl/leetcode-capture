@@ -272,10 +272,10 @@ export function createTutorEngine({ hub, log = () => {} }) {
       const problemSlug = typeof raw.problemSlug === 'string' && SLUG_RE.test(raw.problemSlug) ? raw.problemSlug : null;
       if (!problemSlug) return { ok: false, error: 'invalid' };
       const snapshot = cleanSnapshot(raw.snapshot);
-      publish({ type: 'user', text, problemSlug });
       const releaseBusy = holdBusy();
       queueTurn(async () => {
         const { previousId } = activateProblem(problemSlug, problemSlug);
+        publish({ type: 'user', text, problemSlug });
         if (snapshot) {
           ledger.record(problemSlug, {
             code: snapshot.code,
