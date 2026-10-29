@@ -26,9 +26,18 @@
 // Anything it cannot find or verify reports { native: false } and panel.js
 // falls back to its injected tab.
 //
+// Where the tab was last moved to is remembered on this device only (the
+// page's own save must never hold it): the bridge describes the spot by the
+// names of the native tabs around it, never by node ids, reports it after
+// each move by the student, and panel.js keeps it in the extension's own
+// storage and hands it back with "start". Restoring puts the tab there on
+// every add (a page load, a reset), and falls back to the default spot when
+// the anchors are gone or the add fails.
+//
 // Protocol (detail is always a JSON string; see inject.js for why):
-//   panel -> bridge  "lc-tutor:layout-command"  { cmd: "start" | "stop" }
-//   bridge -> panel  "lc-tutor:layout-state"    { native, reason?, visible }
+//   panel -> bridge  "lc-tutor:layout-command"   { cmd: "start", position? } | { cmd: "stop" }
+//   bridge -> panel  "lc-tutor:layout-state"     { native, reason?, visible }
+//   bridge -> panel  "lc-tutor:layout-position"  { position }
 (() => {
   // Loaded by layout-bridge.test.js under Node for the pure parts.
   const underTest = typeof window === "undefined" && typeof module === "object" && module.exports;
@@ -43,6 +52,10 @@
   // "FlexLayout_AddTab" from 0.10 on, "FlexLayout_AddNode" before.
   const ADD_ACTIONS = ["FlexLayout_AddTab", "FlexLayout_AddNode"];
   const DELETE_ACTION = "FlexLayout_DeleteTab";
+  const UPDATE_ATTRIBUTES_ACTION = "FlexLayout_UpdateNodeAttributes";
+  const SIDES = ["left", "right", "top", "bottom"];
+  // A burst of actions (a drag ends in several) is one move.
+  const POSITION_DEBOUNCE_MS = 300;
   // How long the tab's pane may take to appear after it was added.
   const PANE_TIMEOUT_MS = 2000;
 
@@ -178,8 +191,55 @@
     return out;
   }
 
+  // ---- where the tab is, by the names of the tabs around it ------------
+  //
+  // { v: 1, mode: "tabset", anchors: [names of the native tabs in its
+  //   tabset], after: the native tab right before it or null, index: how
+  //   many native tabs come before it }
+  // { v: 1, mode: "dock", anchors: [names in the tabset beside it], side:
+  //   where it sits against that tabset, ratio?: its share of the two }
+
+  function cleanName(name) {
+    return typeof name === "string" ? name.trim().slice(0, 60) : "";
+  }
+
+  function validPosition(p) {
+    if (!p || typeof p !== "object" || p.v !== 1) return null;
+    if (!Array.isArray(p.anchors) || !p.anchors.length || p.anchors.length > 20) return null;
+    if (!p.anchors.every((a) => typeof a === "string" && a.length > 0 && a.length <= 60)) return null;
+    const anchors = p.anchors.slice();
+    if (p.mode === "tabset") {
+      const after = p.after === null || p.after === undefined ? null : p.after;
+      if (after !== null && (typeof after !== "string" || after.length > 60)) return null;
+      if (!Number.isInteger(p.index) || p.index < 0 || p.index > 50) return null;
+      return { v: 1, mode: "tabset", anchors, after, index: p.index };
+    }
+    if (p.mode === "dock") {
+      if (!SIDES.includes(p.side)) return null;
+      const out = { v: 1, mode: "dock", anchors, side: p.side };
+      if (typeof p.ratio === "number" && p.ratio > 0.02 && p.ratio < 0.98) out.ratio = Math.round(p.ratio * 1000) / 1000;
+      return out;
+    }
+    return null;
+  }
+
+  // The tabset (among `tabsets`, each { node, names }) that shares the most
+  // tab names with `anchors`.
+  function bestTabset(tabsets, anchors) {
+    let best = null;
+    let bestScore = 0;
+    for (const t of tabsets) {
+      const score = t.names.filter((n) => anchors.includes(n)).length;
+      if (score > bestScore) {
+        best = t;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
   if (underTest) {
-    module.exports = { scrub: (json) => scrub(json, false), wrapToJson, TAB_ID, COMPONENT };
+    module.exports = { scrub: (json) => scrub(json, false), wrapToJson, validPosition, bestTabset, TAB_ID, COMPONENT };
     return;
   }
 
@@ -207,6 +267,8 @@
     return {
       type,
       data,
+      // Tells the move listener this change is the bridge's own.
+      lcTutorBridge: true,
       adjusting: false,
       userData: undefined,
       setAdjusting(value) {
@@ -226,18 +288,28 @@
     };
   }
 
-  function addTab(m) {
-    const home = defaultSpot(m);
-    if (!home) return false;
+  function tryAdd(m, tabset, location, index) {
     for (const type of ADD_ACTIONS) {
       try {
-        m.doAction(action(type, { json: { ...TAB_JSON }, toNode: home.tabset.getId(), location: "center", index: home.index, select: false }));
+        m.doAction(action(type, { json: { ...TAB_JSON }, toNode: tabset.getId(), location, index, select: false }));
       } catch {
         // an older or newer action shape; try the next
       }
       if (findTab(m)) return true;
     }
     return false;
+  }
+
+  // The remembered spot if this layout still has it, else the default one.
+  function addTab(m) {
+    try {
+      if (position && addAt(m, position)) return true;
+    } catch {
+      // a spot this layout cannot take; the default one below
+    }
+    if (findTab(m)) return true;
+    const home = defaultSpot(m);
+    return !!home && tryAdd(m, home.tabset, "center", home.index);
   }
 
   function removeTab(m) {
@@ -250,7 +322,145 @@
     }
   }
 
+  function nativeNames(tabset) {
+    return (call(tabset, "getChildren") || []).filter((n) => call(n, "getType") === "tab" && !isTutor(n)).map((n) => cleanName(call(n, "getName"))).filter(Boolean);
+  }
+
+  function allTabsets(m) {
+    const out = [];
+    m.visitNodes((n) => {
+      if (call(n, "getType") === "tabset") out.push({ node: n, names: nativeNames(n) });
+    });
+    return out;
+  }
+
+  function rectOf(node) {
+    const r = call(node, "getRect");
+    return r && typeof r.x === "number" && typeof r.width === "number" ? r : null;
+  }
+
+  // The tabset beside `tabset` in its row. A tabset directly next to it is
+  // the faithful anchor: docking against it on that side puts the tab back
+  // into the same row. Only when both neighbors are rows is the nearest
+  // tabset inside one used.
+  function neighborTabset(tabset) {
+    const row = call(tabset, "getParent");
+    const siblings = (row && call(row, "getChildren")) || [];
+    const i = siblings.indexOf(tabset);
+    const usable = (n) => n && call(n, "getType") === "tabset" && nativeNames(n).length;
+    for (const n of [siblings[i - 1], siblings[i + 1]]) if (usable(n)) return n;
+    let next = siblings[i + 1];
+    let fromStart = true;
+    if (!next) {
+      next = siblings[i - 1];
+      fromStart = false;
+    }
+    for (let depth = 0; next && call(next, "getType") === "row" && depth < 10; depth++) {
+      const kids = call(next, "getChildren") || [];
+      next = fromStart ? kids[0] : kids[kids.length - 1];
+    }
+    return next && call(next, "getType") === "tabset" ? next : null;
+  }
+
+  function describe(m) {
+    const node = findTab(m);
+    const tabset = node && call(node, "getParent");
+    if (!tabset || call(tabset, "getType") !== "tabset") return null;
+    const children = call(tabset, "getChildren") || [];
+    const natives = children.filter((n) => !isTutor(n));
+    if (natives.length) {
+      const before = children.slice(0, children.indexOf(node)).filter((n) => !isTutor(n));
+      return validPosition({
+        v: 1,
+        mode: "tabset",
+        anchors: nativeNames(tabset),
+        after: before.length ? cleanName(call(before[before.length - 1], "getName")) || null : null,
+        index: before.length,
+      });
+    }
+    const anchor = neighborTabset(tabset);
+    if (!anchor || !nativeNames(anchor).length) return null;
+    const a = rectOf(anchor);
+    const t = rectOf(tabset);
+    let side = null;
+    if (a && t && a.width && t.width) {
+      const dx = t.x + t.width / 2 - (a.x + a.width / 2);
+      const dy = t.y + t.height / 2 - (a.y + a.height / 2);
+      side = Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? "left" : "right") : dy < 0 ? "top" : "bottom";
+    }
+    if (!side) return null;
+    const out = { v: 1, mode: "dock", anchors: nativeNames(anchor), side };
+    const wt = call(tabset, "getWeight");
+    const wa = call(anchor, "getWeight");
+    if (call(anchor, "getParent") === call(tabset, "getParent") && typeof wt === "number" && typeof wa === "number" && wt + wa > 0) out.ratio = wt / (wt + wa);
+    return validPosition(out);
+  }
+
+  // Puts the tab where `position` says; false when that spot does not exist
+  // in this layout or the add did not take.
+  function addAt(m, position) {
+    const p = validPosition(position);
+    if (!p) return false;
+    const target = bestTabset(allTabsets(m), p.anchors);
+    if (!target) return false;
+    let location = "center";
+    let index = -1;
+    if (p.mode === "tabset") {
+      const children = call(target.node, "getChildren") || [];
+      const natives = children.filter((n) => !isTutor(n));
+      const after = p.after === null ? -1 : natives.findIndex((n) => cleanName(call(n, "getName")) === p.after);
+      if (p.after === null) index = 0;
+      else if (after >= 0) index = children.indexOf(natives[after]) + 1;
+      else index = Math.min(p.index, children.length);
+    } else {
+      location = p.side;
+    }
+    if (!tryAdd(m, target.node, location, index)) return false;
+    if (p.mode === "dock" && p.ratio) {
+      const tabset = call(findTab(m), "getParent");
+      const wt = call(tabset, "getWeight");
+      const wa = call(target.node, "getWeight");
+      if (tabset && call(tabset, "getParent") === call(target.node, "getParent") && typeof wt === "number" && typeof wa === "number") {
+        const sum = wt + wa;
+        try {
+          m.doAction(action(UPDATE_ATTRIBUTES_ACTION, { node: tabset.getId(), json: { weight: sum * p.ratio } }));
+          m.doAction(action(UPDATE_ATTRIBUTES_ACTION, { node: target.node.getId(), json: { weight: sum * (1 - p.ratio) } }));
+        } catch {
+          // the split stays even
+        }
+      }
+    }
+    return true;
+  }
+
+  // ---- reporting moves -------------------------------------------------
+
+  let position = null; // the last spot known (from storage or a move)
+  let positionTimer = 0;
+
+  function onModelAction(act) {
+    schedule();
+    // The bridge's own adds and restores are not the student moving it.
+    if (act && act.lcTutorBridge) return;
+    clearTimeout(positionTimer);
+    positionTimer = setTimeout(notePosition, POSITION_DEBOUNCE_MS);
+  }
+
+  function notePosition() {
+    if (!model || failed) return;
+    let now = null;
+    try {
+      now = describe(model);
+    } catch {
+      return;
+    }
+    if (!now || JSON.stringify(now) === JSON.stringify(position)) return;
+    position = now;
+    document.dispatchEvent(new CustomEvent("lc-tutor:layout-position", { detail: JSON.stringify({ position: now }) }));
+  }
+
   function release() {
+    clearTimeout(positionTimer);
     if (unlisten) unlisten();
     unlisten = null;
     if (unwrap) unwrap();
@@ -263,9 +473,28 @@
     model = m;
     unwrap = wrapToJson(m);
     if (typeof m.addChangeListener === "function" && typeof m.removeChangeListener === "function") {
-      const listener = () => schedule();
+      const listener = (act) => onModelAction(act);
       m.addChangeListener(listener);
       unlisten = () => m.removeChangeListener(listener);
+    } else {
+      // Older versions: watch the instance's doAction instead.
+      const own = Object.prototype.hasOwnProperty.call(m, "doAction");
+      const original = m.doAction;
+      const wrapped = function doAction(act, ...rest) {
+        const out = original.call(this, act, ...rest);
+        try {
+          onModelAction(act);
+        } catch {
+          // never break the page's own action
+        }
+        return out;
+      };
+      m.doAction = wrapped;
+      unlisten = () => {
+        if (m.doAction !== wrapped) return;
+        if (own) m.doAction = original;
+        else delete m.doAction;
+      };
     }
   }
 
@@ -411,6 +640,7 @@
       return;
     }
     if (msg && msg.cmd === "start") {
+      if (!started) position = validPosition(msg.position);
       if (failed) report({ native: false, reason: failed });
       else start();
     } else if (msg && msg.cmd === "stop") {

@@ -1945,8 +1945,45 @@
   // and follows it when React moves or re-creates it, keeping one panel, so
   // the feed and its scroll survive every move.
 
-  function sendBridge(cmd) {
-    document.dispatchEvent(new CustomEvent("lc-tutor:layout-command", { detail: JSON.stringify({ cmd }) }));
+  function sendBridge(cmd, extra = {}) {
+    document.dispatchEvent(new CustomEvent("lc-tutor:layout-command", { detail: JSON.stringify({ ...extra, cmd }) }));
+  }
+
+  // Where the student last moved the Tutor tab, kept in the extension's own
+  // storage on this device (LeetCode saves its layout to the account, and
+  // the tab must never be in that). The bridge describes it by tab names
+  // only; anything that goes wrong here means the default spot.
+  const POSITION_KEY = "tutorTabPosition";
+  function positionStore() {
+    try {
+      const api = (typeof browser !== "undefined" && browser.storage) || (typeof chrome !== "undefined" && chrome.storage) || null;
+      return api && api.local && typeof api.local.get === "function" ? api.local : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadPosition() {
+    const store = positionStore();
+    if (!store) return null;
+    try {
+      const got = await Promise.race([store.get(POSITION_KEY), new Promise((resolve) => setTimeout(() => resolve(null), 1000))]);
+      const value = got && got[POSITION_KEY];
+      return value && typeof value === "object" && JSON.stringify(value).length < 4000 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function savePosition(value) {
+    const store = positionStore();
+    if (!store || !value || typeof value !== "object" || JSON.stringify(value).length >= 4000) return;
+    try {
+      const pending = store.set({ [POSITION_KEY]: value });
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    } catch {
+      // not saved: the next page load uses the default spot
+    }
   }
 
   function startBridge() {
@@ -1979,9 +2016,17 @@
       layoutMode = "clone";
       return;
     }
+    document.addEventListener("lc-tutor:layout-position", (event) => {
+      try {
+        const msg = JSON.parse(typeof event.detail === "string" ? event.detail : "");
+        if (msg && msg.position) savePosition(msg.position);
+      } catch {
+        // ignore a malformed report
+      }
+    });
     script.onload = () => {
       script.remove();
-      sendBridge("start");
+      loadPosition().then((position) => sendBridge("start", { position }));
     };
     script.onerror = () => {
       script.remove();

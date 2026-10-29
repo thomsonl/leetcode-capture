@@ -440,7 +440,7 @@ try {
     await invariants('rerendered');
   });
 
-  await scenario('native: Default layout reset (a new Model) brings the tab back next to Description', async () => {
+  await scenario('native: Default layout reset (a new Model) brings the tab back to its last spot, here beside Description', async () => {
     const c = await center(`document.getElementById('default-layout')`);
     await io.click(c.x, c.y);
     await p.waitFor(`!!document.querySelector('[data-lc-tutor-button]')`, { what: 'the Tutor tab after a reset' });
@@ -476,6 +476,150 @@ try {
     check(errors.length === 0, errors.join('\n'));
   });
   p.close();
+
+  // ---- the remembered spot ------------------------------------------------
+  //
+  // chrome.storage.local is stood in for by the fixture origin's
+  // localStorage (so it outlives a reload), or by one that always fails.
+  const STORAGE_OK = `{
+    get: async (key) => { const v = localStorage.getItem('__ext:' + key); return v ? { [key]: JSON.parse(v) } : {}; },
+    set: async (obj) => { for (const [k, v] of Object.entries(obj)) localStorage.setItem('__ext:' + k, JSON.stringify(v)); },
+  }`;
+  const STORAGE_FAILS = `{
+    get: () => Promise.reject(new Error('storage is unavailable')),
+    set: () => { throw new Error('storage is unavailable'); },
+  }`;
+  const q = await browser.openPage('about:blank');
+  await q.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
+  const qio = input(q);
+  async function boot(storage = STORAGE_OK) {
+    const nav = await q.send('Page.navigate', { url: `${origin}/problems/two-sum/description/` });
+    if (nav.errorText) throw new Error(nav.errorText);
+    await q.waitFor(`!!(window.__fx && document.querySelector('.flexlayout__tab_button'))`, { what: 'the flexlayout fixture' });
+    await q.eval(HELPERS);
+    await q.eval(`window.chrome = { runtime: { getURL: (file) => '/ext/' + file }, storage: { local: ${storage} } }`);
+    await q.eval(`new Function(${JSON.stringify(panelSource)})()`);
+    await q.waitFor(`!!document.querySelector('[data-lc-tutor-button]') && window.__streamOpen()`, { what: 'the native Tutor tab' });
+    await q.eval('window.__settle()');
+  }
+  const stored = () => q.eval(`JSON.parse(localStorage.getItem('__ext:tutorTabPosition'))`);
+  const qwhere = () => q.eval('window.__where()');
+  const qcenter = (expr) => q.eval(`window.__center(${expr})`);
+  const qtabset = (label) => `window.__button(${JSON.stringify(label)}).closest('.flexlayout__tabset')`;
+  const qstrip = (label) => q.eval(`(() => { const r = ${qtabset(label)}.querySelector('.flexlayout__tabset_tabbar_outer').getBoundingClientRect(); return { x: r.right - 60, y: r.top + r.height / 2 }; })()`);
+  const qcontent = (label, fx, fy) => q.eval(`(() => { const r = ${qtabset(label)}.querySelector('.flexlayout__tabset_content').getBoundingClientRect(); return { x: r.left + r.width * ${fx}, y: r.top + r.height * ${fy} }; })()`);
+  // Waits out the bridge's debounce and the storage write.
+  const afterMove = () => q.eval('new Promise((r) => setTimeout(r, 700))');
+  async function clean(label) {
+    const w = await qwhere();
+    check(w.tutors === 1 && w.inert === 0 && !w.bodyActive && w.emptyTabsets === 0, `${label}: ${JSON.stringify(w)}`);
+    check(!(await q.eval('window.__json()')).includes('lc-tutor'), `${label}: model.toJson() carries the Tutor tab`);
+    check(!(await q.eval(`window.__fx.saved.some((x) => x.includes('lc-tutor') || x.includes('tutorTabPosition'))`)), `${label}: the page saved the tab or its spot`);
+    const errors = q.console.filter((l) => /^(error|exception)/.test(l));
+    check(errors.length === 0, `${label}: ${errors.join('\n')}`);
+    return w;
+  }
+  const tutorLabels = () => q.eval(`[...window.__tutorButtons()[0].closest('.flexlayout__tabset').querySelectorAll('.flexlayout__tab_button')].map(window.__labelOf)`);
+
+  await q.eval(`localStorage.clear()`).catch(() => {});
+  await boot();
+  await q.eval(`localStorage.clear()`);
+
+  await scenario('spot: moved into the Code tabset, remembered by tab names, restored after a reload', async () => {
+    await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qstrip('Code'));
+    await afterMove();
+    const value = await stored();
+    check(value && value.mode === 'tabset' && JSON.stringify(value.anchors) === '["Code"]' && value.after === 'Code', `stored ${JSON.stringify(value)}`);
+    const text = JSON.stringify(value);
+    check(!/two-sum|class Solution|lc-tutor|tabset_|\/ts\d|ts-left|ts-code/.test(text), `stored value carries page data or ids: ${text}`);
+    check(Object.keys(value).every((k) => ['v', 'mode', 'anchors', 'after', 'index', 'side', 'ratio'].includes(k)), text);
+    await boot();
+    check(JSON.stringify(await tutorLabels()) === '["Code","Tutor"]', `after reload: ${await tutorLabels()}`);
+    await clean('reloaded into Code');
+  });
+
+  await scenario('spot: reordered among native tabs (before Submissions), restored after a reload', async () => {
+    const to = await q.eval(`(() => { const r = window.__button('Submissions').getBoundingClientRect(); return { x: r.left + 6, y: r.top + r.height / 2 }; })()`);
+    await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), to);
+    await afterMove();
+    const value = await stored();
+    check(value.mode === 'tabset' && value.after === 'Solutions' && value.index === 3, `stored ${JSON.stringify(value)}`);
+    await boot();
+    check(JSON.stringify(await tutorLabels()) === '["Description","Editorial","Solutions","Tutor","Submissions"]', `after reload: ${await tutorLabels()}`);
+    await clean('reloaded reordered');
+  });
+
+  const SIDE_POINTS = { left: [0.04, 0.5], right: [0.96, 0.5], top: [0.5, 0.04], bottom: [0.5, 0.96] };
+  for (const side of ['left', 'right', 'top', 'bottom']) {
+    await scenario(`spot: split to the ${side} of the Description tabset, restored on that side after a reload`, async () => {
+      const [fx, fy] = SIDE_POINTS[side];
+      await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qcontent('Description', fx, fy));
+      await afterMove();
+      const value = await stored();
+      check(value.mode === 'dock' && value.side === side && value.anchors.includes('Description'), `stored ${JSON.stringify(value)}`);
+      await boot();
+      check(JSON.stringify(await tutorLabels()) === '["Tutor"]', `after reload: ${await tutorLabels()}`);
+      const rel = await q.eval(`(() => { const t = window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect(); const d = ${qtabset('Description')}.getBoundingClientRect(); return { dx: (t.left + t.width / 2) - (d.left + d.width / 2), dy: (t.top + t.height / 2) - (d.top + d.height / 2), tw: t.width, th: t.height, dw: d.width, dh: d.height }; })()`);
+      const ok = { left: rel.dx < 0 && Math.abs(rel.dx) > Math.abs(rel.dy), right: rel.dx > 0 && Math.abs(rel.dx) > Math.abs(rel.dy), top: rel.dy < 0 && Math.abs(rel.dy) > Math.abs(rel.dx), bottom: rel.dy > 0 && Math.abs(rel.dy) > Math.abs(rel.dx) }[side];
+      check(ok, `${side}: ${JSON.stringify(rel)}`);
+      await clean(`reloaded ${side}`);
+      // Back home for the next side.
+      await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qstrip('Description'));
+      await afterMove();
+    });
+  }
+
+  await scenario('spot: the split keeps its share of the space after a reload', async () => {
+    await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qcontent('Description', 0.5, 0.96));
+    await afterMove();
+    // Make the Tutor pane taller with the splitter between the two.
+    const split = await q.eval(`(() => { const t = window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect(); return { x: t.left + t.width / 2, y: t.top - 4 }; })()`);
+    await qio.pointerDrag(split, { x: split.x, y: split.y - 200 });
+    await afterMove();
+    const value = await stored();
+    const before = await q.eval(`Math.round(window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect().height)`);
+    check(value.mode === 'dock' && value.side === 'bottom' && value.ratio > 0.55, `stored ${JSON.stringify(value)}`);
+    await boot();
+    const after = await q.eval(`Math.round(window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect().height)`);
+    check(Math.abs(after - before) <= 3, `height ${before} -> ${after}`);
+    await clean('reloaded with its share');
+  });
+
+  await scenario('spot: a Default layout reset puts the tab back where it was moved to', async () => {
+    const c = await qcenter(`document.getElementById('default-layout')`);
+    await qio.click(c.x, c.y);
+    await q.waitFor(`!!document.querySelector('[data-lc-tutor-button]') && !!window.__fx.model().getNodeById('lc-tutor-tab')`, { what: 'the tab after a reset' });
+    await q.eval('window.__settle()');
+    check(JSON.stringify(await tutorLabels()) === '["Tutor"]', `after reset: ${await tutorLabels()}`);
+    const value = await stored();
+    check(value.mode === 'dock' && value.side === 'bottom', `the reset changed the stored spot: ${JSON.stringify(value)}`);
+    await clean('reset restored');
+  });
+
+  await scenario('spot: anchors that no longer exist fall back to the default spot', async () => {
+    await q.eval(`localStorage.setItem('__ext:tutorTabPosition', JSON.stringify({ v: 1, mode: 'tabset', anchors: ['Renamed tab'], after: 'Renamed tab', index: 1 }))`);
+    await boot();
+    check(JSON.stringify(await tutorLabels()) === '["Description","Tutor","Editorial","Solutions","Submissions"]', `missing anchors: ${await tutorLabels()}`);
+    await clean('missing anchors');
+    await q.eval(`localStorage.setItem('__ext:tutorTabPosition', JSON.stringify({ v: 1, mode: 'dock', anchors: ['Gone'], side: 'left' }))`);
+    await boot();
+    check(JSON.stringify(await tutorLabels()) === '["Description","Tutor","Editorial","Solutions","Submissions"]', `missing dock anchor: ${await tutorLabels()}`);
+    await q.eval(`localStorage.setItem('__ext:tutorTabPosition', JSON.stringify({ v: 9, junk: '<img src=x>' }))`);
+    await boot();
+    check(JSON.stringify(await tutorLabels()) === '["Description","Tutor","Editorial","Solutions","Submissions"]', `junk: ${await tutorLabels()}`);
+    await clean('junk value');
+  });
+
+  await scenario('spot: storage that fails means the default spot, and the tab still moves', async () => {
+    await q.eval(`localStorage.setItem('__ext:tutorTabPosition', JSON.stringify({ v: 1, mode: 'tabset', anchors: ['Code'], after: 'Code', index: 1 }))`);
+    await boot(STORAGE_FAILS);
+    check(JSON.stringify(await tutorLabels()) === '["Description","Tutor","Editorial","Solutions","Submissions"]', `failing storage: ${await tutorLabels()}`);
+    await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qstrip('Code'));
+    await afterMove();
+    check(JSON.stringify(await tutorLabels()) === '["Code","Tutor"]', `moved: ${await tutorLabels()}`);
+    await clean('failing storage');
+  });
+  q.close();
 
   // ---- clone mode (the bridge cannot load) --------------------------------
   const c = await browser.openPage(`${origin}/problems/two-sum/description/`);
