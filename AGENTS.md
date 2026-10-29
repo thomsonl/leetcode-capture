@@ -775,9 +775,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   /panel/message`), which reach the companion over its own SSE (`GET /panel/inbox`); the terminal chat stays the
   source of truth and every publish is best effort. Sharp edges, all found live against the real page:
   - The `/panel/` routes can *read* the student's code back, so unlike `/capture` they are not CORS `*`: Host must be
-    the relay's own loopback address (DNS rebinding) and Origin must be absent or exactly `https://leetcode.com`;
-    publish and inbox additionally require *no* Origin, so a script on leetcode.com can neither forge tutor replies
-    nor eavesdrop on the inbox. `relay-server/panel-broker.test.js` covers each rule.
+    the relay's own loopback address (DNS rebinding) and Origin must be absent or exactly `https://leetcode.com`.
+    Publish and inbox are companion-only (`companionOnlyRejection` in `panel-broker.js`): any Origin, a
+    `Sec-Fetch-Site` other than `none`, or a missing `X-LC-Companion: 1` header is refused. A missing Origin alone
+    proves nothing (a page's `fetch(url, { mode: "no-cors" })` sends none); the custom header needs a preflight, which
+    the relay refuses. This keeps web pages out, not other local processes. `relay-server/panel-broker.test.js` covers
+    each rule; the new settings routes must reuse the same helper.
+  - Sequence numbers restart with the relay, so each event carries the relay run's random `epoch`. The panel compares
+    it per event (a reconnect's replay arrives before its `status` event) and reconnects with `?after=N&epoch=X`.
+  - The feed is patched in place, never rebuilt per event: one cached node per item (keyed by the item, refreshed when
+    its `rev` changes) and, in a streaming reply, reuse of every block whose parsed form is unchanged. A rebuild wiped
+    the student's selection and code-block scroll on every chunk. `extension/e2e/panel-render.e2e.mjs` checks this and
+    the rest of the panel's DOM behavior in headless Chromium against a local fixture (no relay, no real page); it is
+    a manual script, not part of `npm test`.
   - Streams must send `Cache-Control: no-store` (and the client `cache: 'no-store'`): Chrome's HTTP cache takes a lock
     on a never-ending response, and a second identical GET (another tab asking for `/panel/events?after=0`) queued
     behind it forever while a different URL on the same host answered instantly.

@@ -55,16 +55,19 @@ It mirrors the same conversation you see in the terminal: your Run and Submit at
 The terminal chat keeps working exactly as before, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
 
 Each problem has its own transcript.
-If you ask a question on a problem the tutor hasn't seen an attempt for yet, it is told which problem you are looking at, and the tutor session resets first if `COMPANION_AUTO_CLEAR_CONTEXT` is on.
+If you ask a question about a different problem than the one the tutor was last discussing, it is told which problem you are looking at, and the tutor session resets first if `COMPANION_AUTO_CLEAR_CONTEXT` is on.
+When you come back to a problem you already ran code for in this session, the tutor is told so and gets that problem's description again.
+A message you type in the terminal before your first Run or Submit stays in the terminal, since it belongs to no problem's transcript yet.
 If the companion isn't running, the tab says so instead of failing silently.
+If the relay restarts, the tab marks the break with "Session restarted" and carries on with the new session.
 Set `COMPANION_PANEL=0` to turn the bridge off.
 
 The first time the page talks to the relay, Chrome may ask whether leetcode.com can connect to devices on your local network.
 Allow it, since the relay is on your own machine (`localhost:8135`).
 Nothing is sent anywhere else.
 
-The relay's panel routes only answer requests whose `Host` is its own loopback address and whose `Origin` is `https://leetcode.com`, because unlike capture ingestion they can read your code back.
-Only the companion can publish tutor replies to them.
+The relay's panel routes only answer requests whose `Host` is its own loopback address and whose `Origin`, if any, is `https://leetcode.com`, because unlike capture ingestion they can read your code back.
+Publishing tutor replies and reading the messages you type are reserved for the companion: those routes refuse every request a web page can make, including leetcode.com itself (see `companionOnlyRejection` in `relay-server/panel-broker.js`).
 
 ## Optional features
 
