@@ -331,6 +331,16 @@ try {
       const fork = await p.eval(`(() => { const m = window.__fx.model(); let named = 0; m.visitNodes((n) => { if (n.getType() === 'tab' && n.getName() !== '[Unnamed Tab]') named += 1; }); return { named, json: m.toJson().layout.children[0].children[0].name === undefined, add: typeof m.addChangeListener, hook: typeof m._setChangeListener }; })()`);
       // Only the Tutor tab carries a name; this script is not the bridge, so it sees addChangeListener.
       check(fork.named === 1 && fork.json && fork.hook === 'function', `not LeetCode-like: ${JSON.stringify(fork)}`);
+      // The bridge watched moves by wrapping the instance's doAction.
+      check(await p.eval(`Object.prototype.hasOwnProperty.call(window.__fx.model(), 'doAction')`), 'the bridge did not wrap doAction');
+      // The page drew nothing in the button; the bridge's label is there,
+      // and comes back when something wipes the button's content.
+      await p.eval(`window.__tutorButtons()[0].querySelector('[data-lc-tutor-label]').remove()`);
+      await settle();
+      check((await p.eval(`window.__labelOf(window.__tutorButtons()[0])`)) === 'Tutor', 'the label did not come back');
+      await p.eval('window.__fx.rerender()');
+      await settle();
+      check((await p.eval(`window.__tutorButtons()[0].textContent`)) === 'Tutor', 'the label after a re-render');
     }
   });
 
@@ -552,7 +562,7 @@ try {
   await boot();
   await q.eval(`localStorage.clear()`);
 
-  await scenario('spot: moved into the Code tabset, remembered by tab names, restored after a reload', async () => {
+  await scenario('spot: moved into the Code tabset, remembered by tab components, restored after a reload', async () => {
     await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), await qstrip('Code'));
     await afterMove();
     const value = await stored();
@@ -570,7 +580,7 @@ try {
     await qio.htmlDrag(await qcenter('window.__tutorButtons()[0]'), to);
     await afterMove();
     const value = await stored();
-    check(value.mode === 'tabset' && value.after === 'Solutions' && value.index === 3, `stored ${JSON.stringify(value)}`);
+    check(value.mode === 'tabset' && value.after === anchor('Solutions') && value.index === 3, `stored ${JSON.stringify(value)}`);
     await boot();
     check(JSON.stringify(await tutorLabels()) === '["Description","Editorial","Solutions","Tutor","Submissions"]', `after reload: ${await tutorLabels()}`);
     await clean('reloaded reordered');

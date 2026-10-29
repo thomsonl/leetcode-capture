@@ -147,15 +147,22 @@
   }
 
   // Where the tab goes by default: right after Description in its tabset,
-  // or last in the first tabset when there is no Description.
+  // or last in the first tabset when there is no Description. LeetCode's
+  // tabs have no names (getName() is the library's "[Unnamed Tab]"), so the
+  // component comes first and the name is only a fallback.
   function defaultSpot(m) {
-    let description = null;
+    let byComponent = null;
+    let byName = null;
     let firstTabset = null;
     m.visitNodes((n) => {
       const type = call(n, "getType");
-      if (type === "tab" && !isTutor(n) && !description && String(call(n, "getName") || "").trim().toLowerCase() === "description") description = n;
+      if (type === "tab" && !isTutor(n)) {
+        if (!byComponent && String(call(n, "getComponent") || "").trim().toLowerCase() === "description") byComponent = n;
+        if (!byName && tabName(n).toLowerCase() === "description") byName = n;
+      }
       if (type === "tabset" && !firstTabset) firstTabset = n;
     });
+    const description = byComponent || byName;
     const parent = description ? call(description, "getParent") : null;
     if (parent && call(parent, "getType") === "tabset") {
       const children = call(parent, "getChildren") || [];
@@ -191,16 +198,38 @@
     return out;
   }
 
-  // ---- where the tab is, by the names of the tabs around it ------------
+  // ---- where the tab is, by the tabs around it --------------------------
   //
-  // { v: 1, mode: "tabset", anchors: [names of the native tabs in its
+  // Each native tab is named by tabKey (its component, else its name).
+  // { v: 1, mode: "tabset", anchors: [keys of the native tabs in its
   //   tabset], after: the native tab right before it or null, index: how
   //   many native tabs come before it }
-  // { v: 1, mode: "dock", anchors: [names in the tabset beside it], side:
+  // { v: 1, mode: "dock", anchors: [keys in the tabset beside it], side:
   //   where it sits against that tabset, ratio?: its share of the two }
 
   function cleanName(name) {
     return typeof name === "string" ? name.trim().slice(0, 60) : "";
+  }
+
+  // The library's name for a tab without one.
+  const UNNAMED = "[Unnamed Tab]";
+
+  // A tab's own name, or "" when it has none.
+  function tabName(node) {
+    const name = cleanName(call(node, "getName"));
+    return name === UNNAMED ? "" : name;
+  }
+
+  // What names a native tab in a remembered spot: its component (all a
+  // tab has on leetcode.com), else its name.
+  function tabKey(node) {
+    return cleanName(call(node, "getComponent")) || tabName(node);
+  }
+
+  // Whether `anchor` names this tab, by component or (a spot saved by an
+  // older version) by name.
+  function tabMatches(node, anchor) {
+    return !!anchor && (cleanName(call(node, "getComponent")) === anchor || tabName(node) === anchor);
   }
 
   function validPosition(p) {
@@ -322,14 +351,23 @@
     }
   }
 
-  function nativeNames(tabset) {
-    return (call(tabset, "getChildren") || []).filter((n) => call(n, "getType") === "tab" && !isTutor(n)).map((n) => cleanName(call(n, "getName"))).filter(Boolean);
+  function nativeTabs(tabset) {
+    return (call(tabset, "getChildren") || []).filter((n) => call(n, "getType") === "tab" && !isTutor(n));
   }
 
+  // The keys a spot is stored with.
+  function nativeNames(tabset) {
+    return nativeTabs(tabset).map(tabKey).filter(Boolean);
+  }
+
+  // Everything an anchor may match: keys, and names for older saved spots.
   function allTabsets(m) {
     const out = [];
     m.visitNodes((n) => {
-      if (call(n, "getType") === "tabset") out.push({ node: n, names: nativeNames(n) });
+      if (call(n, "getType") !== "tabset") return;
+      const names = new Set(nativeNames(n));
+      for (const tab of nativeTabs(n)) if (tabName(tab)) names.add(tabName(tab));
+      out.push({ node: n, names: [...names] });
     });
     return out;
   }
@@ -374,7 +412,7 @@
         v: 1,
         mode: "tabset",
         anchors: nativeNames(tabset),
-        after: before.length ? cleanName(call(before[before.length - 1], "getName")) || null : null,
+        after: before.length ? tabKey(before[before.length - 1]) || null : null,
         index: before.length,
       });
     }
@@ -408,7 +446,7 @@
     if (p.mode === "tabset") {
       const children = call(target.node, "getChildren") || [];
       const natives = children.filter((n) => !isTutor(n));
-      const after = p.after === null ? -1 : natives.findIndex((n) => cleanName(call(n, "getName")) === p.after);
+      const after = p.after === null ? -1 : natives.findIndex((n) => tabMatches(n, p.after));
       if (p.after === null) index = 0;
       else if (after >= 0) index = children.indexOf(natives[after]) + 1;
       else index = Math.min(p.index, children.length);
@@ -508,7 +546,52 @@
 
   // ---- the tab's DOM -----------------------------------------------------
 
+  // The button's label. The tab's JSON has the name "Tutor", but a page
+  // whose onRenderTab draws labels by component (leetcode.com does) draws
+  // nothing for one it does not know. An empty button gets the text here,
+  // and an observer on it puts the text back after React re-renders it.
+  const LABEL_ATTR = "data-lc-tutor-label";
+  let labelled = null;
+  let labelObserver = null;
+
+  function applyLabel() {
+    const button = labelled;
+    if (!button || !button.isConnected) return;
+    const own = button.querySelector(`[${LABEL_ATTR}]`);
+    const others = button.textContent.replace(own ? own.textContent : "", "").trim();
+    if (others) {
+      // The page drew a label of its own.
+      if (own) own.remove();
+      return;
+    }
+    if (own && own.textContent === "Tutor") return;
+    if (own) own.remove();
+    const span = document.createElement("span");
+    span.setAttribute(LABEL_ATTR, "");
+    span.textContent = "Tutor";
+    (button.querySelector(".flexlayout__tab_button_content") || button).appendChild(span);
+  }
+
+  function labelButton(button) {
+    if (button === labelled) {
+      applyLabel();
+      return;
+    }
+    unlabel();
+    labelled = button;
+    applyLabel();
+    labelObserver = new MutationObserver(applyLabel);
+    labelObserver.observe(button, { childList: true, subtree: true, characterData: true });
+  }
+
+  function unlabel() {
+    if (labelObserver) labelObserver.disconnect();
+    labelObserver = null;
+    labelled = null;
+  }
+
   function unmark(keepPane, keepButton) {
+    if (labelled && labelled !== keepButton) unlabel();
     for (const el of document.querySelectorAll(`[${PANE_ATTR}]`)) if (el !== keepPane) el.removeAttribute(PANE_ATTR);
     for (const el of document.querySelectorAll(`[${BUTTON_ATTR}]`)) if (el !== keepButton) el.removeAttribute(BUTTON_ATTR);
   }
@@ -606,6 +689,7 @@
     if (pane && !pane.hasAttribute(PANE_ATTR)) pane.setAttribute(PANE_ATTR, "");
     if (!button.hasAttribute(BUTTON_ATTR)) button.setAttribute(BUTTON_ATTR, "");
     if (!button.hasAttribute(CLONE_ATTR)) button.setAttribute(CLONE_ATTR, "");
+    labelButton(button);
     report({ native: true, present: true, visible: !!pane && isShown(node, pane), generation });
   }
 
