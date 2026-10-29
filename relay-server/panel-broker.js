@@ -43,8 +43,10 @@
 // boundary.
 // The companion strips them again before printing anything untrusted.
 //
-// The number of open panel streams is capped: any page can open a no-cors GET
-// to /panel/events (it cannot read the response, but it holds a socket).
+// The number of open panel streams is capped, and only CORS-mode requests
+// count: a page's no-cors GET (or an <img> or <iframe>) to /panel/events has
+// no Origin, so without the Sec-Fetch-Mode check in handle() it could hold the
+// slots open, unread, and lock the real panel out.
 
 "use strict";
 
@@ -254,6 +256,21 @@ function createPanelBroker({ port }) {
     const origin = req.headers.origin;
     if (origin !== undefined && origin !== PANEL_ORIGIN) {
       sendJson(req, res, 403, { error: "forbidden origin" });
+      return true;
+    }
+
+    // Every legitimate caller makes a CORS-mode request: the panel's fetch
+    // from leetcode.com, and the companion's Node fetch (which sends
+    // Sec-Fetch-Mode: cors too). A no-cors fetch, an <img>/<script> tag or an
+    // <iframe> on some other website sends no Origin, so the check above lets
+    // it through, and although it cannot read the stream it holds one of the
+    // MAX_PANEL_STREAMS slots: twenty of them locked leetcode.com out with a
+    // 503. Refused here, before anything is counted. A browser too old to send
+    // Sec-Fetch-Mode at all is not covered; every browser the extension
+    // supports sends it.
+    const fetchMode = req.headers["sec-fetch-mode"];
+    if (fetchMode !== undefined && fetchMode !== "cors") {
+      sendJson(req, res, 403, { error: "only CORS requests are accepted" });
       return true;
     }
 

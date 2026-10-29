@@ -461,3 +461,55 @@ test("the number of open panel streams is capped", async (t) => {
   reopened.close();
   for (const s of streams) s.close();
 });
+
+test("a web page cannot fill the panel-stream cap with requests it cannot read", async (t) => {
+  const port = PORT + 5;
+  await startServer(t, port);
+  // What `fetch(url, { mode: "no-cors" })`, an <img>/<script> tag and an
+  // <iframe> on any website send: no Origin, so the origin check alone let
+  // them through, and each held one of the 20 slots open.
+  const pageRequests = [
+    { "sec-fetch-mode": "no-cors", "sec-fetch-site": "cross-site", "sec-fetch-dest": "empty" },
+    { "sec-fetch-mode": "no-cors", "sec-fetch-site": "cross-site", "sec-fetch-dest": "image" },
+    { "sec-fetch-mode": "navigate", "sec-fetch-site": "cross-site", "sec-fetch-dest": "iframe" },
+  ];
+  const held = [];
+  for (let i = 0; i < 25; i += 1) {
+    const s = openSse({ port, route: "/panel/events", headers: pageRequests[i % pageRequests.length] });
+    held.push(s);
+    // eslint-disable-next-line no-await-in-loop
+    const info = await s.ready();
+    assert.equal(info.statusCode, 403, JSON.stringify(pageRequests[i % pageRequests.length]));
+  }
+  // The real panel (a CORS request from leetcode.com) still gets its stream.
+  const panel = openSse({
+    port,
+    route: "/panel/events",
+    headers: { origin: LEETCODE, "sec-fetch-mode": "cors", "sec-fetch-site": "cross-site" },
+  });
+  assert.equal((await panel.ready()).statusCode, 200);
+  await panel.waitFor((e) => e.some((x) => x.type === "status"));
+  // The companion's own requests (Node's fetch sends Sec-Fetch-Mode: cors
+  // and no Origin) still work.
+  const inbox = openSse({ port, route: "/panel/inbox", headers: { ...COMPANION, "sec-fetch-mode": "cors" } });
+  assert.equal((await inbox.ready()).statusCode, 200);
+  const pub = await request({
+    port,
+    method: "POST",
+    route: "/panel/publish",
+    headers: { ...COMPANION, "sec-fetch-mode": "cors" },
+    body: { type: "notice", text: "still works", problemSlug: "two-sum" },
+  });
+  assert.equal(pub.status, 200);
+  // A no-cors POST is refused too (it carries an Origin, but no route needs
+  // anything but CORS).
+  const noCorsPost = await request({
+    port,
+    method: "POST",
+    route: "/panel/message",
+    headers: { origin: LEETCODE, "sec-fetch-mode": "no-cors" },
+    body: { text: "hi", problemSlug: "two-sum" },
+  });
+  assert.equal(noCorsPost.status, 403);
+  for (const s of [...held, panel, inbox]) s.close();
+});
