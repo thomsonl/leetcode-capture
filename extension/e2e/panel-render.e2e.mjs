@@ -395,6 +395,23 @@ try {
     check(c.selected === c.tab && c.tab === 'rgba(255, 255, 255, 0.6)', JSON.stringify(c));
   });
 
+  await scenario('while the Tutor tab is selected, the native selected label takes the unselected weight, and gets it back after', async () => {
+    // The visible copy of each label (the first leaf), as the student sees it.
+    const weights = () =>
+      page.eval(`(() => {
+        const label = (sel) => getComputedStyle(document.querySelector(sel + ':not([data-lc-tutor-tab]) .label > div')).fontWeight;
+        return { selected: label('.flexlayout__tab_button--selected'), tab: label('.flexlayout__tab_button--unselected') };
+      })()`);
+    const dimmed = await weights();
+    check(dimmed.selected === dimmed.tab && dimmed.tab === '400', `with the Tutor tab active: ${JSON.stringify(dimmed)}`);
+    await page.eval(`document.querySelectorAll('.flexlayout__tab_button')[0].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))`);
+    await settle();
+    const restored = await weights();
+    check(restored.selected === '600', `back on Description: ${JSON.stringify(restored)}`);
+    await page.eval('window.__openTutor()');
+    await settle();
+  });
+
   await scenario('the pane made inert is the one under the tabset, not the first in DOM order', async () => {
     const inert = await page.eval(`({ code: document.getElementById('pane-code').inert, desc: document.getElementById('pane-desc').inert })`);
     check(inert.desc === true && inert.code === false, JSON.stringify(inert));

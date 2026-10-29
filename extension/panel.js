@@ -865,6 +865,11 @@
     body[${ACTIVE_ATTR}] .flexlayout__tabset:has([${TAB_ATTR}]) .flexlayout__tab_button--selected:not([${TAB_ATTR}]) {
       color: var(--lc-tutor-muted, rgba(255, 255, 255, 0.6));
     }
+    /* And the weight of an unselected label, on every copy of it. */
+    body[${ACTIVE_ATTR}] .flexlayout__tabset:has([${TAB_ATTR}]) .flexlayout__tab_button--selected:not([${TAB_ATTR}]),
+    body[${ACTIVE_ATTR}] .flexlayout__tabset:has([${TAB_ATTR}]) .flexlayout__tab_button--selected:not([${TAB_ATTR}]) * {
+      font-weight: 400;
+    }
   `;
 
   // Metrics below were measured on LeetCode's own panes (dark theme): the
