@@ -732,7 +732,10 @@
   // 12px), inline code chips 12px/16px with 2px padding, a 5px radius and a
   // 1px border, and the browser's default (non-thin) scrollbar. There is no
   // big title: none of the native tabs except Description has one, and
-  // Submissions opens with a slim muted row, which the header row copies.
+  // Submissions opens with a slim muted row, which the header row copies:
+  // flush at the top of the pane and full width, 32px tall with 12px side
+  // padding, secondary-color text and a 10% hairline under it (white at 10%
+  // in the dark theme).
   const PANEL_CSS = `
     :host { display: none; position: absolute; z-index: 20; box-sizing: border-box; }
     :host([data-active]) { display: block; }
@@ -743,7 +746,10 @@
       font: 400 14px/21px var(--font);
     }
     .scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 20px 16px; color-scheme: var(--scheme); }
-    .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 20px; margin: 0 0 16px; }
+    .head {
+      flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      height: 32px; padding: 0 12px; border-bottom: 1px solid var(--head-line); color: var(--muted);
+    }
     .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .head-right { flex: none; }
     .status { display: flex; align-items: center; gap: 4px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
@@ -893,6 +899,9 @@
     style.setProperty("--font", getComputedStyle(document.body).fontFamily);
     style.setProperty("--fill", "color-mix(in srgb, var(--fg) 7%, transparent)");
     style.setProperty("--line", "color-mix(in srgb, var(--fg) 10%, transparent)");
+    // The Submissions row's hairline is the body text color (pure white in
+    // the dark theme) at 10%, slightly brighter than --line.
+    style.setProperty("--head-line", "color-mix(in srgb, var(--body) 10%, transparent)");
     style.setProperty("--line-strong", "color-mix(in srgb, var(--fg) 24%, transparent)");
     style.setProperty("--chip-line", "color-mix(in srgb, var(--fg) 12%, transparent)");
     // The status green comes from the page's own Submit button, so a light
@@ -993,10 +1002,10 @@
     const wrap = el("div", "wrap");
     wrap.setAttribute("role", "tabpanel");
     wrap.setAttribute("aria-label", "Tutor");
-    // A slim header row like the one Submissions opens with, scrolling away
-    // with the content: the connection status on the left, and room on the
-    // right for controls (a settings gear and the model's name are planned
-    // there).
+    // A slim header row like the one Submissions opens with, fixed at the
+    // top while the transcript scrolls under it: the connection status on
+    // the left, and room on the right for controls (a settings gear and the
+    // model's name are planned there).
     const head = el("div", "head");
     const headLeft = el("div", "head-left");
     const status = el("div", "status");
@@ -1015,7 +1024,7 @@
 
     const scroll = el("div", "scroll");
     const feed = el("div", "feed");
-    scroll.append(head, banner, feed);
+    scroll.append(banner, feed);
 
     const composer = el("div", "composer");
     const box = el("div", "box");
@@ -1038,7 +1047,7 @@
     hint.hidden = true;
     composer.appendChild(hint);
 
-    wrap.append(scroll, composer);
+    wrap.append(head, scroll, composer);
     root.append(style, wrap);
 
     // LeetCode binds many single-key shortcuts on the page, and this script's

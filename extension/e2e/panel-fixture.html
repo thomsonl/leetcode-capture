@@ -35,6 +35,14 @@
   #pane-code { left: 576px; top: 44px; width: 440px; height: 664px; background: rgb(30, 30, 30); color: rgb(212, 212, 212); }
   #pane-desc { left: 8px; top: 44px; width: 560px; height: 664px; color: rgb(255, 255, 255); font-size: 14px; line-height: 21px; }
   #pane-subs { display: none; }
+  /* Light theme, toggled by the e2e script through a class on <html> (the
+     panel re-samples its colors when that changes). */
+  html.light { color-scheme: light; }
+  html.light body { background: rgb(240, 240, 240); color: rgb(38, 38, 38); }
+  html.light .flexlayout__tabset { background: rgb(255, 255, 255); }
+  html.light .flexlayout__tab_button--selected { color: rgb(38, 38, 38); }
+  html.light .flexlayout__tab_button--unselected { color: rgba(38, 38, 38, 0.6); }
+  html.light #pane-desc { color: rgb(38, 38, 38); }
 </style>
 <script>
   (() => {

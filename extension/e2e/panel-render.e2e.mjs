@@ -5,7 +5,7 @@
 //
 // Covers what the unit tests cannot: the feed is patched in place (a text
 // selection and a code block's horizontal scroll survive streamed chunks and
-// events for other problems), the compact header row, which native pane is
+// events for other problems), the header row (dark and light), which native pane is
 // made inert, the relay-restart (epoch) flow over a reconnect, sending
 // (double Enter, the too-long hint), and some CSS metrics.
 //
@@ -103,26 +103,36 @@ try {
     await page.screenshot(path.join(SHOTS, '01-offline.png'), { width: 1100, height: 760 });
   });
 
-  await scenario('compact header: no title, status on the left, an empty right group, native insets', async () => {
+  await scenario('header row: like the Submissions row, flush at the top, 32px, full width, a hairline below', async () => {
     await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e1' })`);
     await settle();
     const m = await page.eval(`(() => {
       const host = document.getElementById('lc-tutor-panel-host').getBoundingClientRect();
-      const head = window.__q('.head').getBoundingClientRect();
+      const headNode = window.__q('.head');
+      const head = headNode.getBoundingClientRect();
+      const hs = getComputedStyle(headNode);
       const status = window.__q('.status');
       const cs = getComputedStyle(status);
+      const scroll = window.__q('.scroll');
       return {
         title: window.__qa('h1, h2, .title').length,
         left: window.__q('.head > .head-left > .status') !== null,
         right: window.__q('.head > .head-right') !== null && window.__q('.head-right').children.length === 0,
+        // The header stays put while the transcript scrolls under it.
+        outsideScroll: !scroll.contains(headNode),
         role: status.getAttribute('role'),
         text: status.textContent,
         iconFirst: status.firstElementChild.tagName.toLowerCase() === 'svg',
         font: cs.fontSize + '/' + cs.lineHeight,
-        muted: cs.color,
-        topInset: head.top - host.top,
-        leftInset: head.left - host.left,
-        height: head.height,
+        statusColor: cs.color,
+        headColor: hs.color,
+        tabColor: getComputedStyle(document.querySelector('.flexlayout__tab_button--unselected:not([data-lc-tutor-tab])')).color,
+        rect: { top: head.top - host.top, left: head.left - host.left, width: head.width, hostWidth: host.width, height: head.height },
+        padding: hs.paddingLeft + ' ' + hs.paddingRight,
+        statusLeft: status.getBoundingClientRect().left - host.left,
+        border: hs.borderBottomWidth + ' ' + hs.borderBottomStyle + ' ' + hs.borderBottomColor,
+        otherBorders: [hs.borderTopWidth, hs.borderLeftWidth, hs.borderRightWidth].join(' '),
+        scrollTop: scroll.getBoundingClientRect().top - head.bottom,
         empty: window.__q('.empty p').textContent,
         emptyColor: getComputedStyle(window.__q('.empty')).color,
         emptyFont: getComputedStyle(window.__q('.empty')).fontSize + '/' + getComputedStyle(window.__q('.empty')).lineHeight,
@@ -130,15 +140,43 @@ try {
     })()`);
     check(m.title === 0, 'a heading is still in the panel');
     check(m.left && m.right, `header structure: ${JSON.stringify(m)}`);
+    check(m.outsideScroll, 'the header scrolls away with the transcript');
     check(m.role === 'status', `status role: ${m.role}`);
     check(m.text === 'Connected' && m.iconFirst, `status: ${m.text}`);
     check(m.font === '14px/20px', `status font: ${m.font}`);
-    check(m.topInset === 20 && m.leftInset === 16 && m.height === 20, `insets: ${JSON.stringify(m)}`);
+    const r = m.rect;
+    check(r.top === 0 && r.left === 0 && r.width === r.hostWidth && r.height === 32, `header box: ${JSON.stringify(r)}`);
+    check(m.padding === '12px 12px' && m.statusLeft === 12, `header padding: ${m.padding}, status at ${m.statusLeft}`);
+    // color-mix(in srgb, <the Description pane's white body text> 10%, transparent)
+    check(/^1px solid (rgba\(255, 255, 255, 0\.1\)|color\(srgb 1 1 1 \/ 0\.1\))$/.test(m.border), `header border: ${m.border}`);
+    check(m.otherBorders === '0px 0px 0px', `only a bottom border: ${m.otherBorders}`);
+    // The secondary text color is the page's own (sampled, not hardcoded).
+    check(m.headColor === m.tabColor && m.statusColor === m.tabColor, `header text ${m.headColor} / status ${m.statusColor} vs page ${m.tabColor}`);
+    check(m.scrollTop === 0, `gap under the header: ${m.scrollTop}`);
     check(/ask a question/.test(m.empty), `online empty copy: ${m.empty}`);
     // color-mix(in srgb, rgb(245,245,245) 30%, transparent)
     check(/^(rgba\(245, 245, 245, 0\.3\)|color\(srgb 0\.96\d* 0\.96\d* 0\.96\d* \/ 0\.3\))$/.test(m.emptyColor), `empty color: ${m.emptyColor}`);
     check(m.emptyFont === '14px/21px', `empty font: ${m.emptyFont}`);
     await page.screenshot(path.join(SHOTS, '02-header-empty.png'), { width: 1100, height: 760 });
+  });
+
+  await scenario('header row in light mode: the hairline and text follow the page theme', async () => {
+    await page.eval(`document.documentElement.classList.add('light')`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const hs = getComputedStyle(window.__q('.head'));
+      return {
+        border: hs.borderBottomColor,
+        color: hs.color,
+        tabColor: getComputedStyle(document.querySelector('.flexlayout__tab_button--unselected:not([data-lc-tutor-tab])')).color,
+      };
+    })()`);
+    await page.screenshot(path.join(SHOTS, '02b-header-light.png'), { width: 1100, height: 760 });
+    await page.eval(`document.documentElement.classList.remove('light')`);
+    await settle();
+    // The light fixture's Description text is rgb(38, 38, 38).
+    check(/^(rgba\(38, 38, 38, 0\.1\)|color\(srgb 0\.149\d* 0\.149\d* 0\.149\d* \/ 0\.1\))$/.test(m.border), `light border: ${m.border}`);
+    check(m.color === m.tabColor, `light header text ${m.color} vs page ${m.tabColor}`);
   });
 
   await scenario('the pane made inert is the one under the tabset, not the first in DOM order', async () => {
