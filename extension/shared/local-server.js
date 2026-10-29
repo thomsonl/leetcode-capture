@@ -1,4 +1,4 @@
-// companion/local-server.js - best-effort facts about the local model server
+// extension/shared/local-server.js - best-effort facts about the local model server
 // LocalBackend talks to: whether it is Ollama (so its native chat API, the
 // only one that honors a requested context window, can be used), and how big
 // the model's context window really is. Works with any OpenAI-compatible

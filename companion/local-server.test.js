@@ -17,7 +17,7 @@ import {
   parseLlamaCppProps,
   parseOpenAIModels,
   probeServer,
-} from './local-server.js';
+} from '../extension/shared/local-server.js';
 
 // `routes` maps "METHOD /path" to a JSON body, a function of the request
 // body returning one, or 'hang' (never answers). Anything else is a 404.

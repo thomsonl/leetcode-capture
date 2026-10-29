@@ -22,7 +22,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { SUMMARIZER_SYSTEM, SUMMARY_HEADER, SUMMARY_MAX_TOKENS, summaryBodyChars } from './context-summary.js';
+import { SUMMARIZER_SYSTEM, SUMMARY_HEADER, SUMMARY_MAX_TOKENS, summaryBodyChars } from '../extension/shared/context-summary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

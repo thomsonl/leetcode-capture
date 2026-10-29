@@ -26,9 +26,9 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { buildMessages } from './context-budget.js';
-import { formatPinnedCode } from './code-ledger.js';
-import { SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_MS, condense, condenseCount, summaryBodyChars } from './context-summary.js';
+import { buildMessages } from '../extension/shared/context-budget.js';
+import { formatPinnedCode } from '../extension/shared/code-ledger.js';
+import { SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_MS, condense, condenseCount, summaryBodyChars } from '../extension/shared/context-summary.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_STDERR_CHARS = 2000;

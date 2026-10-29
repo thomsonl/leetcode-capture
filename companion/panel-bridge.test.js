@@ -18,7 +18,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createPanelBridge, parseSseBlock } from './panel-bridge.js';
-import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from './context-summary.js';
+import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from '../extension/shared/context-summary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LEETCODE = 'https://leetcode.com';

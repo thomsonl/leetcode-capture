@@ -111,7 +111,7 @@ const RPC_METHOD_RE = /^[a-z][a-zA-Z]{0,39}$/;
 // zero-width formatting characters that make text read differently from what
 // it is. The line and paragraph separators become a newline. The zero-width
 // joiner and non-joiner stay (emoji sequences and several scripts need them).
-// Same rule as companion/sanitize.js, which explains each range.
+// Same rule as extension/shared/sanitize.js, which explains each range.
 const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
 const LINE_SEPARATORS_RE = /[\u2028\u2029]/g;
 

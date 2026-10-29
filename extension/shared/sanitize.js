@@ -1,4 +1,4 @@
-// companion/sanitize.js - makes untrusted text safe to print in the terminal.
+// extension/shared/sanitize.js - makes untrusted text safe to print in the terminal.
 //
 // Several things the companion prints come from outside this process:
 // messages typed into the in-page panel, and every field of a capture. The

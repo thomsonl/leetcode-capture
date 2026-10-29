@@ -21,43 +21,10 @@ import path from 'node:path';
 export const SETTINGS_VERSION = 1;
 export const DEFAULT_PROVIDER = 'claude';
 
-// `fields` are what the options page shows for a provider; `requires` must be
-// present before a backend can be built for it.
-export const PROVIDERS = {
-  local: {
-    label: 'Local model',
-    hint: 'Ollama, LM Studio, or any OpenAI-compatible server running on your machine.',
-    fields: ['baseUrl', 'model', 'contextTokens', 'apiKey'],
-    requires: ['model'],
-  },
-  claude: {
-    label: 'Claude subscription',
-    hint: 'Uses your Claude Code sign-in (Claude Pro or Max). Run "claude" once to sign in.',
-    fields: ['model'],
-    requires: [],
-  },
-  anthropic: {
-    label: 'Anthropic API key',
-    hint: 'Pay-as-you-go with a key from console.anthropic.com.',
-    fields: ['apiKey', 'model'],
-    requires: ['apiKey'],
-  },
-  openai: {
-    label: 'OpenAI API key',
-    hint: 'Pay-as-you-go with a key from platform.openai.com.',
-    fields: ['apiKey', 'model', 'baseUrl'],
-    requires: ['apiKey', 'model'],
-  },
-  chatgpt: {
-    label: 'ChatGPT subscription',
-    hint: 'Uses your Codex CLI sign-in (ChatGPT Plus, Pro, Business). Run "codex login" once.',
-    fields: ['model'],
-    requires: [],
-  },
-};
-
-export const OLLAMA_BASE_URL = 'http://localhost:11434/v1';
-export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
+// The provider catalog (labels, fields, requirements, which runtimes can run
+// each one) is shared with the extension: extension/shared/providers.js.
+export { PROVIDERS, OLLAMA_BASE_URL, OPENAI_BASE_URL } from '../extension/shared/providers.js';
+import { PROVIDERS, OLLAMA_BASE_URL, OPENAI_BASE_URL } from '../extension/shared/providers.js';
 
 const DEFAULT_FIELDS = {
   local: { baseUrl: OLLAMA_BASE_URL, model: null, contextTokens: 8192, apiKey: null },

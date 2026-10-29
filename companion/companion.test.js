@@ -26,7 +26,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { replayToScreen } from './virtual-terminal.js';
-import { SUMMARIZER_SYSTEM } from './context-summary.js';
+import { SUMMARIZER_SYSTEM } from '../extension/shared/context-summary.js';
 
 const isSummaryRequest = (messages) => messages?.[0]?.content === SUMMARIZER_SYSTEM;
 

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CodexBackend, buildCodexArgs, checkCodexLogin, codexSubscriptionEnv, parseCodexOutput } from './codex-backend.js';
-import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from './context-summary.js';
+import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from '../extension/shared/context-summary.js';
 
 const FAKE = `
 const fs = require('node:fs');

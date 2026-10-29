@@ -19,7 +19,7 @@ import {
   buildMessages,
   fitToBudget,
   resolveContextWindow,
-} from './context-budget.js';
+} from '../extension/shared/context-budget.js';
 
 test('estimateTokens divides length by the calibrated chars-per-token constant, rounding up', () => {
   assert.equal(estimateTokens('a'.repeat(39)), Math.ceil(39 / CHARS_PER_TOKEN_ESTIMATE));

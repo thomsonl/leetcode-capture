@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateMessagesTokens, estimateTokens } from './context-budget.js';
+import { estimateMessagesTokens, estimateTokens } from '../extension/shared/context-budget.js';
 import {
   SUMMARY_HEADER,
   SUMMARY_MAX_TOKENS,
@@ -20,7 +20,7 @@ import {
   firstSentence,
   fitWithSummary,
   summaryBodyChars,
-} from './context-summary.js';
+} from '../extension/shared/context-summary.js';
 
 const SYSTEM = { role: 'system', content: 'S'.repeat(390) }; // 100 estimated tokens
 const pair = (n, chars) => [

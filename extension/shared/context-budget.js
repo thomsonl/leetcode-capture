@@ -1,4 +1,4 @@
-// companion/context-budget.js - pure helpers for LocalBackend's context-
+// extension/shared/context-budget.js - pure helpers for LocalBackend's context-
 // budget management: the pre-flight request-size estimate, the line diff
 // the tutor's code updates are built from (see code-ledger.js), and the
 // outgoing message list with the pinned description and code. Split out

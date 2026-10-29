@@ -1,4 +1,4 @@
-// companion/code-ledger.js - what code the tutor has already been shown, and
+// extension/shared/code-ledger.js - what code the tutor has already been shown, and
 // what to tell it next.
 //
 // The rules (Thomson's request, see README.md, "What the tutor is sent"):

@@ -1,4 +1,4 @@
-// companion/context-summary.js - condenses the oldest exchanges of a tutor
+// extension/shared/context-summary.js - condenses the oldest exchanges of a tutor
 // conversation into one short "earlier in this session" summary instead of
 // dropping them, like Claude Code's /compact.
 //

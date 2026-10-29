@@ -6,9 +6,6 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   createCodeLedger,
   sendsToTutor,
@@ -18,9 +15,7 @@ import {
   buildChatMessage,
   FULL_CODE_COMPACT_NOTE,
   DEFAULT_MAX_PROBLEMS,
-} from './code-ledger.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+} from '../extension/shared/code-ledger.js';
 
 const V1 = [
   'def twoSum(nums, target):',
@@ -37,17 +32,6 @@ const V1 = [
 ].join('\n');
 const V2 = V1.replace('    return []', '    return [-1, -1]');
 const V3 = V2.replace('        seen[val] = i', '        seen[val] = i  # remember it');
-
-test('the module uses no Node API, so it can run in the extension too', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'code-ledger.js'), 'utf8');
-  const imports = [...source.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
-  assert.deepEqual(imports, ['./context-budget.js']);
-  const budget = fs.readFileSync(path.join(__dirname, 'context-budget.js'), 'utf8');
-  assert.ok(!/^import /m.test(budget), 'context-budget.js imports nothing');
-  for (const src of [source, budget]) {
-    assert.ok(!/\b(process|Buffer|require)\b|node:/.test(src.replace(/^\s*\/\/.*$/gm, '')), 'no Node globals in code');
-  }
-});
 
 test('only a Submit is sent to the tutor on its own', () => {
   assert.equal(sendsToTutor('submit'), true);

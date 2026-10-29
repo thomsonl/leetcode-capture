@@ -6,7 +6,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stripControlChars, oneLine, sanitizeCapture } from './sanitize.js';
+import { stripControlChars, oneLine, sanitizeCapture } from '../extension/shared/sanitize.js';
 
 const PROBE = 'esc-probe \x1b[31mRED\x1b[0m \x1b]0;pwned-title\x07 end';
 

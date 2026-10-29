@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Marks the shared tutor modules as ES modules for Node (the companion and the tests). The browser ignores this file."
+}
