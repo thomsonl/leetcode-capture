@@ -417,3 +417,65 @@ test('a capture goes to the background worker when it runs the tutor, and to the
   delete globalThis.chrome;
   assert.equal(await handToBackground(capture), false, 'no extension API at all');
 });
+
+// A stand-in for the real description element: just nodeType, tagName,
+// childNodes and textContent, which is all a DOM walk touches.
+function fakeText(value) {
+  return { nodeType: 3, nodeValue: value, textContent: value };
+}
+function fakeElement(tagName, ...childNodes) {
+  return {
+    nodeType: 1,
+    tagName: tagName.toUpperCase(),
+    childNodes,
+    get textContent() {
+      return childNodes.map((n) => n.textContent).join('');
+    },
+  };
+}
+// The constraints the way LeetCode renders them: exponents in <sup>.
+const SUPERSCRIPT_DESCRIPTION = fakeElement(
+  'div',
+  fakeElement('p', fakeText(' Given an array nums.')),
+  fakeElement(
+    'ul',
+    fakeElement('li', fakeElement('code', fakeText('2 <= nums.length <= 10'), fakeElement('sup', fakeText('4')))),
+    fakeElement(
+      'li',
+      fakeElement('code', fakeText('-10'), fakeElement('sup', fakeText('9')), fakeText(' <= nums[i] <= 10'), fakeElement('sup', fakeText('9')))
+    ),
+    fakeElement('li', fakeText('x'), fakeElement('sub', fakeText('i')), fakeText(' is distinct '))
+  )
+);
+const SUPERSCRIPT_TEXT = 'Given an array nums.2 <= nums.length <= 10^4-10^9 <= nums[i] <= 10^9x_i is distinct';
+
+function withDescription(descEl, fn) {
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = {
+    title: 'Two Sum - LeetCode',
+    querySelectorAll: () => [],
+    querySelector: (selector) => (selector === '[data-track-load="description_content"]' ? descEl : null),
+  };
+  globalThis.window = { location: { href: 'https://leetcode.com/problems/two-sum/', pathname: '/problems/two-sum/' } };
+  return Promise.resolve(fn()).finally(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+  });
+}
+
+test('the description keeps exponents and subscripts (10^4, not 104) in a snapshot and a capture', (t) =>
+  withDescription(SUPERSCRIPT_DESCRIPTION, async () => {
+    const events = mockEventTarget();
+    const response = nextSnapshotResponse(events);
+    await answerSnapshotRequest(snapshotRequest('sup'), events, async () => ({ code: 'x = 1', language: 'python' }));
+    assert.equal((await response).snapshot.problemDescription, SUPERSCRIPT_TEXT);
+
+    const sent = [];
+    globalThis.chrome = { runtime: { id: 'ext', sendMessage: async (message) => (sent.push(message), { handled: true }) } };
+    t.after(() => {
+      delete globalThis.chrome;
+    });
+    await sendCapture('submit', { events: new EventTarget(), readCode: async () => 'x = 1' });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].capture.problemDescription, SUPERSCRIPT_TEXT);
+  }));

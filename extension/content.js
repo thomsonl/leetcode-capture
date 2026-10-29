@@ -41,10 +41,26 @@
     // labels ("Description", "Editorial", "Solutions", ...) and other page
     // chrome, so it's avoided here in favor of this narrower, stable panel.
     const descEl = document.querySelector('[data-track-load="description_content"]');
-    if (descEl && descEl.textContent.trim()) {
-      return descEl.textContent.trim();
+    const text = descEl ? descriptionText(descEl).trim() : "";
+    return text || null;
+  }
+
+  // The element's text, like textContent, except that an exponent or index
+  // keeps its meaning: LeetCode writes constraints as 10<sup>4</sup>, which
+  // textContent flattens to "104" (and -10<sup>9</sup> to "-109"). A <sup>
+  // becomes "^4" and a <sub> "_i".
+  function descriptionText(node) {
+    if (!node.childNodes) return node.textContent || "";
+    if (node.nodeType === 3) return node.nodeValue || "";
+    let text = "";
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) text += child.nodeValue || "";
+      else if (child.nodeType !== 1) continue;
+      else if (child.tagName === "SUP") text += `^${descriptionText(child)}`;
+      else if (child.tagName === "SUB") text += `_${descriptionText(child)}`;
+      else text += descriptionText(child);
     }
-    return null;
+    return text;
   }
 
   function getProblemTags() {

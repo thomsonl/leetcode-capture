@@ -162,6 +162,7 @@ try {
     const system = sent.body.messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
     check(/patient coding tutor/.test(system), 'the shared tutor prompt is the system message');
     check(/Given an array of integers/.test(system), 'the problem statement is pinned');
+    check(system.includes('2 <= nums.length <= 10^4, -10^9 <= nums[i] <= 10^9'), `exponents survive in the statement: ${system}`);
     await page.screenshot(path.join(shots, 'reply-dark.png'), { width: 1100, height: 760 });
   });
 
