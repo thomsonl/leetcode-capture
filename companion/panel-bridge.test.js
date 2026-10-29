@@ -238,6 +238,8 @@ test('a relay that predates the panel (404 on the inbox) reports "unsupported"',
 function startStubModel(replyFor) {
   const requests = [];
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
@@ -585,6 +587,8 @@ test('end to end: a companion killed mid-reply leaves the reply interrupted, not
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-panel-exit-'));
   // A model that streams the first half of its reply, then never finishes.
   const model = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     req.resume();
     req.on('end', () => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });

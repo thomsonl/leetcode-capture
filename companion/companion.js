@@ -50,7 +50,12 @@ import {
   indentContinuation,
 } from './terminal-format.js';
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
-import { estimateMessagesTokens, buildMessages as buildLocalMessages } from './context-budget.js';
+import {
+  buildMessages as buildLocalMessages,
+  fitToBudget,
+  resolveContextWindow,
+} from './context-budget.js';
+import { probeServer, serverRoot } from './local-server.js';
 import { createPanelBridge } from './panel-bridge.js';
 import { requestCaptureTrim, pendingTrimFor, pendingTrimHappened, isPendingTrim } from './capture-log.js';
 import { stripControlChars, oneLine, sanitizeCapture } from './sanitize.js';
@@ -122,41 +127,34 @@ if (process.stdout.isTTY) {
 
 const BACKEND = process.env.COMPANION_BACKEND || 'claude';
 const MODEL = process.env.COMPANION_MODEL || null;
-// Ollama's own default OpenAI-compat address - also used below to decide
-// whether COMPANION_LOCAL_API's "auto" default should prefer Ollama's native
-// chat API (see the LOCAL_API/LOCAL_NUM_CTX comment).
+// Ollama's own default OpenAI-compat address, used when nothing else is set.
+// Any OpenAI-compatible server works (LM Studio, llama.cpp server, vLLM,
+// text-generation-webui, LocalAI, ...).
 const DEFAULT_BASE_URL = 'http://localhost:11434/v1';
 const BASE_URL = process.env.COMPANION_BASE_URL || DEFAULT_BASE_URL;
 const API_KEY = process.env.COMPANION_API_KEY || null;
 
 // Which HTTP API LocalBackend actually speaks: 'openai' (the standard
-// /v1/chat/completions shape, the only thing any non-Ollama OpenAI-compatible
-// server understands) or 'native' (Ollama's own /api/chat, which - unlike the
-// compat endpoint - actually honors a `num_ctx` option; see LOCAL_NUM_CTX and
-// LocalBackend's class comment for why that matters). 'auto' (the default)
-// picks 'native' only when BASE_URL is still Ollama's own out-of-the-box
-// default above - i.e. nothing has pointed this companion at some other
-// server - and 'openai' otherwise, so anyone who has set COMPANION_BASE_URL
-// to a different, genuinely OpenAI-compatible server keeps working exactly
-// as before with zero behavior change. Explicit "openai"/"native" (case-
-// insensitive) always overrides the heuristic.
+// /v1/chat/completions shape every OpenAI-compatible server understands) or
+// 'native' (Ollama's own /api/chat, which, unlike any OpenAI-compatible
+// endpoint, honors a requested context window, `num_ctx`; see LOCAL_NUM_CTX
+// and LocalBackend's class comment). 'auto' (the default, null here) probes
+// the server once (local-server.js: Ollama answers GET /api/version) and uses
+// 'native' only for a server that answers like Ollama, whatever its address
+// or port; anything else, or a failed probe, is 'openai'. Explicit
+// "openai"/"native" (case-insensitive) always wins.
 const LOCAL_API_RAW = (process.env.COMPANION_LOCAL_API || 'auto').toLowerCase();
-const LOCAL_API =
-  LOCAL_API_RAW === 'openai' || LOCAL_API_RAW === 'native'
-    ? LOCAL_API_RAW
-    : BASE_URL === DEFAULT_BASE_URL
-      ? 'native'
-      : 'openai';
+const LOCAL_API = LOCAL_API_RAW === 'openai' || LOCAL_API_RAW === 'native' ? LOCAL_API_RAW : null;
 
-// Context window (in tokens) requested from Ollama's native /api/chat via
-// `options.num_ctx` - only used when LOCAL_API resolves to 'native'; the
-// OpenAI-compat endpoint ignores this entirely (see LocalBackend's class
-// comment). 8192 is double the 4096 this project's configured Ollama model
-// (gemma4:26b) actually runs with by default, and was confirmed live to turn
-// a real single-capture failure (a normal ~150-line solution plus its problem
-// description, no prior history) into a normal completed reply with the
-// exact same input - raise it further if an even larger real capture still
-// gets cut off.
+// The configured context window in tokens. It is what Ollama's native API is
+// asked for (`options.num_ctx`), and the most LocalBackend ever budgets for
+// on any server: the window actually used is the smallest of this, what the
+// server reports when probed, and what a reply shows the server really kept
+// (see resolveContextWindow in context-budget.js). 8192 is double the 4096
+// this project's configured Ollama model (gemma4:26b) runs with by default,
+// and was confirmed live to turn a real single-capture failure (a normal
+// ~150-line solution plus its problem description, no prior history) into a
+// normal completed reply with the exact same input.
 const LOCAL_NUM_CTX = Number(process.env.COMPANION_LOCAL_NUM_CTX || 8192);
 
 // How many tokens of LOCAL_NUM_CTX to hold back for the model's own
@@ -188,20 +186,14 @@ const VAULT_AUTO_SUMMARY = /^(1|true|yes)$/i.test(process.env.VAULT_AUTO_SUMMARY
 const AUTO_CLEAR_CONTEXT = !/^(0|false|no)$/i.test(process.env.COMPANION_AUTO_CLEAR_CONTEXT || '');
 
 // How many user+assistant turn-pairs LocalBackend.history keeps before
-// dropping the oldest ones - see LocalBackend.trimHistory for what this
-// fixes and why trimming (rather than a bigger num_ctx) is the portable
-// choice here. AUTO_CLEAR_CONTEXT above already resets history to nothing
-// on a problem switch; this is the additional bound *within* one still-
-// current problem's own back-and-forth, which AUTO_CLEAR_CONTEXT alone
-// doesn't touch. A whole number of turns, not a token/character budget -
-// simpler to reason about and tune, and already sufficient to keep resent
-// history bounded regardless of how large any individual capture is.
-// Defaults to 6 (6 full Run/Submit exchanges) - comfortably more than a
-// typical single-problem session needs, while still capping the worst case
-// long before it can exhaust a small local model's context window the way
-// unbounded growth did. 0 (or unset to a non-number) disables trimming
-// entirely, restoring the old unbounded behavior - not the default, since
-// that's exactly the failure mode this exists to prevent.
+// dropping the oldest ones - see LocalBackend.trimHistory. AUTO_CLEAR_CONTEXT
+// above already resets history to nothing on a problem switch; this is the
+// additional bound *within* one still-current problem's own back-and-forth.
+// It is only a cap on the count: every request is also fitted to the token
+// budget before it is sent (fitToBudget in context-budget.js), dropping the
+// oldest whole exchanges as needed, so a few long replies can never leave
+// the conversation stuck over the budget. Defaults to 6. 0 (or unset to a
+// non-number) turns the count cap off; the token fit always applies.
 const LOCAL_MAX_HISTORY_TURNS = Number(process.env.COMPANION_LOCAL_MAX_HISTORY_TURNS || 6);
 // In-page tutor panel (the extension's "Tutor" tab on leetcode.com): mirrors
 // this conversation to the browser through the relay server and accepts
@@ -492,22 +484,24 @@ function resolveReplyText({ content, reasoning, finishReason, advice }) {
   // non-empty-but-truncated reply would return successfully and never reach
   // it at all.
   if (finishReason === 'length' && (trimmedContent || trimmedReasoning)) {
-    throw new Error(
+    const err = new Error(
       'local backend reply was cut off before finishing (likely ran out of context while still ' +
         '"thinking") - discarding it rather than showing incomplete/partial content as the reply; ' +
         (advice ||
           'try a shorter capture, clearing context, or a model/server configuration with more context')
     );
+    err.cutOff = true; // LocalBackend frees room for the next message on this one
+    throw err;
   }
   if (trimmedContent) return trimmedContent;
   return trimmedReasoning || '';
 }
 
-// Phrases resolveReplyText's cut-off advice according to which API path
-// LocalBackend actually used, so the message always points at something that
-// can genuinely help rather than generic advice that may not apply -
-// COMPANION_LOCAL_NUM_CTX only does anything under 'native', and
-// COMPANION_LOCAL_API=native only does anything when starting from 'openai'.
+// Phrases resolveReplyText's cut-off advice and the budget refusal according
+// to which API path LocalBackend actually used, so the message always points
+// at something that can genuinely help: only Ollama's native API can be asked
+// for a bigger window (COMPANION_LOCAL_NUM_CTX); on any OpenAI-compatible
+// server the window is set in the server itself.
 function contextAdviceFor(apiStyle, numCtx) {
   if (apiStyle === 'native') {
     return (
@@ -516,48 +510,46 @@ function contextAdviceFor(apiStyle, numCtx) {
     );
   }
   return (
-    'try a shorter capture, clearing context, or setting COMPANION_LOCAL_API=native if the ' +
-    'server at COMPANION_BASE_URL is actually Ollama (its native chat API allows a real, ' +
-    'larger context window via COMPANION_LOCAL_NUM_CTX; the standard OpenAI-compatible ' +
-    'endpoint used here cannot)'
+    "try a shorter capture, clearing context, or giving the model a bigger context window in the local " +
+    'server\'s own settings and setting COMPANION_LOCAL_NUM_CTX to match (an OpenAI-compatible API ' +
+    'cannot ask the server for one)'
   );
 }
 
+// A reply whose reported prompt size (usage.prompt_tokens, or Ollama's
+// prompt_eval_count) is under this share of what LocalBackend estimates it
+// sent means the server dropped part of the prompt to fit its own, smaller
+// window. The estimate is deliberately on the high side for code (see
+// CHARS_PER_TOKEN_ESTIMATE), so a normal tokenizer lands well above this;
+// TRUNCATION_MIN_GAP keeps a tiny prompt's rounding from ever counting.
+const TRUNCATION_RATIO = 0.7;
+const TRUNCATION_MIN_GAP = 256;
+
 class LocalBackend {
   // Talks to either a standard OpenAI-compatible /v1/chat/completions
-  // endpoint (`apiStyle: 'openai'`, portable to any such server) or Ollama's
-  // own native /api/chat (`apiStyle: 'native'`) - see companion.js's
-  // LOCAL_API/LOCAL_NUM_CTX config comment for how that choice gets made and
-  // why it matters: the native API is the only one of the two that actually
-  // honors a `num_ctx` (context window size) option. This project's own
-  // configured model (Ollama, gemma4:26b) runs with a 4096-token window by
-  // default, and that alone - not just accumulated multi-turn history, which
-  // trimHistory (below) already bounds - can be too small for a single
-  // capture: confirmed live that a perfectly normal, single Submit capture
-  // (a real problem description plus a ~150-line solution, no prior history
-  // at all) already exhausts it, because the model's own "thinking" burns
-  // through whatever's left after the system prompt and capture content, and
-  // a longer capture also means more for the model to reason about - so
-  // trimming the capture's own content can't reliably guarantee safety
-  // either, short of cutting the student's code short (which would make the
-  // tutor review incomplete code, undermining the one thing this tool exists
-  // to do). Raising the actual context window is the only thing confirmed
-  // live to fix this without touching capture content: the exact request
-  // that failed against the openai-style endpoint's default 4096 completed
-  // normally once resent to /api/chat with `num_ctx: 8192`.
+  // endpoint (`apiStyle: 'openai'`, any such server: LM Studio, llama.cpp
+  // server, vLLM, text-generation-webui, LocalAI, Ollama's compat endpoint,
+  // ...) or Ollama's own native /api/chat (`apiStyle: 'native'`), the only
+  // one of the two that honors a requested context window (`num_ctx`). With
+  // `apiStyle` null (COMPANION_LOCAL_API=auto) the server is probed once at
+  // startup (local-server.js) and 'native' is used only if it answers like
+  // Ollama. The same probes report the model's real window where the server
+  // exposes it, and the budget uses the smaller of that and `numCtx`.
   //
-  // Beyond that already-fixed failure, a second, more serious one exists at
-  // even larger sizes (data/companion-context-capacity-test in the
-  // firstmate repo, and this file's own AGENTS.md entry): past roughly
-  // 800-900 lines in a single capture, Ollama's native /api/chat silently
-  // discards part of the prompt *before* generating at all, rather than
-  // erroring - done_reason comes back "stop", identical to a genuine
-  // success, so resolveReplyText's finishReason-based guards (above) are
-  // structurally blind to it. sendMessage's own pre-flight size check below
-  // is what actually closes that gap, by refusing to send a request
-  // estimated to exceed budget in the first place rather than trying to
-  // detect the damage after the fact.
-  constructor({ baseUrl, model, apiKey, maxHistoryTurns, apiStyle, numCtx }) {
+  // Why the window matters: this project's own configured model (Ollama,
+  // gemma4:26b) runs with a 4096-token window by default, and a perfectly
+  // normal single Submit (a real description plus a ~150-line solution) was
+  // confirmed live to exhaust it; the same request completed once resent to
+  // /api/chat with `num_ctx: 8192`. Worse, past the window a server may
+  // silently drop the start of the prompt (the system prompt and problem)
+  // with an ordinary "stop", so the tutor answers about the wrong thing with
+  // no error. Three things close that, all in sendMessage: the pre-flight
+  // fit (every request is trimmed to the budget, oldest whole exchanges
+  // first, and refused only if the parts that can never be dropped are over
+  // it), the probed window, and the silent-truncation guard (a reply that
+  // reports far fewer prompt tokens than were sent lowers the window to what
+  // the server really kept, with one visible warning).
+  constructor({ baseUrl, model, apiKey, maxHistoryTurns, apiStyle, numCtx, reserveTokens = LOCAL_RESERVE_TOKENS, probe = probeServer }) {
     if (!model) {
       throw new Error(
         'COMPANION_MODEL is required for COMPANION_BACKEND=local (e.g. COMPANION_MODEL=llama3.2)'
@@ -567,39 +559,94 @@ class LocalBackend {
     this.model = model;
     this.apiKey = apiKey;
     this.maxHistoryTurns = maxHistoryTurns;
+    // Explicit 'native'/'openai' wins; null means "decide from the probe",
+    // and until it answers (or if it fails) the portable 'openai' is used.
     this.apiStyle = apiStyle === 'native' ? 'native' : 'openai';
     this.numCtx = numCtx;
+    this.reserveTokens = reserveTokens;
     // Ollama's native API lives at the server root (e.g.
-    // http://localhost:11434/api/chat), not under the OpenAI-compat prefix -
-    // strip a trailing /v1 from baseUrl (its default value has one) so both
-    // API styles can share the same COMPANION_BASE_URL. If a custom baseUrl
-    // doesn't end in /v1, this is a no-op and native mode is used as-is.
-    this.nativeBaseUrl = this.baseUrl.replace(/\/v1$/, '');
+    // http://localhost:11434/api/chat), not under the OpenAI-compat prefix,
+    // so a trailing /v1 is dropped for it.
+    this.nativeBaseUrl = serverRoot(this.baseUrl);
+    // What the probe found (`{ tokens, source }` or null) and the smallest
+    // window a reply showed the server really keeping (or null). See
+    // contextWindow().
+    this.detectedWindow = null;
+    this.observedWindow = null;
+    this.truncationWarned = false;
+    // Warnings for the caller to print once the turn is over (takeWarnings).
+    this.pendingWarnings = [];
+    // Ask for usage on a streamed reply (the OpenAI `stream_options`) until a
+    // server rejects the field, then never again.
+    this.streamUsage = true;
+    // Probed once, in the background, so startup never waits on it; the
+    // first message waits at most for the probe's own short timeouts. A
+    // failed probe leaves the configured window and the 'openai' style.
+    this.ready = Promise.resolve()
+      .then(() => probe({ baseUrl: this.baseUrl, model, apiKey, apiStyle: apiStyle || null }))
+      .then((found) => {
+        if (!found) return;
+        if (!apiStyle && found.apiStyle === 'native') this.apiStyle = 'native';
+        if (found.window) this.detectedWindow = found.window;
+      })
+      .catch(() => {});
     // Standard OpenAI chat-completions shape: a leading `role: 'system'`
     // message, resent in full on every turn along with the rest of history.
     // Includes the shared style addendum (see STYLE_ADDENDUM) - this backend
-    // never inherits it any other way, unlike ClaudeBackend which has its own
-    // ambient settings it could (and, before this file's isolation fix, did)
-    // ride along on. Kept on its own so resetContext (below) can restore
-    // exactly this, rather than re-deriving it or leaving stale history
-    // entries behind. Ollama's native /api/chat accepts this exact same
-    // messages shape too, so history/resetContext/trimHistory are all
-    // shared unchanged between both API styles.
+    // never inherits it any other way. Kept on its own so resetContext
+    // (below) can restore exactly this. Ollama's native /api/chat accepts
+    // this exact same messages shape too, so history/resetContext/trimHistory
+    // are all shared unchanged between both API styles.
     this.systemMessage = { role: 'system', content: `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}` };
     this.history = [this.systemMessage];
     // The full problem description for whichever problem is currently being
     // discussed, if one has been seen yet - `{ problemId, title, slug,
-    // description }`, or null. Deliberately NOT part of `this.history`: see
-    // "send the problem description once per problem" (buildMessages,
-    // below) for why it's reconstructed fresh into every outgoing request
-    // instead, so a long session can never lose it to trimHistory dropping
-    // the turn that originally carried it.
+    // description }`, or null. Deliberately NOT part of `this.history`: it is
+    // reconstructed fresh into every outgoing request (buildMessages), so a
+    // long session can never lose it to trimming.
     this.pinnedProblemContext = null;
     // The code the tutor holds (see code-ledger.js), pinned as a system
-    // message like the description, so trimHistory dropping the turn that
-    // carried the full code never loses it: later turns only carry diffs
-    // against it. `{ text }` or null.
+    // message like the description, so trimming the turn that carried the
+    // full code never loses it: later turns only carry diffs against it.
+    // `{ text }` or null.
     this.pinnedCode = null;
+  }
+
+  // The context window this backend budgets for, `{ tokens, source }`: the
+  // smallest of the configured COMPANION_LOCAL_NUM_CTX, the probed one and
+  // the observed one (see resolveContextWindow). The single place the
+  // window is decided, so a settings field only needs to feed `numCtx`.
+  contextWindow() {
+    return resolveContextWindow({
+      configured: this.numCtx,
+      detected: this.detectedWindow,
+      observed: this.observedWindow,
+    });
+  }
+
+  // The prompt budget: the window minus the reserve for the model's reply.
+  promptBudget() {
+    return this.contextWindow().tokens - this.reserveTokens;
+  }
+
+  // Where the window in a budget message came from, in words.
+  describeWindow() {
+    const window = this.contextWindow();
+    if (window.source === 'detected') {
+      return `the model's ${window.tokens}-token context window, as reported by the server (${window.from})`;
+    }
+    if (window.source === 'observed') {
+      return `a ${window.tokens}-token context window, the most the server was seen to keep`;
+    }
+    return `COMPANION_LOCAL_NUM_CTX=${window.tokens}`;
+  }
+
+  // Warnings raised during the last turn (the silent-truncation guard), for
+  // the caller to print once the reply is on screen. Emptied by the call.
+  takeWarnings() {
+    const warnings = this.pendingWarnings;
+    this.pendingWarnings = [];
+    return warnings;
   }
 
   // `problemContext` (see companion.js's captureProblemContext) is supplied
@@ -608,6 +655,7 @@ class LocalBackend {
   // `compactText` what this turn becomes once it is older and its code is
   // pinned instead (see context-budget.js's buildMessages).
   async sendMessage(text, { onChunk, problemContext, heldCode, compactText } = {}) {
+    await this.ready;
     // Pin the description the first time we see one for whichever problem
     // is now current - ignored on every later turn for the same problem,
     // which is exactly what keeps it from being resent every turn (see
@@ -624,46 +672,65 @@ class LocalBackend {
       ...(typeof compactText === 'string' && compactText !== text ? { compactContent: compactText } : {}),
     });
 
-    const outgoingMessages = this.buildMessages();
-
-    // Pre-flight size check - refuse to send a request estimated to exceed
-    // this model's real context window before it ever reaches the network,
-    // rather than letting it through and risking Ollama's native /api/chat
-    // silently discarding part of the prompt and generating a confident-
-    // looking review of the wrong code with no visible sign anything went
-    // wrong (see this class's own header comment and companion/AGENTS.md
-    // for the live-confirmed failure this closes - none of
-    // resolveReplyText's finishReason-based guards catch it, since that
-    // failure's own done_reason is "stop", identical to a genuine success).
-    // Checked once, here, ahead of either API style - requestOpenAI/
-    // requestNative below just send whatever this already built and
-    // cleared, they don't build the request themselves any more.
-    const estimatedTokens = estimateMessagesTokens(outgoingMessages);
-    const budget = this.numCtx - LOCAL_RESERVE_TOKENS;
-    if (estimatedTokens > budget) {
+    // Pre-flight fit: drop the oldest whole exchanges until the request is
+    // within budget, rather than ever sending one estimated to exceed the
+    // model's real window (a server may silently discard part of an
+    // over-long prompt and review the wrong code with an ordinary "stop",
+    // which no finishReason guard can see). Done on every request, so a
+    // conversation that grew past the budget (long replies, or a window
+    // that turned out smaller) frees itself on the very next message.
+    // Refused only when the parts that can never be dropped (system prompt,
+    // problem statement, code, this message) are over the budget alone.
+    const budget = this.promptBudget();
+    const fit = fitToBudget({
+      history: this.history,
+      pinnedProblemContext: this.pinnedProblemContext,
+      pinnedCode: this.pinnedCode,
+      budget,
+    });
+    if (!fit.fits) {
       this.history.pop();
+      const { systemPrompt, problem, code, message } = fit.parts;
       throw new Error(
-        `this request is estimated at ~${estimatedTokens} prompt tokens, over the ${budget}-token budget ` +
-          `(COMPANION_LOCAL_NUM_CTX=${this.numCtx} minus a ${LOCAL_RESERVE_TOKENS}-token reserve for the ` +
-          `model's own thinking/answer) - refusing to send it rather than risk the local model silently ` +
-          `discarding part of the prompt and reviewing the wrong code with no visible sign anything went ` +
-          `wrong; ${contextAdviceFor(this.apiStyle, this.numCtx)}`
+        `this request is estimated at ~${fit.estimatedTokens} prompt tokens, over the ${budget}-token budget ` +
+          `(${this.describeWindow()} minus a ${this.reserveTokens}-token reserve for the model's own ` +
+          `thinking/answer) even with every earlier exchange left out: the system prompt is ~${systemPrompt} ` +
+          `tokens, the problem statement ~${problem}, the code ~${code} and this message ~${message} - ` +
+          `refusing to send it rather than risk the local model silently discarding part of the prompt and ` +
+          `reviewing the wrong code with no visible sign anything went wrong; ` +
+          `${contextAdviceFor(this.apiStyle, this.numCtx)}`
       );
     }
+    this.history = fit.history.slice();
 
-    // resolveReplyText (called by both request paths, directly or via their
-    // own stream readers) can throw - e.g. the cut-off-mid-thought case - so
-    // every failure path here pops the dangling user turn before propagating,
-    // rather than leaving history with a user message that was never
-    // actually answered.
-    let replyText;
+    // Every failure path below pops the dangling user turn before
+    // propagating, rather than leaving history with a user message that was
+    // never actually answered.
+    let raw;
     try {
-      replyText =
+      raw =
         this.apiStyle === 'native'
-          ? await this.requestNative(onChunk, outgoingMessages)
-          : await this.requestOpenAI(onChunk, outgoingMessages);
+          ? await this.requestNative(onChunk, fit.messages)
+          : await this.requestOpenAI(onChunk, fit.messages);
     } catch (err) {
       this.history.pop();
+      throw err;
+    }
+    this.checkPromptTokens(fit.estimatedTokens, raw.promptTokens);
+
+    let replyText;
+    try {
+      replyText = resolveReplyText({
+        content: raw.content,
+        reasoning: raw.reasoning,
+        finishReason: raw.finishReason,
+        advice: contextAdviceFor(this.apiStyle, this.numCtx),
+      });
+    } catch (err) {
+      this.history.pop();
+      // Cut off for room: the same request would only be cut off again, so
+      // the oldest exchange goes too, giving the next message more room.
+      if (err.cutOff) this.dropOldestPair();
       throw err;
     }
 
@@ -679,17 +746,31 @@ class LocalBackend {
     return replyText;
   }
 
-  // Builds the actual outgoing messages array for a request - the leading
-  // system prompt, the pinned problem description and code right after it,
-  // then the rest of history, older turns that carried the full code in
-  // their compact form. The real logic lives in context-
-  // budget.js's buildMessages (pure, unit-tested directly); this is a thin
-  // wrapper passing this instance's own fields through. Recomputed fresh on
-  // every request rather than mutating this.history itself, so
-  // trimHistory's own pair-splicing (which assumes this.history is exactly
-  // [system, user, assistant, ...]) and the pinned description's own
-  // independence from history trimming both stay simple and correct -
-  // this.history remains the true, full record throughout.
+  // The silent-truncation guard. `reported` is the prompt size the server
+  // says it processed (null if it did not say). Far below what was sent
+  // means the server's real window is smaller than budgeted for and it
+  // dropped the start of the prompt: warn once per session, and budget for
+  // the window it really kept from now on, so the next request is trimmed to
+  // fit (the window only ever goes down this way).
+  checkPromptTokens(estimated, reported) {
+    if (!Number.isFinite(reported) || reported <= 0) return;
+    if (reported >= estimated * TRUNCATION_RATIO || estimated - reported < TRUNCATION_MIN_GAP) return;
+    const before = this.contextWindow().tokens;
+    if (!this.observedWindow || reported < this.observedWindow) this.observedWindow = reported;
+    if (this.truncationWarned) return;
+    this.truncationWarned = true;
+    this.pendingWarnings.push(
+      `the local server processed only ~${reported} of the ~${estimated} prompt tokens sent, so it silently ` +
+        `dropped part of the conversation (its context window is smaller than the ${before} tokens budgeted ` +
+        `for, and that reply may have missed the problem or code); budgeting for a ${this.contextWindow().tokens}-token ` +
+        `window from now on so later messages fit. Set a bigger context window in the server, or ` +
+        `COMPANION_LOCAL_NUM_CTX to what it really has.`
+    );
+  }
+
+  // Builds the actual outgoing messages array for a request (context-
+  // budget.js's buildMessages, pure and unit-tested directly; this is a thin
+  // wrapper passing this instance's own fields through).
   buildMessages() {
     return buildLocalMessages({
       history: this.history,
@@ -699,20 +780,43 @@ class LocalBackend {
   }
 
   // Standard OpenAI-compatible /v1/chat/completions request/response shape -
-  // portable to any server that speaks it, including but not limited to
-  // Ollama. Unchanged from before native-mode support existed.
+  // portable to any server that speaks it. Resolves to the raw reply parts
+  // `{ content, reasoning, finishReason, promptTokens }`; sendMessage turns
+  // them into the reply (resolveReplyText) after the truncation guard.
   async requestOpenAI(onChunk, messages) {
-    let response;
-    try {
-      response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const stream = Boolean(onChunk);
+    const send = (withUsage) =>
+      fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
-        body: JSON.stringify({ model: this.model, messages, stream: Boolean(onChunk) }),
+        body: JSON.stringify({
+          model: this.model,
+          messages,
+          stream,
+          // Without this a streamed reply carries no usage at all, and the
+          // truncation guard has nothing to check.
+          ...(stream && withUsage ? { stream_options: { include_usage: true } } : {}),
+        }),
       });
+    let response;
+    try {
+      response = await send(this.streamUsage);
+      if (!response.ok && stream && this.streamUsage && (response.status === 400 || response.status === 422)) {
+        // A strict server that does not know `stream_options`: retry once
+        // without it, and leave it off from now on.
+        const bodyText = await response.text().catch(() => '');
+        if (/stream_options/i.test(bodyText)) {
+          this.streamUsage = false;
+          response = await send(false);
+        } else {
+          throw new Error(`local backend request failed: ${response.status} ${response.statusText} ${bodyText}`);
+        }
+      }
     } catch (err) {
+      if (err.message.startsWith('local backend request failed')) throw err;
       throw new Error(`could not reach ${this.baseUrl} (${err.message})`);
     }
 
@@ -724,31 +828,25 @@ class LocalBackend {
     // Some locally-hosted "thinking" models (e.g. Ollama's gemma-family
     // thinking variants) put their whole answer in a separate `reasoning`
     // field and leave `content` empty, especially on the longer responses a
-    // Submit's full breakdown asks for - a plain `content ?? ''` here would
-    // silently hand sendAndPrint an empty string, which prints nothing but
-    // the capture's label, looking exactly like "the reply never arrived"
-    // even though the backend technically succeeded. Fall back to
-    // `reasoning` before giving up - in both the streamed and non-streamed
-    // shapes below, via resolveReplyText.
-    if (onChunk) return this.streamReply(response, onChunk);
+    // Submit's full breakdown asks for; resolveReplyText falls back to it.
+    if (stream) return this.streamReply(response, onChunk);
     const data = await response.json();
     const choice = data?.choices?.[0];
-    return resolveReplyText({
+    return {
       content: choice?.message?.content,
       reasoning: choice?.message?.reasoning,
       finishReason: choice?.finish_reason,
-      advice: contextAdviceFor('openai', this.numCtx),
-    });
+      promptTokens: Number(data?.usage?.prompt_tokens),
+    };
   }
 
   // Ollama's native /api/chat - same messages shape in, but a different
   // response shape out: a single JSON object (non-streaming) or newline-
   // delimited JSON objects (streaming), `message: { content, thinking }`
-  // instead of `choices[0].message`, and `done_reason` at the top level
-  // instead of `finish_reason` per-choice. The only reason to use this over
-  // requestOpenAI is `options.num_ctx`, below - confirmed live this is
-  // honored here and nowhere on the compat endpoint. Response shapes
-  // confirmed live against a real Ollama server (gemma4:26b).
+  // instead of `choices[0].message`, and `done_reason`/`prompt_eval_count`
+  // at the top level. The only reason to use this over requestOpenAI is
+  // `options.num_ctx`, below - confirmed live this is honored here and
+  // nowhere on the compat endpoint.
   async requestNative(onChunk, messages) {
     let response;
     try {
@@ -776,37 +874,35 @@ class LocalBackend {
 
     if (onChunk) return this.streamReplyNative(response, onChunk);
     const data = await response.json();
-    return resolveReplyText({
+    return {
       content: data?.message?.content,
       reasoning: data?.message?.thinking,
-      finishReason: data?.done_reason === 'length' ? 'length' : data?.done_reason,
-      advice: contextAdviceFor('native', this.numCtx),
-    });
+      finishReason: data?.done_reason,
+      promptTokens: Number(data?.prompt_eval_count),
+    };
   }
 
   // Drops the oldest complete user+assistant pairs once history holds more
-  // than maxHistoryTurns of them, so LocalBackend.history - resent in full on
-  // every turn (see the class comment above sendMessage) - stays bounded
-  // across a long single-problem conversation instead of growing without
-  // limit turn over turn, which is what actually exhausts a small local
-  // model's context window (see resolveReplyText's own comment for the live-
-  // confirmed failure this causes). This is deliberately a *different* bound
-  // than COMPANION_AUTO_CLEAR_CONTEXT's full reset on a problem switch (see
-  // companion.js's "automatic context reset on problem switch" section): that
-  // one clears everything the instant the problem changes, this one caps how
-  // much of one still-current problem's own back-and-forth stays resent.
+  // than maxHistoryTurns of them. The token budget is enforced separately,
+  // before every request (see sendMessage); this is only a cap on the count.
   //
   // Only ever called right after sendMessage pushes a successful assistant
-  // reply (never mid-turn, and never on an error path - every error path
-  // above pops the dangling user message first instead), so this.history is
-  // always exactly [system, user, assistant, user, assistant, ...] when it
-  // runs - splicing out the oldest pair (indices 1 and 2, right after the
-  // system message) can never cut a turn in half or separate a capture's own
-  // code from its own reply, since a "pair" here is always a whole exchange.
+  // reply, so this.history is always exactly [system, user, assistant, ...]
+  // when it runs - splicing out the oldest pair (indices 1 and 2, right
+  // after the system message) can never cut a turn in half.
   trimHistory() {
-    if (!this.maxHistoryTurns || this.maxHistoryTurns <= 0) return; // 0/unset: unbounded, trimming off
+    if (!this.maxHistoryTurns || this.maxHistoryTurns <= 0) return; // 0/unset: no count cap
     const keepMessages = 1 + this.maxHistoryTurns * 2; // system + N whole pairs
     while (this.history.length > keepMessages) {
+      this.history.splice(1, 2);
+    }
+  }
+
+  // Drops the single oldest whole exchange, if there is one. Called on an
+  // error path after the dangling user turn is already gone, so history is
+  // [system, user, assistant, ...] here too.
+  dropOldestPair() {
+    if (this.history.length >= 3 && this.history[1].role === 'user' && this.history[2].role === 'assistant') {
       this.history.splice(1, 2);
     }
   }
@@ -815,9 +911,8 @@ class LocalBackend {
   // {...}` event per chunk, terminated by `data: [DONE]`), calling onChunk
   // for each piece of visible `delta.content` as it arrives. `delta.reasoning`
   // is accumulated the same way but never handed to onChunk - a "thinking"
-  // model's internal trace isn't what streaming is meant to surface live; it
-  // only matters as the same empty-content fallback used by the
-  // non-streaming path above, via resolveReplyText.
+  // model's internal trace isn't what streaming is meant to surface live.
+  // `usage` arrives on its own final event when `stream_options` asked for it.
   async streamReply(response, onChunk) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -825,6 +920,7 @@ class LocalBackend {
     let content = '';
     let reasoning = '';
     let finishReason = null;
+    let promptTokens = null;
     for (;;) {
       // eslint-disable-next-line no-await-in-loop
       const { done, value } = await reader.read();
@@ -843,6 +939,9 @@ class LocalBackend {
         } catch {
           continue; // a malformed/partial SSE line - ignore rather than crash the stream
         }
+        if (event?.usage && Number.isFinite(Number(event.usage.prompt_tokens))) {
+          promptTokens = Number(event.usage.prompt_tokens);
+        }
         const choice = event?.choices?.[0];
         const delta = choice?.delta;
         if (delta?.content) {
@@ -853,16 +952,15 @@ class LocalBackend {
         if (choice?.finish_reason) finishReason = choice.finish_reason;
       }
     }
-    return resolveReplyText({ content, reasoning, finishReason, advice: contextAdviceFor('openai', this.numCtx) });
+    return { content, reasoning, finishReason, promptTokens };
   }
 
   // Reads Ollama's native /api/chat streaming shape: newline-delimited JSON
   // objects (no `data:`/SSE framing, no `[DONE]` sentinel), each carrying an
   // incremental `message.content` and/or `message.thinking`, with the final
-  // object marked `done: true` and carrying `done_reason` - confirmed live
-  // against a real Ollama server. Mirrors streamReply's onChunk/reasoning
-  // handling exactly: `thinking` deltas accumulate the same way `reasoning`
-  // deltas do above, but are never handed to onChunk.
+  // object marked `done: true` and carrying `done_reason` and
+  // `prompt_eval_count` - confirmed live against a real Ollama server.
+  // `thinking` deltas accumulate like `reasoning` above, never to onChunk.
   async streamReplyNative(response, onChunk) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -870,6 +968,7 @@ class LocalBackend {
     let content = '';
     let reasoning = '';
     let doneReason = null;
+    let promptTokens = null;
     for (;;) {
       // eslint-disable-next-line no-await-in-loop
       const { done, value } = await reader.read();
@@ -892,22 +991,20 @@ class LocalBackend {
           onChunk(delta.content);
         }
         if (delta?.thinking) reasoning += delta.thinking;
-        if (event?.done) doneReason = event.done_reason || 'stop';
+        if (event?.done) {
+          doneReason = event.done_reason || 'stop';
+          if (Number.isFinite(Number(event.prompt_eval_count))) promptTokens = Number(event.prompt_eval_count);
+        }
       }
     }
-    return resolveReplyText({
-      content,
-      reasoning,
-      finishReason: doneReason === 'length' ? 'length' : doneReason,
-      advice: contextAdviceFor('native', this.numCtx),
-    });
+    return { content, reasoning, finishReason: doneReason, promptTokens };
   }
 
   // Truncates history back to just the leading system message, so the next
   // sendMessage resends none of the prior conversation - and drops the
   // pinned problem description too, so a genuinely new problem's own
-  // description gets pinned fresh on its first capture rather than
-  // continuing to reconstruct the old problem's into every request.
+  // description gets pinned fresh on its first capture. What was learned
+  // about the server (its window) is kept: it is the same server.
   resetContext() {
     this.history = [this.systemMessage];
     this.pinnedProblemContext = null;
@@ -1612,7 +1709,19 @@ function queueTurn(task) {
 // before it ever reaches the terminal. That stripping can only happen once
 // the reply is complete, so a turn with onReply set never streams - see the
 // non-streaming branch below.
-async function sendAndPrintTurn(label, text, { onReply, problemContext, heldCode, compactText, panelMeta } = {}) {
+async function sendAndPrintTurn(label, text, options = {}) {
+  try {
+    return await sendAndPrintTurnBody(label, text, options);
+  } finally {
+    // A backend's own warnings from this turn (LocalBackend's silent-
+    // truncation guard), printed below the reply or error they are about.
+    for (const warning of backend.takeWarnings?.() || []) {
+      printAboveInput(dim(`companion: warning: ${warning}`));
+    }
+  }
+}
+
+async function sendAndPrintTurnBody(label, text, { onReply, problemContext, heldCode, compactText, panelMeta } = {}) {
   // Mirrors this turn to the in-page panel (see "in-page panel bridge"
   // above): a start marker, each streamed chunk, then one end event carrying
   // the authoritative full text (or the error), so a panel that connects

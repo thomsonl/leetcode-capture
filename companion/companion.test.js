@@ -43,6 +43,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function startStubBackend(replyFor) {
   let callCount = 0;
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -305,6 +307,8 @@ test('a markdown reply stays as raw, unrendered text with no ANSI codes over a p
 // chunks appearing at the same moment instead of ~1.5s apart.
 test('a streamed reply reaches the terminal incrementally, not only once the whole backend call resolves', async () => {
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -394,6 +398,8 @@ test('a vault-auto-summary Submit turn never streams and the JSON block never re
     '{"problemRating":5,"topicProficiency":null,"summary":"solved cleanly","struggle":"none"}';
 
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -488,6 +494,8 @@ test('a vault-auto-summary Submit turn never streams and the JSON block never re
 function startTrackingStubBackend() {
   const requests = [];
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -672,6 +680,8 @@ test('a problem switch is still detected via the problemTitle fallback when prob
 function startExhaustionStubBackend({ thresholdChars }) {
   const requests = [];
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -883,6 +893,8 @@ test('trimmed history never leaves a dangling half-turn', async () => {
 function startDualApiStubBackend({ compatThresholdChars, nativeThresholdChars }) {
   const requestsByRoute = { compat: [], native: [] };
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -1016,8 +1028,8 @@ async function runSingleCaptureScenario({ capturePort, compatThresholdChars, nat
   }
 }
 
-// The repro: COMPANION_BASE_URL is a stub port (not Ollama's own default
-// address), so COMPANION_LOCAL_API's "auto" default resolves to 'openai' -
+// The repro: the stub does not answer the Ollama probe (GET /api/version),
+// so COMPANION_LOCAL_API's "auto" default resolves to 'openai' -
 // matching any plain OpenAI-compatible server (the pre-fix behavior for
 // every local-backend user, Ollama included, before native-mode support
 // existed). A single, realistic-sized Submit capture with NO prior history
@@ -1039,10 +1051,9 @@ test('a single oversized capture with no prior history exhausts context on the v
   assert.equal(requestsByRoute.native.length, 0, 'auto mode should not have touched the native route here');
 });
 
-// The fix: same single capture, same COMPANION_BASE_URL (still not Ollama's
-// own default address, so this forces native mode explicitly rather than
-// relying on the auto-detection default - see companion.js's LOCAL_API
-// comment for why the default heuristic can't apply to a stub server).
+// The fix: same single capture, same COMPANION_BASE_URL (this stub does not
+// answer the Ollama probe, so native mode is forced explicitly here;
+// context-window.test.js covers auto mode finding an Ollama by probing).
 // nativeThresholdChars is set above this capture's size (simulating the
 // real, larger num_ctx headroom Ollama's native API actually provides),
 // while compatThresholdChars stays just as tiny as the repro above - proving
@@ -1062,10 +1073,9 @@ test('COMPANION_LOCAL_API=native avoids the single-capture overflow via a real b
   assert.equal(requestsByRoute.compat.length, 0, 'native mode should never touch the compat route');
 });
 
-// A stray /api/tags-style probe or any other route this stub doesn't know
-// about isn't part of this feature (see companion.js's LOCAL_API comment:
-// the API style is decided once up front from config, never auto-probed at
-// request time), but this pins down that requestsByRoute stays keyed
+// The companion's startup probes (local-server.js) get a 404 from this stub,
+// so auto mode stays on the compat route here; this pins down that
+// requestsByRoute stays keyed
 // correctly by exact route even though both routes share one server/port -
 // a regression here would silently misattribute requests between the two
 // tests above.
@@ -1189,6 +1199,8 @@ async function runSameProblemManyTurns({ turnCount, capturePort, env = {} }) {
 test('a capture sized to exceed the estimated token budget is refused with a visible error, never sent', async () => {
   const requests = [];
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -1448,6 +1460,8 @@ test('a live terminal resize mid-stream does not corrupt the turn and the box re
   const longReply =
     'This is a long paragraph meant to exercise prose wrapping so a resize landing mid-stream has real in-progress content to interact with rather than an empty turn.';
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {

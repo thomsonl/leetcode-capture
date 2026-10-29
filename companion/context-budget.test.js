@@ -17,6 +17,8 @@ import {
   formatDiffSummary,
   formatDiffBody,
   buildMessages,
+  fitToBudget,
+  resolveContextWindow,
 } from './context-budget.js';
 
 test('estimateTokens divides length by the calibrated chars-per-token constant, rounding up', () => {
@@ -185,4 +187,64 @@ test('buildMessages never mutates the history array it was given', () => {
   const before = JSON.parse(JSON.stringify(history));
   buildMessages({ history, pinnedProblemContext: null, pinnedCode: PINNED });
   assert.deepEqual(history, before);
+});
+
+// --- fitToBudget / resolveContextWindow ------------------------------------
+
+const SYSTEM = { role: 'system', content: 'S'.repeat(390) }; // 100 estimated tokens
+const pair = (n, chars) => [
+  { role: 'user', content: `question ${n}` },
+  { role: 'assistant', content: `answer ${n} ${'x'.repeat(chars)}` },
+];
+
+test('fitToBudget keeps everything when the request already fits', () => {
+  const history = [SYSTEM, ...pair(1, 100), { role: 'user', content: 'now' }];
+  const fit = fitToBudget({ history, budget: 10000 });
+  assert.equal(fit.fits, true);
+  assert.equal(fit.droppedPairs, 0);
+  assert.deepEqual(fit.history, history);
+  assert.equal(fit.estimatedTokens, estimateMessagesTokens(fit.messages));
+});
+
+test('fitToBudget drops the oldest whole exchanges first, keeping the pins and the current message', () => {
+  const history = [SYSTEM, ...pair(1, 1950), ...pair(2, 1950), ...pair(3, 1950), { role: 'user', content: 'now' }];
+  const pinnedProblemContext = { problemId: 'p', title: 'T', slug: 't', description: 'D'.repeat(390) };
+  const pinnedCode = { text: 'C'.repeat(390) };
+  // Pins and system about 310 tokens, each exchange about 505: room for one.
+  const fit = fitToBudget({ history, pinnedProblemContext, pinnedCode, budget: 900 });
+  assert.equal(fit.fits, true);
+  assert.equal(fit.droppedPairs, 2);
+  assert.deepEqual(
+    fit.history.map((m) => m.content.slice(0, 10)),
+    [SYSTEM.content.slice(0, 10), 'question 3', 'answer 3 x', 'now']
+  );
+  assert.ok(fit.messages.some((m) => m.content === pinnedProblemContext.description || m.content.includes('DDDD')));
+  assert.ok(fit.messages.some((m) => m.content === pinnedCode.text));
+  assert.ok(fit.estimatedTokens <= 900);
+  assert.equal(history.length, 8, 'the input is not mutated');
+});
+
+test('fitToBudget refuses only when the pins plus the current message are over, and says how big each is', () => {
+  const history = [SYSTEM, ...pair(1, 100), { role: 'user', content: 'M'.repeat(3900) }];
+  const fit = fitToBudget({ history, pinnedCode: { text: 'C'.repeat(780) }, budget: 500 });
+  assert.equal(fit.fits, false);
+  assert.equal(fit.droppedPairs, 1, 'every droppable exchange was tried first');
+  assert.deepEqual(fit.parts, { systemPrompt: 100, problem: 0, code: 200, message: 1000 });
+});
+
+test('resolveContextWindow takes the smallest known window and names its source', () => {
+  assert.deepEqual(resolveContextWindow({ configured: 8192 }), { tokens: 8192, source: 'configured' });
+  assert.deepEqual(resolveContextWindow({ configured: 8192, detected: { tokens: 32768, source: 'x' } }), {
+    tokens: 8192,
+    source: 'configured',
+  });
+  assert.deepEqual(resolveContextWindow({ configured: 8192, detected: { tokens: 4096, source: 'llama.cpp /props' } }), {
+    tokens: 4096,
+    source: 'detected',
+    from: 'llama.cpp /props',
+  });
+  assert.deepEqual(
+    resolveContextWindow({ configured: 8192, detected: { tokens: 4096, source: 'x' }, observed: 3000 }),
+    { tokens: 3000, source: 'observed' }
+  );
 });

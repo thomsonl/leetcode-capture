@@ -190,3 +190,56 @@ export function buildMessages({ history, pinnedProblemContext, pinnedCode = null
   }
   return messages;
 }
+
+// The context window LocalBackend budgets against: the smallest of what is
+// configured (COMPANION_LOCAL_NUM_CTX, or a settings field later), what the
+// server reported when probed (local-server.js), and what a reply showed
+// the server really kept (LocalBackend's silent-truncation guard). Any of
+// the last two may be missing. Returns the window and where it came from,
+// so messages can say which one is in charge. The one place the window is
+// decided, so a new source (a settings field) only needs a new argument.
+export function resolveContextWindow({ configured, detected = null, observed = null }) {
+  let best = { tokens: configured, source: 'configured' };
+  if (detected && detected.tokens > 0 && detected.tokens < best.tokens) {
+    best = { tokens: detected.tokens, source: 'detected', from: detected.source };
+  }
+  if (observed && observed > 0 && observed < best.tokens) best = { tokens: observed, source: 'observed' };
+  return best;
+}
+
+// Fits one request to the prompt budget: `history` is
+// [system, user, assistant, ..., user] with the current message last. While
+// the request is over budget, the oldest whole user+assistant exchange is
+// dropped (never half of one, never the pinned statement or code, never the
+// current message). Returns the history to keep, the messages to send and
+// their estimate, how many exchanges went, and whether it fits. When even
+// the pinned parts plus the current message are over, `parts` gives each
+// one's estimate so the refusal can say what is too big. Pure: `history`
+// is never mutated.
+export function fitToBudget({ history, pinnedProblemContext = null, pinnedCode = null, budget }) {
+  let kept = history;
+  let droppedPairs = 0;
+  let messages = buildMessages({ history: kept, pinnedProblemContext, pinnedCode });
+  let estimatedTokens = estimateMessagesTokens(messages);
+  // kept is [system, (user, assistant)*, current]: an exchange is left to
+  // drop while there are at least four entries.
+  while (estimatedTokens > budget && kept.length >= 4 && kept[1].role === 'user' && kept[2].role === 'assistant') {
+    kept = [kept[0], ...kept.slice(3)];
+    droppedPairs += 1;
+    messages = buildMessages({ history: kept, pinnedProblemContext, pinnedCode });
+    estimatedTokens = estimateMessagesTokens(messages);
+  }
+  const fits = estimatedTokens <= budget;
+  const result = { history: kept, messages, estimatedTokens, droppedPairs, fits };
+  if (!fits) {
+    const current = kept[kept.length - 1];
+    const problemTokens = pinnedProblemContext?.description ? estimateTokens(messages[1].content) : 0;
+    result.parts = {
+      systemPrompt: estimateTokens(kept[0].content),
+      problem: problemTokens,
+      code: pinnedCode && typeof pinnedCode.text === 'string' ? estimateTokens(pinnedCode.text) : 0,
+      message: estimateTokens(current.content),
+    };
+  }
+  return result;
+}

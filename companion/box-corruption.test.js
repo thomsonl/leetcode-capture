@@ -77,6 +77,8 @@ test('replayToScreen: a stale extra moveCursor-up before clearScreenDown erases 
 
 function startStubBackend(replyText) {
   const server = http.createServer((req, res) => {
+    // Only chat requests are the model's: the companion's startup probes of the server (local-server.js) get a 404, like a real server that lacks the route.
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
