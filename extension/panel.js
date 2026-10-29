@@ -231,6 +231,9 @@
           trigger: event.trigger,
           attemptSeq: event.attemptSeq,
           title: event.problemTitle || null,
+          // A quiet note on the chip: a Run is kept for the next message,
+          // not sent to the tutor.
+          note: typeof event.note === "string" && event.note ? event.note : null,
         });
         return slug;
       case "notice":
@@ -711,6 +714,40 @@
     return match ? match[1] : null;
   }
 
+  // Asks content.js (a sibling content script in the same isolated world)
+  // for the live editor code over a request/response CustomEvent pair on
+  // `document`, the same JSON-string protocol content.js and inject.js use.
+  // Resolves to { code, language, problemTitle, problemDescription } or
+  // null when nothing answers in time or the editor could not be read; the
+  // message then goes without it and the companion uses the newest recorded
+  // Run or Submit instead. `target` is injectable for panel.test.js.
+  const SNAPSHOT_REQUEST = "leetcode-capture:snapshot-request";
+  const SNAPSHOT_RESPONSE = "leetcode-capture:snapshot-response";
+  function requestEditorSnapshot(target, timeoutMs = 1500) {
+    return new Promise((resolve) => {
+      const requestId = `${Date.now()}-${Math.random()}`;
+      const timer = setTimeout(() => {
+        target.removeEventListener(SNAPSHOT_RESPONSE, onResponse);
+        resolve(null);
+      }, timeoutMs);
+      function onResponse(event) {
+        let payload;
+        try {
+          payload = JSON.parse(event.detail);
+        } catch {
+          return;
+        }
+        if (!payload || payload.requestId !== requestId) return;
+        clearTimeout(timer);
+        target.removeEventListener(SNAPSHOT_RESPONSE, onResponse);
+        const snapshot = payload.snapshot;
+        resolve(snapshot && typeof snapshot.code === "string" ? snapshot : null);
+      }
+      target.addEventListener(SNAPSHOT_RESPONSE, onResponse);
+      target.dispatchEvent(new CustomEvent(SNAPSHOT_REQUEST, { detail: JSON.stringify({ requestId }) }));
+    });
+  }
+
   // Test-only hook (same pattern as content.js): `module` is undefined in a
   // real content script, so this is a no-op in the browser.
   if (typeof module !== "undefined" && module.exports) {
@@ -727,6 +764,7 @@
       parseBlocks,
       renderBlocks,
       problemSlugFromPath,
+      requestEditorSnapshot,
     };
     return;
   }
@@ -797,6 +835,7 @@
     .empty p { margin: 0; max-width: 300px; }
     .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
     .chip b { font-weight: 500; color: var(--fg); }
+    .chip-note::before { content: "\\00b7"; margin-right: 6px; }
     .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1194,6 +1233,7 @@
       const chip = el("div", "chip");
       chip.appendChild(el("b", "", item.trigger === "submit" ? "Submit" : "Run"));
       if (item.attemptSeq) chip.appendChild(document.createTextNode(`Attempt ${item.attemptSeq}`));
+      if (item.note) chip.appendChild(el("span", "chip-note", item.note));
       return chip;
     }
     if (item.kind === "notice") return el("div", "notice", item.text);
@@ -1523,10 +1563,13 @@
     p.send.disabled = true;
     p.hint.hidden = true;
     try {
+      // The live editor code goes with the message, so the companion can
+      // tell the tutor what changed since it last saw the code.
+      const snapshot = await requestEditorSnapshot(document);
       const res = await fetch(`${RELAY_BASE}/panel/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, problemSlug: slug }),
+        body: JSON.stringify(snapshot ? { text, problemSlug: slug, snapshot } : { text, problemSlug: slug }),
         cache: "no-store",
         // A send must never hang the composer: the browser queues a request
         // behind its per-host connection limit, so give up and say so.

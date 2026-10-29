@@ -205,6 +205,47 @@
     return getEditorCodeFromDom();
   }
 
+  // Answers panel.js's request for the live editor code at the moment the
+  // student sends a Tutor message (see requestEditorSnapshot there): the same
+  // reads a capture makes, over a request/response CustomEvent pair with a
+  // JSON-string detail. Only the Monaco model counts here, never the DOM
+  // scrape: a scrape can be cut to what is on screen, and the companion
+  // would then tell the tutor that the rest of the code was deleted. With no
+  // model read the answer is null, and the companion falls back to the
+  // newest recorded Run or Submit. `requestEvents`/`responseEvents` and
+  // `readModelCode` are injectable for content.test.js.
+  async function answerSnapshotRequest(event, responseEvents = document, readModelCode = defaultReadModelCode) {
+    let requestId = null;
+    try {
+      requestId = JSON.parse(event.detail).requestId;
+    } catch (err) {
+      return;
+    }
+    if (typeof requestId !== "string") return;
+    let snapshot = null;
+    try {
+      const result = await readModelCode();
+      if (result && typeof result.code === "string") {
+        snapshot = {
+          code: result.code,
+          language: getLanguage(),
+          problemTitle: getProblemTitle(),
+          problemDescription: getProblemDescription(),
+        };
+      }
+    } catch (err) {
+      snapshot = null;
+    }
+    responseEvents.dispatchEvent(
+      new CustomEvent("leetcode-capture:snapshot-response", { detail: JSON.stringify({ requestId, snapshot }) })
+    );
+  }
+
+  async function defaultReadModelCode() {
+    await injectPageScript();
+    return requestModelCode();
+  }
+
   // Guards against the same logical Run/Submit event producing two captures
   // via two different paths - e.g. the keyboard-shortcut listener below
   // calling sendCapture("submit") directly, *and* LeetCode's own native
@@ -436,12 +477,14 @@
       matchesRunShortcut,
       matchesSubmitShortcut,
       isDuplicateCapture,
+      answerSnapshotRequest,
     };
     return;
   }
 
   document.addEventListener("click", handleDelegatedClick, true);
   document.addEventListener("keydown", handleShortcutKeydown, true);
+  document.addEventListener("leetcode-capture:snapshot-request", (event) => answerSnapshotRequest(event));
 
   console.log("[leetcode-capture] content script active");
 })();

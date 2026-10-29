@@ -20,6 +20,7 @@ const {
   parseInline,
   parseBlocks,
   problemSlugFromPath,
+  requestEditorSnapshot,
 } = require("./panel.js");
 
 test("parseSseBlock reads data lines and ignores comments and junk", () => {
@@ -88,6 +89,13 @@ test("captures and notices become transcript items; status only updates the flag
     itemsFor(state, "a").map((i) => i.kind),
     ["capture", "notice"]
   );
+  assert.equal(itemsFor(state, "a")[0].note, null);
+});
+
+test("a Run chip keeps its quiet note", () => {
+  const state = createState();
+  applyEvent(state, { type: "capture", problemSlug: "a", trigger: "run", attemptSeq: 1, note: "Kept for your next message", seq: 1 });
+  assert.equal(itemsFor(state, "a")[0].note, "Kept for your next message");
 });
 
 test("a transcript is capped so a long session cannot grow without bound", () => {
@@ -423,4 +431,30 @@ test("losing the relay stream interrupts open replies; the status after a reconn
   streamLost(state);
   applyEvent(state, { type: "status", companionOnline: false, epoch: "e1", openTurns: ["none"] });
   assert.deepEqual([none.pending, none.interrupted], [false, true]);
+});
+
+test("requestEditorSnapshot gets content.js's answer for its own request only, and gives up after the timeout", async () => {
+  const events = new EventTarget();
+  events.addEventListener("leetcode-capture:snapshot-request", (event) => {
+    const { requestId } = JSON.parse(event.detail);
+    // A stale answer and junk first; neither may be taken for this request.
+    events.dispatchEvent(new CustomEvent("leetcode-capture:snapshot-response", { detail: JSON.stringify({ requestId: "old", snapshot: { code: "stale" } }) }));
+    events.dispatchEvent(new CustomEvent("leetcode-capture:snapshot-response", { detail: "{not json" }));
+    events.dispatchEvent(
+      new CustomEvent("leetcode-capture:snapshot-response", { detail: JSON.stringify({ requestId, snapshot: { code: "live", language: "Python3" } }) })
+    );
+  });
+  assert.deepEqual(await requestEditorSnapshot(events, 500), { code: "live", language: "Python3" });
+
+  const silent = new EventTarget();
+  const started = Date.now();
+  assert.equal(await requestEditorSnapshot(silent, 100), null);
+  assert.ok(Date.now() - started >= 90);
+
+  const empty = new EventTarget();
+  empty.addEventListener("leetcode-capture:snapshot-request", (event) => {
+    const { requestId } = JSON.parse(event.detail);
+    empty.dispatchEvent(new CustomEvent("leetcode-capture:snapshot-response", { detail: JSON.stringify({ requestId, snapshot: null }) }));
+  });
+  assert.equal(await requestEditorSnapshot(empty, 500), null);
 });

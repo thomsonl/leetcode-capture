@@ -7,7 +7,9 @@
 // selection and a code block's horizontal scroll survive streamed chunks and
 // events for other problems), the header row (dark and light), which native pane is
 // made inert, the relay-restart (epoch) flow over a reconnect, sending
-// (double Enter, the too-long hint), and some CSS metrics.
+// (double Enter, the too-long hint), the live editor code a send carries
+// (the real content.js and inject.js answering against a stand-in Monaco),
+// and some CSS metrics.
 //
 // Nothing here talks to the real relay: the fixture's fetch never reaches the
 // network, and as a second guard the injected copy of panel.js points at a
@@ -35,12 +37,22 @@ const panelSource = fs
   .readFileSync(process.env.PANEL_JS || path.join(here, '..', 'panel.js'), 'utf8')
   .replace('const RELAY_BASE = "http://localhost:8135";', 'const RELAY_BASE = "http://127.0.0.1:9";');
 if (!panelSource.includes('http://127.0.0.1:9')) throw new Error('could not repoint RELAY_BASE in the injected panel.js');
+// The real content script too (it answers the panel's request for the live
+// editor code, through the real inject.js), pointed at the same dead port.
+const contentSource = fs
+  .readFileSync(path.join(here, '..', 'content.js'), 'utf8')
+  .replace('const RELAY_URL = "http://localhost:8135/capture";', 'const RELAY_URL = "http://127.0.0.1:9/capture";');
+if (!contentSource.includes('http://127.0.0.1:9/capture')) throw new Error('could not repoint RELAY_URL in the injected content.js');
+const injectSource = fs.readFileSync(path.join(here, '..', 'inject.js'), 'utf8');
 
 // Serves the fixture at any /problems/<slug>/ path, on a random free port.
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/problems/')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(fixture);
+  } else if (req.url === '/ext/inject.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+    res.end(injectSource);
   } else {
     res.writeHead(404);
     res.end();
@@ -83,6 +95,18 @@ try {
     window.__ev = (obj) => window.__event({ seq: ++window.__seq, epoch: window.__epoch, ...obj });
     window.__epoch = 'e1';
   })()`);
+  // A stand-in for LeetCode's Monaco (the visible editor is #pane-code) and
+  // for chrome.runtime.getURL, which content.js uses to inject inject.js.
+  await page.eval(`(() => {
+    window.__editorCode = 'class Solution:\\n    def twoSum(self, nums, target):\\n        return []\\n';
+    window.__noEditor = false;
+    window.monaco = { editor: { getEditors: () => window.__noEditor ? [] : [{
+      getDomNode: () => document.getElementById('pane-code'),
+      getModel: () => ({ getValue: () => window.__editorCode, getLanguageId: () => 'python' }),
+    }] } };
+    window.chrome = { runtime: { getURL: (file) => '/ext/' + file } };
+  })()`);
+  await page.eval(`new Function(${JSON.stringify(contentSource)})()`);
   await page.eval(`new Function(${JSON.stringify(panelSource)})()`);
   await page.waitFor(`document.querySelector('[data-lc-tutor-tab]') && window.__streamOpen()`, { what: 'the Tutor tab and its event stream' });
   const settle = () => page.eval('window.__settle()');
@@ -355,6 +379,64 @@ try {
     check(after.posts === 1, `sent ${after.posts} times`);
     check(after.value === '' && after.body.problemSlug === 'two-sum', JSON.stringify(after));
     await page.eval('window.__postDelayMs = 0');
+  });
+
+  await scenario('a send carries the live editor code read through content.js and inject.js', async () => {
+    await page.eval(`(() => {
+      window.__posts.length = 0;
+      window.__editorCode = 'class Solution:\\n    def twoSum(self, nums, target):\\n        seen = {}  # edited, not run\\n';
+      const t = window.__q('textarea');
+      t.value = 'is this better?';
+      t.dispatchEvent(new Event('input', { bubbles: true }));
+      t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    })()`);
+    await page.waitFor(`window.__posts.length === 1`, { what: 'the message POST' });
+    const body = await page.eval('window.__posts[0]');
+    check(body.text === 'is this better?' && body.problemSlug === 'two-sum', JSON.stringify(body));
+    check(body.snapshot && body.snapshot.code === await page.eval('window.__editorCode'), `snapshot code: ${JSON.stringify(body.snapshot)}`);
+    check(body.snapshot.language === 'Python3', `language: ${body.snapshot.language}`);
+    check(body.snapshot.problemTitle === 'Fixture problem page', `title: ${body.snapshot.problemTitle}`);
+    check(/^Given an array of integers/.test(body.snapshot.problemDescription || ''), `statement: ${body.snapshot.problemDescription}`);
+    check(!!(await page.eval(`document.getElementById('leetcode-capture-inject')`)), 'inject.js was not injected');
+  });
+
+  await scenario('with no editor to read, the message goes without a snapshot', async () => {
+    await page.eval(`(() => {
+      window.__posts.length = 0;
+      window.__noEditor = true;
+      const t = window.__q('textarea');
+      t.value = 'no editor here';
+      t.dispatchEvent(new Event('input', { bubbles: true }));
+      t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    })()`);
+    await page.waitFor(`window.__posts.length === 1`, { what: 'the message POST' });
+    const body = await page.eval('window.__posts[0]');
+    check(body.text === 'no editor here' && !('snapshot' in body), JSON.stringify(body));
+    await page.eval('window.__noEditor = false');
+  });
+
+  await scenario('a Run chip shows its quiet note in the muted chip color', async () => {
+    await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'run', attemptSeq: 7, note: 'Kept for your next message' })`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const chip = window.__qa('.chip').pop();
+      const note = chip.querySelector('.chip-note');
+      return {
+        text: chip.textContent,
+        note: note && note.textContent,
+        noteColor: note && getComputedStyle(note).color,
+        chipColor: getComputedStyle(chip).color,
+        dot: note && getComputedStyle(note, '::before').content,
+        height: chip.getBoundingClientRect().height,
+      };
+    })()`);
+    check(m.note === 'Kept for your next message', JSON.stringify(m));
+    check(m.noteColor === m.chipColor, `note color ${m.noteColor} vs chip ${m.chipColor}`);
+    check(m.dot === '"\u00b7"' || m.dot === '"·"', `separator: ${m.dot}`);
+    check(m.height === 24, `the chip stays one line: ${m.height}`);
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await settle();
+    await page.screenshot(path.join(SHOTS, '04-run-chip.png'), { width: 1100, height: 760 });
   });
 
   await scenario('a 413 says the message is too long, and typing clears the hint', async () => {

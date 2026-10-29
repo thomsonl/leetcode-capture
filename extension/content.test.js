@@ -27,6 +27,7 @@ const {
   matchesRunShortcut,
   matchesSubmitShortcut,
   isDuplicateCapture,
+  answerSnapshotRequest,
 } = require(path.join(__dirname, 'content.js'));
 
 // Minimal EventTarget-like mock so requestModelCode's CustomEvent
@@ -309,4 +310,62 @@ test("manifest's web_accessible_resources matches strictly cover (are broader th
         '- an identical pattern pair reproduces the live-verified Chrome load failure this test guards against'
     );
   }
+});
+
+// answerSnapshotRequest reads the page the same way a capture does, so these
+// tests give it a stand-in `document` with just what those reads touch.
+function withFakeDocument(fn) {
+  const previous = globalThis.document;
+  globalThis.document = {
+    title: 'Two Sum - LeetCode',
+    querySelectorAll: (selector) => (selector === 'button' ? [{ textContent: ' Python3 ' }] : []),
+    querySelector: (selector) =>
+      selector === '[data-track-load="description_content"]' ? { textContent: ' Given an array... ' } : null,
+  };
+  return Promise.resolve(fn()).finally(() => {
+    globalThis.document = previous;
+  });
+}
+
+function snapshotRequest(requestId) {
+  return new CustomEvent('leetcode-capture:snapshot-request', { detail: JSON.stringify({ requestId }) });
+}
+
+function nextSnapshotResponse(events) {
+  return new Promise((resolve) => {
+    events.addEventListener('leetcode-capture:snapshot-response', (event) => resolve(JSON.parse(event.detail)), { once: true });
+  });
+}
+
+test('answerSnapshotRequest answers with the Monaco model code and the page details', () =>
+  withFakeDocument(async () => {
+    const events = mockEventTarget();
+    const response = nextSnapshotResponse(events);
+    await answerSnapshotRequest(snapshotRequest('r1'), events, async () => ({ code: 'x = 1', language: 'python' }));
+    assert.deepEqual(await response, {
+      requestId: 'r1',
+      snapshot: { code: 'x = 1', language: 'Python3', problemTitle: 'Two Sum', problemDescription: 'Given an array...' },
+    });
+  }));
+
+test('answerSnapshotRequest answers null when the model cannot be read (never a truncated DOM scrape)', () =>
+  withFakeDocument(async () => {
+    const events = mockEventTarget();
+    const response = nextSnapshotResponse(events);
+    await answerSnapshotRequest(snapshotRequest('r2'), events, async () => null);
+    assert.deepEqual(await response, { requestId: 'r2', snapshot: null });
+    const failing = nextSnapshotResponse(events);
+    await answerSnapshotRequest(snapshotRequest('r3'), events, async () => {
+      throw new Error('inject.js blocked');
+    });
+    assert.deepEqual(await failing, { requestId: 'r3', snapshot: null });
+  }));
+
+test('answerSnapshotRequest ignores a request it cannot parse', async () => {
+  const events = mockEventTarget();
+  let answered = false;
+  events.addEventListener('leetcode-capture:snapshot-response', () => (answered = true));
+  await answerSnapshotRequest({ detail: 'not json' }, events, async () => ({ code: 'x' }));
+  await answerSnapshotRequest({ detail: JSON.stringify({}) }, events, async () => ({ code: 'x' }));
+  assert.equal(answered, false);
 });
