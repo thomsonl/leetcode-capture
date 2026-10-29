@@ -780,9 +780,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     `Sec-Fetch-Site` other than `none`, or a missing `X-LC-Companion: 1` header is refused. A missing Origin alone
     proves nothing (a page's `fetch(url, { mode: "no-cors" })` sends none); the custom header needs a preflight, which
     the relay refuses. This keeps web pages out, not other local processes. `relay-server/panel-broker.test.js` covers
-    each rule; the new settings routes must reuse the same helper.
+    each rule; the new settings routes must reuse the same helper. Every `/panel/` route also refuses a
+    `Sec-Fetch-Mode` other than `cors`: a page's no-cors fetch, `<img>` or `<iframe>` carries no Origin and, unreadable
+    as it is, used to hold one of the 20 panel-stream slots. Both real callers send `cors` (Node's fetch included).
   - Sequence numbers restart with the relay, so each event carries the relay run's random `epoch`. The panel compares
     it per event (a reconnect's replay arrives before its `status` event) and reconnects with `?after=N&epoch=X`.
+  - A companion that exits mid-reply sends no `turn-end`. When the last inbox stream closes (or a publish lands with
+    none open), the relay ends every open turn itself with `interrupted: true` and the text streamed so far
+    (`closeOpenTurns`), so no tab, including one opened later, shows a reply typing forever. The panel shows the same
+    note as for a relay restart, and also interrupts pending replies on `companionOnline: false` for an older relay.
   - The feed is patched in place, never rebuilt per event: one cached node per item (keyed by the item, refreshed when
     its `rev` changes) and, in a streaming reply, reuse of every block whose parsed form is unchanged. A rebuild wiped
     the student's selection and code-block scroll on every chunk. `extension/e2e/panel-render.e2e.mjs` checks this and
