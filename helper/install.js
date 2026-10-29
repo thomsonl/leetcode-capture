@@ -205,6 +205,11 @@ export function install({
       notes.push('Chrome, Chromium, Edge and Brave were not registered: pass --chrome-id <id> (the options page shows the command with it)');
     }
     if (registered.length === 0) notes.push('No browser was registered.');
+    if (path.resolve(root).split(path.sep).includes('_npx')) {
+      notes.push(
+        `The companion and relay run from npx's cache (${path.resolve(root)}). If that cache is cleared, run this install command again; for a lasting copy, run \`npm install -g leetcode-capture-helper\` and then \`leetcode-capture-helper install\`.`,
+      );
+    }
     // Uninstall must also be able to remove the receipt and the folders.
     receipt.dirs.push(...mkdirTracked(where.dataDir));
     fs.writeFileSync(where.receipt, `${JSON.stringify(receipt, null, 2)}\n`);

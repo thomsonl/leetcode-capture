@@ -132,6 +132,18 @@ test('linux: --browser registers even without the profile folder, and no id mean
   assert.deepEqual(tree(home), []);
 });
 
+test("a root inside npx's cache gets a note on how to keep it", (t) => {
+  const home = tempHome(t);
+  const root = path.join(home, '.npm', '_npx', 'abc123', 'node_modules', 'leetcode-capture-helper', 'runtime');
+  for (const rel of ['companion/companion.js', 'relay-server/server.js']) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), '');
+  }
+  const result = install({ platform: 'linux', home, env: {}, root, browsers: ['firefox'] });
+  assert.ok(result.notes.some((n) => n.includes("npx's cache") && n.includes('npm install -g')), result.notes.join('\n'));
+  assert.ok(!install({ platform: 'linux', home, env: {}, root: REPO, browsers: ['firefox'] }).notes.some((n) => n.includes('npx')));
+});
+
 test('the copied host runs from the data folder with the recorded root', async (t) => {
   const home = tempHome(t);
   install({ platform: 'linux', home, env: {}, root: REPO, browsers: ['firefox'] });

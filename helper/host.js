@@ -48,8 +48,9 @@ export const DEFAULTS = {
 };
 
 // Where the companion and relay live: LEETCODE_CAPTURE_ROOT, else the `root`
-// the installer recorded next to this file, else the folder above it (this
-// file inside a checkout of the repository).
+// the installer recorded next to this file, else the copy bundled in the npm
+// package (runtime/, built by scripts/pack.mjs), else the folder above this
+// file (a checkout of the repository).
 export function resolveRoot(env = process.env, here = HERE) {
   if (env.LEETCODE_CAPTURE_ROOT) return path.resolve(env.LEETCODE_CAPTURE_ROOT);
   try {
@@ -58,12 +59,33 @@ export function resolveRoot(env = process.env, here = HERE) {
   } catch {
     // no saved config
   }
+  const bundled = path.join(here, 'runtime');
+  if (isBundled(bundled)) return bundled;
   return path.resolve(here, '..');
+}
+
+// A bundled copy carries this marker (scripts/pack.mjs writes it).
+export function isBundled(root) {
+  return fs.existsSync(path.join(root, 'bundle.json'));
 }
 
 export function checkRoot(root) {
   const missing = ['companion/companion.js', 'relay-server/server.js'].filter((rel) => !fs.existsSync(path.join(root, rel)));
   return missing.length ? `the LeetCode Capture files are missing from ${root} (${missing.join(', ')})` : null;
+}
+
+// A bundled copy may sit in a read-only or throwaway place (a global npm
+// folder, npx's cache), and a new version is a new folder, so its capture log
+// and companion state go to the helper's own data folder instead. A variable
+// already set wins. A checkout keeps its usual places (relay-server/data/).
+export function dataEnv(root, dataDir, env = process.env) {
+  if (!isBundled(root)) return {};
+  const captures = path.join(dataDir, 'data', 'captures.jsonl');
+  return {
+    CAPTURE_LOG_PATH: env.CAPTURE_LOG_PATH || env.LEETCODE_CAPTURES_FILE || captures,
+    LEETCODE_CAPTURES_FILE: env.LEETCODE_CAPTURES_FILE || env.CAPTURE_LOG_PATH || captures,
+    LEETCODE_COMPANION_STATE_FILE: env.LEETCODE_COMPANION_STATE_FILE || path.join(dataDir, 'data', 'companion-state.json'),
+  };
 }
 
 const alive = (child) => Boolean(child) && child.exitCode === null && child.signalCode === null;
@@ -301,10 +323,19 @@ export function main() {
   } catch {
     // No log then; the children's output is dropped.
   }
+  const childEnv = { ...process.env, ...dataEnv(root, HERE) };
+  for (const file of [childEnv.CAPTURE_LOG_PATH, childEnv.LEETCODE_COMPANION_STATE_FILE]) {
+    try {
+      if (file) fs.mkdirSync(path.dirname(file), { recursive: true });
+    } catch {
+      // the relay reports a log it cannot write
+    }
+  }
   const host = createHost({
     input: process.stdin,
     output: process.stdout,
     root,
+    env: childEnv,
     logFd,
     rootError: checkRoot(root),
   });
