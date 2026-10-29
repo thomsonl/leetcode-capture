@@ -18,6 +18,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createPanelBridge, parseSseBlock } from './panel-bridge.js';
+import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from './context-summary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LEETCODE = 'https://leetcode.com';
@@ -906,4 +907,134 @@ test('end to end: a provider change saved from the options page takes over the n
     late.events.filter((e) => e.type === 'config').map((e) => e.model),
     ['model-b']
   );
+});
+
+// Condensing older exchanges (context-summary.js) is silent: its model call
+// is not streamed, so nothing of it reaches the panel feed, it adds no turn,
+// notice or status of its own, and a backend swap leaves the summary behind.
+test('end to end: the summary call never reaches the panel, and a swap clears the summary', async (t) => {
+  const SECRET = 'SECRET-SUMMARY-TEXT';
+  const makeModel = (name) => {
+    const turns = [];
+    const summaries = [];
+    const server = http.createServer((req, res) => {
+      if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        const parsed = JSON.parse(body);
+        if (parsed.messages[0].content === SUMMARIZER_SYSTEM) {
+          summaries.push(parsed);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: `${SECRET} from ${name}` }, finish_reason: 'stop' }] }));
+          return;
+        }
+        turns.push(parsed);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `${name} reply ${turns.length}` } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, turns, summaries, url: `http://127.0.0.1:${server.address().port}/v1` })));
+  };
+  const modelA = await makeModel('A');
+  const modelB = await makeModel('B');
+  const port = await freePort();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-summary-panel-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+  const settingsFile = path.join(scratch, 'config', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+  fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, provider: 'local', providers: { local: { model: 'model-a', baseUrl: modelA.url } } }));
+  const env = { ...process.env };
+  for (const name of ['COMPANION_BACKEND', 'COMPANION_MODEL', 'COMPANION_BASE_URL', 'COMPANION_API_KEY', 'COMPANION_LOCAL_NUM_CTX']) delete env[name];
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...env,
+      LEETCODE_CAPTURE_SETTINGS: settingsFile,
+      COMPANION_LOCAL_API: 'openai',
+      // Only one exchange is kept whole, so the third message condenses.
+      COMPANION_LOCAL_MAX_HISTORY_TURNS: '1',
+      COMPANION_AUTO_CLEAR_CONTEXT: '1',
+      VAULT_AUTO_SUMMARY: '0',
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: capturesPath,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (c) => (out += c.toString()));
+  child.stderr.on('data', (c) => (out += c.toString()));
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  let panel = null;
+  t.after(async () => {
+    if (panel) panel.close();
+    child.kill();
+    await exited;
+    modelA.server.close();
+    modelB.server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  let relayUp = false;
+  for (let i = 0; i < 100 && !relayUp; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    relayUp = await fetch(`http://127.0.0.1:${port}/capture`, { method: 'OPTIONS' }).then(() => true, () => false);
+    // eslint-disable-next-line no-await-in-loop
+    if (!relayUp) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(relayUp, 'relay server never came up');
+  panel = connectPanel(port);
+  await until(() => out.includes('in-page panel connected'), 10000, 'the panel bridge');
+  await until(() => panel.events.some((e) => e.type === 'config' && e.model === 'model-a'), 10000, 'the config event');
+
+  const turnEnds = () => panel.events.filter((e) => e.type === 'turn-end').length;
+  for (let i = 1; i <= 3; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    assert.equal(await panel.sendMessage(`question ${i}. More.`, 'two-sum'), 202);
+    // eslint-disable-next-line no-await-in-loop
+    await until(() => turnEnds() === i, 10000, `reply ${i}`);
+  }
+  assert.equal(modelA.summaries.length, 1, 'the third message condensed the first exchange');
+  assert.equal(modelA.summaries[0].stream, false);
+  const third = modelA.turns[2].messages;
+  assert.ok(third.some((m) => m.role === 'system' && m.content === `${SUMMARY_HEADER}\n${SECRET} from A`), 'the summary is in the request');
+  assert.ok(!third.some((m) => m.role === 'user' && m.content.includes('question 1')), 'the condensed exchange is not sent whole');
+
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!panel.events.some((e) => JSON.stringify(e).includes(SECRET)), 'no summary text in the panel feed');
+  assert.equal(panel.events.filter((e) => e.type === 'turn-start').length, 3, 'no extra tutor turn');
+  assert.equal(panel.events.filter((e) => e.type === 'notice').length, 0, 'no notice');
+  assert.deepEqual(
+    panel.events.filter((e) => e.type === 'turn-end').map((e) => e.text),
+    ['A reply 1', 'A reply 2', 'A reply 3']
+  );
+  let busyStarts = 0;
+  let wasBusy = false;
+  for (const e of panel.events.filter((x) => x.type === 'status')) {
+    if (e.busy && !wasBusy) busyStarts += 1;
+    wasBusy = Boolean(e.busy);
+  }
+  assert.ok(busyStarts <= 3, `the status light went busy ${busyStarts} times for 3 messages`);
+  assert.ok(!out.includes(SECRET), 'nothing of it in the terminal either');
+
+  // Swap to model B: the new backend starts without the summary.
+  const saved = await postJson(
+    port,
+    '/settings/rpc',
+    { method: 'save', params: { patch: { provider: 'local', providers: { local: { model: 'model-b', baseUrl: modelB.url } } } } },
+    { origin: EXTENSION_ORIGIN, 'sec-fetch-mode': 'cors' }
+  );
+  assert.equal(saved.status, 200, saved.text);
+  await until(() => out.includes('now using Local model (model-b)'), 5000, 'the swap');
+  assert.equal(await panel.sendMessage('question 4', 'two-sum'), 202);
+  await until(() => turnEnds() === 4, 10000, 'reply 4');
+  assert.equal(modelB.turns.length, 1);
+  const afterSwap = JSON.stringify(modelB.turns[0].messages);
+  assert.ok(!afterSwap.includes(SUMMARY_HEADER) && !afterSwap.includes(SECRET), 'a swap clears the summary');
 });
