@@ -222,11 +222,11 @@ test("panel broker", { timeout: 60000 }, async (t) => {
       method: "POST",
       route: "/panel/message",
       headers: { origin: LEETCODE },
-      body: { text: "esc-probe \x1b[31mRED\x1b[0m \x1b]0;pwned-title\x07 end\r\n\tok\x9b2J", problemSlug: "two-sum" },
+      body: { text: "esc-probe \x1b[31mRED\x1b[0m \x1b]0;pwned-title\x07 end\r\n\tok\x9b2J \u202eevil\u202c\u200b!", problemSlug: "two-sum" },
     });
     assert.equal(res.status, 202);
     const [message] = await inbox.waitFor((e) => e.length > 0);
-    assert.equal(message.text, "esc-probe [31mRED[0m ]0;pwned-title end\n\tok2J");
+    assert.equal(message.text, "esc-probe [31mRED[0m ]0;pwned-title end\n\tok2J evil!");
     for (const problemSlug of ["two sum", "../x", "a\x1b[31m", ""]) {
       // eslint-disable-next-line no-await-in-loop
       const bad = await request({ method: "POST", route: "/panel/message", headers: { origin: LEETCODE }, body: { text: "hi", problemSlug } });
@@ -382,6 +382,11 @@ test("unit: stripControlChars and companionOnlyRejection", () => {
   const { stripControlChars, companionOnlyRejection } = require("./panel-broker");
   assert.equal(stripControlChars("a\x00b\x1bc\x7fd\x85e\x9ff\tg\nh\ri"), "abcdef\tg\nhi");
   assert.equal(stripControlChars("plain é ✓"), "plain é ✓");
+  // Bidi overrides, isolates and marks, and zero-width characters, are
+  // dropped; line separators become newlines; emoji joiners stay.
+  assert.equal(stripControlChars("a\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200b\u200e\u200f\u061c\u2060\ufeffb"), "ab");
+  assert.equal(stripControlChars("one\u2028two\u2029three"), "one\ntwo\nthree");
+  for (const kept of ["👨‍👩‍👧‍👦", "🧑🏽‍💻", "می\u200cخواهم"]) assert.equal(stripControlChars(kept), kept);
   const req = (headers) => ({ headers });
   assert.equal(companionOnlyRejection(req({ "x-lc-companion": "1" })), null);
   assert.equal(companionOnlyRejection(req({ "x-lc-companion": "1", "sec-fetch-site": "none" })), null);

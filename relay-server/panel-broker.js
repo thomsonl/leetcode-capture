@@ -38,7 +38,9 @@
 //
 // Text in a typed message ends up printed in the student's terminal by the
 // companion, so C0/C1 control characters (escape sequences that could recolor
-// the terminal, retitle the window, or worse) are stripped at this boundary.
+// the terminal, retitle the window, or worse) and invisible bidi/zero-width
+// characters (which could disguise what the text says) are stripped at this
+// boundary.
 // The companion strips them again before printing anything untrusted.
 //
 // The number of open panel streams is capped: any page can open a no-cors GET
@@ -63,11 +65,16 @@ const HEARTBEAT_MS = 15_000;
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/i;
 
 // Everything in C0 except tab and newline, plus DEL and all of C1 (which some
-// terminals honor as 8-bit CSI/OSC introducers).
-const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+// terminals honor as 8-bit CSI/OSC introducers), plus the invisible bidi and
+// zero-width formatting characters that make text read differently from what
+// it is. The line and paragraph separators become a newline. The zero-width
+// joiner and non-joiner stay (emoji sequences and several scripts need them).
+// Same rule as companion/sanitize.js, which explains each range.
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+const LINE_SEPARATORS_RE = /[\u2028\u2029]/g;
 
 function stripControlChars(text) {
-  return text.replace(CONTROL_CHARS_RE, "");
+  return text.replace(LINE_SEPARATORS_RE, "\n").replace(CONTROL_CHARS_RE, "");
 }
 
 // Returns null when the request plausibly comes from the local companion

@@ -18,9 +18,27 @@ test('stripControlChars drops C0 (except newline and tab), DEL and C1, and keeps
   assert.equal(stripControlChars(42), '42');
 });
 
+// The "Trojan Source" characters: text that reads one way on screen and is
+// another. U+202E (right-to-left override) makes "txt.exe" display as
+// "exe.txt"; a zero-width space hides inside a word.
+const BIDI_AND_ZERO_WIDTH = '\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200b\u200e\u200f\u061c\u2060\ufeff';
+
+test('stripControlChars drops bidi controls and zero-width characters, and keeps emoji joiners', () => {
+  assert.equal(stripControlChars(`a${BIDI_AND_ZERO_WIDTH}b`), 'ab');
+  assert.equal(stripControlChars('safe\u202eexe.txt'), 'safeexe.txt');
+  assert.equal(stripControlChars('pass\u200bword'), 'password');
+  // Line and paragraph separators mean a newline, so they become one.
+  assert.equal(stripControlChars('one\u2028two\u2029three'), 'one\ntwo\nthree');
+  // ZWJ emoji sequences and ZWNJ in Persian survive byte for byte.
+  for (const kept of ['👨‍👩‍👧‍👦', '🧑🏽‍💻', '🏳️‍🌈', 'می\u200cخواهم', 'עברית and العربية']) {
+    assert.equal(stripControlChars(kept), kept);
+  }
+});
+
 test('oneLine also collapses newlines and runs of whitespace', () => {
   assert.equal(oneLine('  Two\n\tSum\x1b[2J  '), 'Two Sum[2J');
   assert.equal(oneLine(undefined), '');
+  assert.equal(oneLine('Two\u2028Sum\u202e'), 'Two Sum');
 });
 
 test('sanitizeCapture cleans every displayed field and leaves the code alone', () => {

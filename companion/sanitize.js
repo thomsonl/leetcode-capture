@@ -13,14 +13,27 @@
 // The rule matches relay-server/panel-broker.js's stripControlChars: every C0
 // control except newline and tab, DEL, and every C1 control (U+0080 to U+009F,
 // which some terminals treat as 8-bit escape introducers, e.g. U+009B as CSI).
+//
+// Invisible formatting characters are dropped too, because they make text
+// read differently from what it is (the "Trojan Source" trick): the bidi
+// embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069) and
+// the bidi marks (U+200E, U+200F, U+061C) reorder what follows them, and the
+// zero-width space, word joiner, invisible operators and BOM (U+200B, U+2060
+// to U+2064, U+FEFF) hide inside a word. The line and paragraph separators
+// (U+2028, U+2029) become a plain newline, which is what they mean.
+// Deliberately kept: the zero-width joiner and non-joiner (U+200D, U+200C).
+// Emoji sequences (a family, a skin tone on a profession, a flag) are glued
+// together by U+200D, and Persian and several Indic scripts need U+200C to
+// spell words correctly; neither reorders text, so neither can disguise it.
 
-const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+const LINE_SEPARATORS_RE = /[\u2028\u2029]/g;
 
 // Multi-line text (a typed message, a problem description): keeps newlines
 // and tabs, drops every other control character.
 export function stripControlChars(text) {
   if (text === null || text === undefined) return '';
-  return String(text).replace(CONTROL_CHARS_RE, '');
+  return String(text).replace(LINE_SEPARATORS_RE, '\n').replace(CONTROL_CHARS_RE, '');
 }
 
 // A value shown inside a one-line label (a problem title, a slug, a trigger):
