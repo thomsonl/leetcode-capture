@@ -1464,6 +1464,17 @@ try {
     await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); t.blur(); })()`);
   });
 
+  await scenario('the model label changes after the old reply ends', async () => {
+    await page.eval(`window.__ev({ type: 'config', provider: 'local', label: 'Local model', model: 'old-model' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'model-switch', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'config', provider: 'local', label: 'Local model', model: 'new-model' })`);
+    await settle();
+    check(await page.eval(`window.__q('.provider').textContent`) === 'Local model · old-model', 'the header changed mid-reply');
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'model-switch', problemSlug: 'two-sum', text: 'done' })`);
+    await settle();
+    check(await page.eval(`window.__q('.provider').textContent`) === 'Local model · new-model', 'the header did not update after the reply');
+  });
+
   await scenario('no exceptions in the page', async () => {
     check(exceptions.length === 0, exceptions.join('\n'));
   });

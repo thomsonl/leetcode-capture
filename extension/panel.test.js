@@ -42,6 +42,17 @@ test("problemSlugFromPath", () => {
   assert.equal(problemSlugFromPath("/problemset/"), null);
 });
 
+test("a model change waits until the current reply finishes before changing the header", () => {
+  const state = createState();
+  applyEvent(state, { type: "config", provider: "local", label: "Old model", model: "old" });
+  assert.equal(state.displayConfig?.model, "old");
+  applyEvent(state, { type: "turn-start", problemSlug: "two-sum", turnId: "old-turn" });
+  applyEvent(state, { type: "config", provider: "local", label: "New model", model: "new" });
+  assert.equal(state.displayConfig?.model, "old");
+  applyEvent(state, { type: "turn-end", problemSlug: "two-sum", turnId: "old-turn", text: "done" });
+  assert.equal(state.displayConfig?.model, "new");
+});
+
 test("a turn streams in, then turn-end replaces the text with the authoritative version", () => {
   const state = createState();
   applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "two-sum", seq: 1 });

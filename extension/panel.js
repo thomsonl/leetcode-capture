@@ -83,6 +83,7 @@
       // What the tutor runs on, from the companion's `config` event
       // ({ provider, label, model }, never a key), or null before one came.
       config: null,
+      displayConfig: null,
       byProblem: new Map(), // slug -> items[]
       turnProblem: new Map(), // turnId -> slug, so a chunk (which has no slug) finds its turn
     };
@@ -102,6 +103,13 @@
     const slug = state.turnProblem.get(turnId);
     if (slug === undefined) return null;
     return itemsFor(state, slug).find((item) => item.kind === "tutor" && item.turnId === turnId) || null;
+  }
+
+  function hasOpenTurn(state) {
+    for (const items of state.byProblem.values()) {
+      if (items.some((item) => item.kind === "tutor" && item.pending)) return true;
+    }
+    return false;
   }
 
   // Every item carries a revision that goes up whenever applyEvent changes it
@@ -237,6 +245,7 @@
         label: event.label,
         model: typeof event.model === "string" && event.model ? event.model : null,
       };
+      if (!hasOpenTurn(state)) state.displayConfig = state.config;
       return null;
     }
     // Replays after a reconnect can overlap what we already have.
@@ -298,6 +307,7 @@
         // The relay ends a reply this way when its companion went away
         // before finishing it.
         turn.interrupted = event.interrupted === true;
+        if (!hasOpenTurn(state)) state.displayConfig = state.config;
         touch(turn);
         return state.turnProblem.get(event.turnId);
       }
@@ -1716,7 +1726,7 @@
     renderBanner(p.banner, conn.banner);
 
     // The model is only named while the companion that reported it is online.
-    const config = state.companionOnline ? state.config : null;
+    const config = state.companionOnline ? state.displayConfig : null;
     const providerText = config ? (config.model ? `${config.label} \u00b7 ${config.model}` : config.label) : "";
     if (p.provider.textContent !== providerText) {
       p.provider.textContent = providerText;
