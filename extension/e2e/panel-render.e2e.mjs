@@ -410,6 +410,97 @@ try {
     await settle();
   });
 
+  const NOTE = 'The tutor stopped before this reply finished.';
+  const replyState = (id) => `(() => {
+    const node = window.__qa('.tutor').find((t) => t.__turn === ${JSON.stringify(id)});
+    return node ? { text: node.textContent, dots: node.querySelectorAll('.dots').length, note: node.querySelectorAll('.note').length } : null;
+  })()`;
+  // Tags the newest tutor node so replyState can find it after more items arrive.
+  const tagLastReply = (id) => page.eval(`window.__qa('.tutor').at(-1).__turn = ${JSON.stringify(id)}`);
+
+  await scenario('the companion exiting takes the relay it started with it: open replies stop typing and say so', async () => {
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'own-cut', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'own-cut', text: 'Partly there' })`);
+    await settle();
+    await tagLastReply('own-cut');
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'own-none', problemSlug: 'two-sum' })`);
+    await settle();
+    await tagLastReply('own-none');
+    check(JSON.stringify(await page.eval(replyState('own-none'))) === JSON.stringify({ text: '', dots: 1, note: 0 }), 'setup: the reply with no text yet shows no typing indicator');
+    // In the default setup the companion spawned the relay and kills it on
+    // exit, so no interrupted turn-end and no offline status ever arrive:
+    // the stream just ends and nothing listens on the port any more.
+    const urlsBefore = await page.eval('window.__eventsUrls.length');
+    await page.eval('(() => { window.__relayDown = true; window.__dropStream(); })()');
+    await page.waitFor(`window.__q('.status span').textContent === 'Offline'`, { what: 'the panel to notice the relay is gone' });
+    // ...and stays gone through a failed reconnect.
+    await page.waitFor(`window.__eventsUrls.length > ${urlsBefore}`, { timeout: 5000, what: 'a reconnect attempt' });
+    await settle();
+    const cut = await page.eval(replyState('own-cut'));
+    const none = await page.eval(replyState('own-none'));
+    check(cut && cut.dots === 0 && cut.note === 1 && cut.text === `Partly there${NOTE}`, `cut reply: ${JSON.stringify(cut)}`);
+    check(none && none.dots === 0 && none.note === 1 && none.text === NOTE, `reply with no text yet: ${JSON.stringify(none)}`);
+    check(await page.eval(`window.__qa('.dots').length === 0`), 'a typing indicator is still showing while Offline');
+    check(await page.eval(`window.__q('.status span').textContent === 'Offline'`), 'the header left Offline');
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await settle();
+    await page.screenshot(path.join(SHOTS, '06-companion-took-relay.png'), { width: 1100, height: 760 });
+  });
+
+  await scenario('the relay killed under a live companion: the open reply stops typing, and comes back if the companion keeps streaming', async () => {
+    // A relay started again: a new run.
+    await page.eval(`(() => { window.__epoch = 'e3'; window.__seq = 0; window.__relayDown = false; })()`);
+    await page.waitFor('window.__streamOpen()', { timeout: 15000, what: 'the reconnect to the new relay' });
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e3' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'killed', problemSlug: 'two-sum' })`);
+    await settle();
+    await tagLastReply('killed');
+    check(JSON.stringify(await page.eval(replyState('killed'))) === JSON.stringify({ text: '', dots: 1, note: 0 }), 'setup: no typing indicator');
+    await page.eval('(() => { window.__relayDown = true; window.__dropStream(); })()');
+    await page.waitFor(`window.__q('.status span').textContent === 'Offline'`, { what: 'the panel to notice the relay is gone' });
+    await settle();
+    const gone = await page.eval(replyState('killed'));
+    check(gone && gone.dots === 0 && gone.note === 1, `while the relay is down: ${JSON.stringify(gone)}`);
+    // The relay comes back (a new run) and the companion, which never left,
+    // keeps streaming the same reply into it: the chunk revives it.
+    await page.eval(`(() => { window.__epoch = 'e4'; window.__seq = 0; window.__relayDown = false; })()`);
+    await page.waitFor('window.__streamOpen()', { timeout: 15000, what: 'the reconnect to the restarted relay' });
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e4' })`);
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'killed', text: 'Back again' })`);
+    await settle();
+    const back = await page.eval(replyState('killed'));
+    check(back && back.note === 0 && back.text === 'Back again', `after the companion kept streaming: ${JSON.stringify(back)}`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'killed', problemSlug: 'two-sum', text: 'Back again, done.' })`);
+    await settle();
+    const done = await page.eval(replyState('killed'));
+    check(done && done.dots === 0 && done.note === 0 && done.text === 'Back again, done.', `finished reply: ${JSON.stringify(done)}`);
+  });
+
+  await scenario('a stream blip with the relay and companion alive leaves no falsely interrupted reply', async () => {
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'blip', problemSlug: 'two-sum' })`);
+    await settle();
+    await tagLastReply('blip');
+    // Ended as interrupted by the relay itself: must stay interrupted.
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'really-cut', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'really-cut', problemSlug: 'two-sum', text: 'Cut', interrupted: true })`);
+    await settle();
+    await tagLastReply('really-cut');
+    const urlsBefore = await page.eval('window.__eventsUrls.length');
+    await page.eval('window.__dropStream()');
+    await page.waitFor(`window.__eventsUrls.length > ${urlsBefore} && window.__streamOpen()`, { timeout: 15000, what: 'the reconnect' });
+    // Same relay run: nothing new to replay (the model is still thinking),
+    // then the status, which lists the replies still open.
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, epoch: 'e4', openTurns: ['blip'] })`);
+    await settle();
+    const blip = await page.eval(replyState('blip'));
+    check(JSON.stringify(blip) === JSON.stringify({ text: '', dots: 1, note: 0 }), `the still-open reply after the blip: ${JSON.stringify(blip)}`);
+    const cut = await page.eval(replyState('really-cut'));
+    check(cut && cut.note === 1 && cut.dots === 0, `the reply the relay ended as interrupted: ${JSON.stringify(cut)}`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'blip', problemSlug: 'two-sum', text: 'All good.' })`);
+    await settle();
+    check(JSON.stringify(await page.eval(replyState('blip'))) === JSON.stringify({ text: 'All good.', dots: 0, note: 0 }), 'the blip reply did not finish normally');
+  });
+
   await scenario('switching problems shows the other transcript, and coming back reuses the old nodes', async () => {
     await page.eval(`window.__q('.tutor p').__marker = 'kept'`);
     await page.eval(`history.pushState(null, '', '/problems/valid-parentheses/description/')`);

@@ -789,6 +789,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     none open), the relay ends every open turn itself with `interrupted: true` and the text streamed so far
     (`closeOpenTurns`), so no tab, including one opened later, shows a reply typing forever. The panel shows the same
     note as for a relay restart, and also interrupts pending replies on `companionOnline: false` for an older relay.
+    That needs the relay to outlive the companion, and by default it does not: the companion spawns the relay and
+    kills it on exit. So the panel also interrupts every pending reply as soon as its event stream drops
+    (`streamLost`). After a reconnect to the same relay run, the `status` event's `openTurns` lists the replies still
+    open and the panel revives those (a chunk revives one too), so a mere stream blip leaves no false note.
   - The feed is patched in place, never rebuilt per event: one cached node per item (keyed by the item, refreshed when
     its `rev` changes) and, in a streaming reply, reuse of every block whose parsed form is unchanged. A rebuild wiped
     the student's selection and code-block scroll on every chunk. `extension/e2e/panel-render.e2e.mjs` checks this and

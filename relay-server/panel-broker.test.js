@@ -587,3 +587,41 @@ test("when the last companion leaves, its unfinished replies are closed as inter
   assert.equal(half.at(-1).interrupted, undefined);
   after.close();
 });
+
+test("the status event lists the replies still open, so a panel that lost its stream can tell which are alive", async (t) => {
+  const port = PORT + 7;
+  await startServer(t, port);
+  const publish = (events) => request({ port, method: "POST", route: "/panel/publish", headers: COMPANION, body: { events } });
+  const inbox = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await inbox.ready();
+  await publish([
+    { type: "turn-start", turnId: "t-done", problemSlug: "two-sum" },
+    { type: "turn-end", turnId: "t-done", problemSlug: "two-sum", text: "Done." },
+    { type: "turn-start", turnId: "t-open", problemSlug: "two-sum" },
+    { type: "turn-start", turnId: "t-streaming", problemSlug: "valid-parentheses" },
+    { type: "chunk", turnId: "t-streaming", text: "So far" },
+  ]);
+  const statusOf = async () => {
+    const panel = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+    const events = await panel.waitFor((e) => e.some((x) => x.type === "status"));
+    panel.close();
+    return events.find((x) => x.type === "status");
+  };
+  const online = await statusOf();
+  assert.equal(online.companionOnline, true);
+  assert.deepEqual(online.openTurns, ["t-open", "t-streaming"]);
+
+  // Once the relay has ended them as interrupted they are no longer open.
+  inbox.close();
+  const panel = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+  const events = await panel.waitFor((e) => e.some((x) => x.type === "status" && x.companionOnline === false));
+  panel.close();
+  assert.deepEqual(events.find((x) => x.type === "status" && x.companionOnline === false).openTurns, []);
+
+  // A companion that comes back and keeps streaming one reopens it.
+  const back = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await back.ready();
+  await publish([{ type: "chunk", turnId: "t-open", text: "Resumed" }]);
+  assert.deepEqual((await statusOf()).openTurns, ["t-open"]);
+  back.close();
+});

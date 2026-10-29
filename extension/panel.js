@@ -99,7 +99,9 @@
   }
 
   function newTurn(turnId) {
-    return { kind: "tutor", turnId, text: "", pending: true, interrupted: false, error: null, rev: 0 };
+    // ended: the relay sent this turn's end (as opposed to the panel giving
+    // up on it locally, see streamLost).
+    return { kind: "tutor", turnId, text: "", pending: true, interrupted: false, ended: false, error: null, rev: 0 };
   }
 
   // Appends an item and enforces the per-problem cap. The turn ids of tutor
@@ -155,6 +157,35 @@
     return changed;
   }
 
+  // The event stream dropped and the relay may be gone. In the default setup
+  // the companion runs the relay as its child and kills it when it exits, so
+  // nothing will ever send the end of a reply still streaming (the relay's
+  // own interrupted turn-end, see panel-broker.js's closeOpenTurns, needs the
+  // relay to outlive the companion). Every such reply is given up on now. If
+  // it was only a blip, the status the relay sends after the reconnect lists
+  // the replies still open (reviveOpen), and a chunk revives one too.
+  // Returns RESTARTED if any reply changed, else null.
+  function streamLost(state) {
+    state.companionOnline = null;
+    return interruptPending(state) ? RESTARTED : null;
+  }
+
+  // The relay's status lists the turns it still has open. Those the panel
+  // gave up on itself when its stream dropped are alive after all. Returns
+  // true if any reply changed.
+  function reviveOpen(state, turnIds) {
+    let changed = false;
+    for (const turnId of turnIds) {
+      const turn = typeof turnId === "string" ? findTurn(state, turnId) : null;
+      if (!turn || !turn.interrupted || turn.ended) continue;
+      turn.interrupted = false;
+      turn.pending = true;
+      touch(turn);
+      changed = true;
+    }
+    return changed;
+  }
+
   // Applies one relay event. Returns the problem slug whose transcript it
   // changed (or null), so the caller only touches the feed when that problem
   // is on screen. Returns RESTARTED when the change can touch every
@@ -181,6 +212,7 @@
       // those itself (a turn-end marked interrupted, see panel-broker.js's
       // closeOpenTurns); this covers a relay started before it did.
       if (!state.companionOnline && interruptPending(state)) return RESTARTED;
+      if (state.companionOnline && Array.isArray(event.openTurns) && reviveOpen(state, event.openTurns)) return RESTARTED;
       return null;
     }
     // Replays after a reconnect can overlap what we already have.
@@ -219,6 +251,7 @@
         if (turn.interrupted) {
           turn.interrupted = false;
           turn.pending = true;
+          turn.ended = false;
         }
         touch(turn);
         return state.turnProblem.get(event.turnId);
@@ -234,6 +267,7 @@
         if (typeof event.text === "string") turn.text = event.text;
         turn.error = event.error || null;
         turn.pending = false;
+        turn.ended = true;
         // The relay ends a reply this way when its companion went away
         // before finishing it.
         turn.interrupted = event.interrupted === true;
@@ -685,6 +719,7 @@
       createSseParser,
       createState,
       applyEvent,
+      streamLost,
       RESTARTED,
       itemsFor,
       firstChangedBlock,
@@ -1576,8 +1611,7 @@
       // Hiding the tab on purpose is not an outage.
       if (abort.signal.aborted) continue;
       relayReachable = false;
-      state.companionOnline = null;
-      scheduleRender();
+      noteApplied(streamLost(state));
       // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => setTimeout(resolve, delay));
       delay = Math.min(delay * 2, 10000);

@@ -184,8 +184,15 @@ function createPanelBroker({ port }) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   }
 
+  // openTurns lists the replies this relay has seen start and not yet end
+  // (or ended as interrupted). A panel that lost its stream marks every
+  // reply it was showing as interrupted, since a relay that died with its
+  // companion never sends their end; after a reconnect to the same run, the
+  // ones listed here are alive after all.
   function statusEvent() {
-    return { type: "status", companionOnline: consumers.size > 0, epoch };
+    const open = [];
+    for (const [turnId, turn] of openTurns) if (!turn.closed) open.push(turnId);
+    return { type: "status", companionOnline: consumers.size > 0, epoch, openTurns: open };
   }
 
   function broadcastStatus() {

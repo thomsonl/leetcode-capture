@@ -13,6 +13,7 @@ const {
   createSseParser,
   createState,
   applyEvent,
+  streamLost,
   RESTARTED,
   itemsFor,
   firstChangedBlock,
@@ -390,4 +391,36 @@ test("headings may be indented up to three spaces, and keep a # that is part of 
   assert.equal(csharp.c[0].v, "Using C#");
   const [closed] = parseBlocks("### Title ###");
   assert.equal(closed.c[0].v, "Title");
+});
+
+test("losing the relay stream interrupts open replies; the status after a reconnect revives the ones still open", () => {
+  const state = createState();
+  applyEvent(state, { type: "status", companionOnline: true, epoch: "e1", openTurns: [] });
+  applyEvent(state, { type: "turn-start", turnId: "cut", problemSlug: "a", seq: 1, epoch: "e1" });
+  applyEvent(state, { type: "chunk", turnId: "cut", text: "Half", seq: 2, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "none", problemSlug: "a", seq: 3, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "ended", problemSlug: "b", seq: 4, epoch: "e1" });
+  applyEvent(state, { type: "turn-end", turnId: "ended", problemSlug: "b", text: "Gone", interrupted: true, seq: 5, epoch: "e1" });
+  const [cut, none] = itemsFor(state, "a");
+  const ended = itemsFor(state, "b")[0];
+  // The relay can die with its companion and never send their end.
+  assert.equal(streamLost(state), RESTARTED);
+  assert.equal(state.companionOnline, null);
+  assert.deepEqual([cut.pending, cut.interrupted, cut.text], [false, true, "Half"]);
+  assert.deepEqual([none.pending, none.interrupted], [false, true]);
+  assert.equal(streamLost(state), null, "nothing left to interrupt");
+  // A blip: the same relay run is back and says which replies are still open.
+  const revBefore = none.rev;
+  assert.equal(applyEvent(state, { type: "status", companionOnline: true, epoch: "e1", openTurns: ["none", "ended", "unknown"] }), RESTARTED);
+  assert.deepEqual([none.pending, none.interrupted], [true, false]);
+  assert.ok(none.rev > revBefore);
+  assert.deepEqual([cut.pending, cut.interrupted], [false, true], "not listed: stays interrupted");
+  // A reply the relay itself ended as interrupted is final, whatever a status says.
+  assert.deepEqual([ended.pending, ended.interrupted], [false, true]);
+  // Nothing to revive: no redraw.
+  assert.equal(applyEvent(state, { type: "status", companionOnline: true, epoch: "e1", openTurns: ["none"] }), null);
+  // An offline status never revives anything.
+  streamLost(state);
+  applyEvent(state, { type: "status", companionOnline: false, epoch: "e1", openTurns: ["none"] });
+  assert.deepEqual([none.pending, none.interrupted], [false, true]);
 });

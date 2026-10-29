@@ -9,7 +9,8 @@
 
   window.fetch is replaced before panel.js runs, so nothing here touches the
   network: /panel/events is a stream the test writes into with __push(text),
-  /panel/message answers with __postStatus after __postDelayMs. Served by
+  /panel/message answers with __postStatus after __postDelayMs, and
+  __relayDown makes a new /panel/events connection fail. Served by
   panel-render.e2e.mjs under /problems/<slug>/ so the panel sees a slug.
 -->
 <html>
@@ -63,10 +64,14 @@
       controller = null;
     };
     window.__streamOpen = () => controller !== null;
+    // While true, connecting to /panel/events fails as it does with no relay
+    // listening (the process was killed).
+    window.__relayDown = false;
     window.fetch = async (input, options = {}) => {
       const url = new URL(typeof input === "string" ? input : input.url, location.href);
       if (url.pathname === "/panel/events") {
         window.__eventsUrls.push(url.search);
+        if (window.__relayDown) throw new TypeError("Failed to fetch");
         const body = new ReadableStream({
           start(c) {
             controller = c;
