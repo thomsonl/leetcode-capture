@@ -136,7 +136,9 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
     Every probe has a short timeout and is ignored if it fails, so an unknown server just uses the configured window.
   - On any server, if a reply reports far fewer prompt tokens than were sent (under 70 percent), the server silently cut the prompt to fit a smaller window: the companion prints one warning and budgets for the window the server really kept from then on.
   - `COMPANION_LOCAL_RESERVE_TOKENS` (default 2600) is held back for the model's thinking and answer; the prompt gets the rest.
-  - Each request is fitted to that budget by leaving out the oldest whole exchanges (the problem statement and your code are always kept), and `COMPANION_LOCAL_MAX_HISTORY_TURNS` (default 6, 0 for no cap) also caps how many exchanges are kept.
+  - Each request is fitted to that budget by condensing the oldest whole exchanges into one short "earlier in this session" summary (about 300 tokens at most), like Claude Code's `/compact`; the problem statement, your code and the current message are never condensed.
+    `COMPANION_LOCAL_MAX_HISTORY_TURNS` (default 6, 0 for no cap) also caps how many exchanges are kept whole, and the ChatGPT (Codex) backend condenses past that cap the same way.
+    The summary comes from one quiet call to the same model, with a one-line-per-exchange digest when that call fails, and nothing is shown for it; it lives in memory only and a reset or a change of model clears it.
     A message is refused, with what is too big named, only if the statement, code and that message alone are over the budget.
 
 - **Auto-clear context on problem switch.**

@@ -379,7 +379,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with
   `COMPANION_AUTO_CLEAR_CONTEXT` on, the default) calls the backend's `resetContext()`, drops the old problem from the
   ledger, asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`) and clears the handled
-  part of `captures.jsonl` (see the `attemptSeq` bullet). `LocalBackend` pins the held code as a system message (like the description) so `trimHistory` cannot
+  part of `captures.jsonl` (see the `attemptSeq` bullet). `LocalBackend` pins the held code as a system message (like the description) so condensing old exchanges cannot
   lose it, and an older full-code turn is sent as its `compactContent`. `ClaudeBackend` needs no pinning: its resumed
   session keeps the first full code and later diffs. `companion/code-updates.test.js` covers the rules end to end.
 - Real mouse-wheel scrolling inside the alternate screen: `companion/mouse-input.js` enables xterm's
@@ -626,7 +626,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   though it would fix this too: it's Ollama-specific (breaks the "any OpenAI-compatible server"
   portability `COMPANION_BASE_URL` is documented for), uses a different streaming wire format
   (newline-delimited JSON, not this file's SSE parsing), and only moves the ceiling rather than
-  removing the unbounded-growth root cause. Fixed instead with `LocalBackend.trimHistory()`
+  removing the unbounded-growth root cause. Fixed instead with `LocalBackend.trimHistory()` (since replaced by condensing, see the context-window bullet)
   (`COMPANION_LOCAL_MAX_HISTORY_TURNS`, default 6, 0 disables it): drops the oldest complete
   user+assistant pairs once history holds more than that many, called only right after
   `sendMessage` pushes a successful assistant reply - never mid-turn, and never on an error path
@@ -765,9 +765,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   The options page's "Context window (tokens)" field (`contextTokens` in `companion/settings.js`, locked by `COMPANION_LOCAL_NUM_CTX`) is what feeds `numCtx`.
   The probes (`companion/local-server.js`, no Node API) run once in the background at startup and the first message waits at most for their 1.5 s timeouts: `GET /api/version` identifies Ollama (then `COMPANION_LOCAL_API=auto` uses the native API, at any address), and `/api/show`, `/api/ps`, LM Studio's `/api/v0/models`, llama.cpp's `/props` and vLLM's `/v1/models` report windows; any failure or unknown shape is ignored.
   Test model stubs must answer non-chat routes with a 404 (each stub has a one-line guard), since every companion subprocess now probes its stub.
-  Every request is fitted to the budget before it is sent (`fitToBudget`): the oldest whole exchanges are dropped, never the pinned statement, the pinned code or the current message, and it is refused (naming each part's size) only when those alone are over.
+  Every request is fitted to the budget before it is sent (`fitWithSummary` in `companion/context-summary.js`), never touching the pinned statement, the pinned code or the current message, and it is refused (naming each part's size) only when those alone are over.
   This replaced a refusal that, with history trimmed only by count and only after a success, stuck every later message once a few long replies filled the budget (`context-window.test.js` has that scenario).
-  A reply cut off with `finish_reason: "length"` also drops the oldest exchange, since the same history would be cut off again.
+  Exchanges that must go (over the budget, past `COMPANION_LOCAL_MAX_HISTORY_TURNS`, or after a reply cut off with `finish_reason: "length"`, which would be cut off again) are condensed, at least the older half at a time so the call is not paid every turn, into one "earlier in this session" summary (at most about 300 estimated tokens), sent as a system message after the pins; a later overflow merges into it.
+  It comes from one unstreamed call on the same model inside the same turn (so the turn queue never interleaves it and the panel sees nothing of it), carrying only the dropped exchanges and skipped if it would not fit; on failure, timeout (60 s), an empty reply or no fit, a digest of each exchange's first student and tutor sentence stands in, and with no room for even that the oldest are dropped by `fitToBudget` as before.
+  A fixable overflow prints nothing.
+  The summary is memory only, cleared by `resetContext` and gone with a swapped backend.
+  `CodexBackend` condenses past its count cap the same way; `ClaudeBackend` resumes its session and never condenses.
+  Test stubs tell a summary call apart by its first message being `SUMMARIZER_SYSTEM`.
   The silent-truncation guard: streamed OpenAI-style requests ask for `stream_options: { include_usage: true }` (dropped for good after a 400/422 that names it), and a reply whose `usage.prompt_tokens` (or native `prompt_eval_count`) is under 70 percent of the estimate, and at least 256 tokens under, means the server dropped the start of the prompt with an ordinary "stop".
   The window then becomes the reported count, and one terminal warning per session is printed after the turn (`takeWarnings`); there is deliberately no panel message for it.
   A cut smaller than 30 percent cannot be told apart from tokenizer differences, so it goes unnoticed.
