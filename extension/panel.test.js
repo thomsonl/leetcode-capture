@@ -119,6 +119,38 @@ test("links render only for http(s); anything else stays inert text", () => {
   assert.deepEqual(parseInline('<img src=x onerror="alert(1)">'), [{ t: "text", v: '<img src=x onerror="alert(1)">' }]);
 });
 
+test("link edge cases parse the same as the [label](http(s)://url) rule always did", () => {
+  const link = (label, href) => ({ t: "link", href, c: [{ t: "text", v: label }] });
+  assert.deepEqual(parseInline("see [docs](https://x.y/z)."), [{ t: "text", v: "see " }, link("docs", "https://x.y/z"), { t: "text", v: "." }]);
+  assert.deepEqual(parseInline("[[a](http://x)"), [link("[a", "http://x")]);
+  assert.deepEqual(parseInline("[a](http://x(y))"), [link("a", "http://x(y"), { t: "text", v: ")" }]);
+  for (const inert of ["[a](http://)", "[](http://x)", "[a](http://x y)", "[a] (http://x)", "[a](ftp://x)"]) {
+    assert.deepEqual(parseInline(inert), [{ t: "text", v: inert }], inert);
+  }
+});
+
+// A reply is re-parsed on every streamed chunk, so a quadratic rule turns a
+// long reply into a frozen tab. These inputs took seconds (or overflowed the
+// stack) with the old parser; linear parsing does each in a few milliseconds,
+// so the bound is loose enough to never flake on a slow machine.
+test("inline parsing stays linear on pathological brackets, URLs and nested emphasis", () => {
+  const inputs = {
+    brackets: "[".repeat(200_000),
+    unclosedUrls: `[a](http://${"x".repeat(10)}`.repeat(20_000),
+    bracketsThenLongUrl: `${"[".repeat(100_000)}](http://${"x".repeat(100_000)}`,
+    nestedEmphasis: "*a **".repeat(40_000),
+  };
+  for (const [name, text] of Object.entries(inputs)) {
+    const started = process.hrtime.bigint();
+    const nodes = parseInline(text);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 1000, `${name}: ${ms.toFixed(0)} ms`);
+    // Nothing is lost: every character is still in the output somewhere.
+    const flat = JSON.stringify(nodes);
+    assert.ok(flat.length >= text.length, name);
+  }
+});
+
 test("block markdown: paragraphs, lists, headings, quotes, rules", () => {
   const blocks = parseBlocks("# Title\n\nFirst line\nsecond line\n\n- a\n- b\n  more\n\n1. x\n2. y\n\n> quoted\n\n---");
   assert.deepEqual(

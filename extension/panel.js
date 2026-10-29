@@ -229,10 +229,38 @@
   // Markdown (just what a tutor reply uses)
   // ---------------------------------------------------------------------
 
-  function parseInline(text) {
+  // Emphasis, strike and link text are parsed recursively. Past this depth
+  // the markers stay literal text, so a pathological run of nested markers
+  // can neither overflow the stack nor re-parse the same text over and over.
+  const MAX_INLINE_DEPTH = 8;
+  const URL_RUN_RE = /[^\s)]*/y;
+
+  // Linear in the length of `text` (times the nesting cap above): every scan
+  // forward is either consumed by a match or cached for the positions after
+  // it. The link rule in particular used to re-run a regex on text.slice(i)
+  // at every "[", which was quadratic on a long run of unmatched brackets
+  // and ran again on every streamed chunk.
+  function parseInline(text, depth = 0) {
+    if (depth > MAX_INLINE_DEPTH) return text ? [{ t: "text", v: text }] : [];
     const nodes = [];
     let buf = "";
     let i = 0;
+    // For links: the next "]" after the current position (-1: none left),
+    // shared by every "[" before it, and the end of the last run of URL
+    // characters (no whitespace, no ")") scanned, shared by every URL that
+    // starts inside that run. Both only ever move forward.
+    let nextClose = -2;
+    let runStart = -1;
+    let runEnd = -1;
+    const urlRunEnd = (from) => {
+      if (from < runStart || from > runEnd) {
+        URL_RUN_RE.lastIndex = from;
+        URL_RUN_RE.exec(text);
+        runStart = from;
+        runEnd = URL_RUN_RE.lastIndex;
+      }
+      return runEnd;
+    };
     const flush = () => {
       if (buf) nodes.push({ t: "text", v: buf });
       buf = "";
@@ -259,7 +287,7 @@
         const inner = end > i + 2 ? text.slice(i + 2, end) : "";
         if (end > i + 2 && !/^\s/.test(inner) && !/\s$/.test(inner)) {
           flush();
-          nodes.push({ t: "del", c: parseInline(inner) });
+          nodes.push({ t: "del", c: parseInline(inner, depth + 1) });
           i = end + 2;
           continue;
         }
@@ -269,7 +297,7 @@
         const inner = end > i + 3 ? text.slice(i + 3, end) : "";
         if (end > i + 3 && !/^\s/.test(inner) && !/\s$/.test(inner)) {
           flush();
-          nodes.push({ t: "strong", c: [{ t: "em", c: parseInline(inner) }] });
+          nodes.push({ t: "strong", c: [{ t: "em", c: parseInline(inner, depth + 1) }] });
           i = end + 3;
           continue;
         }
@@ -283,7 +311,7 @@
         const isDunder = marker === "__" && /^\w+$/.test(inner);
         if (end > i + 2 && !isDunder && !/^\s/.test(inner) && !/\s$/.test(inner)) {
           flush();
-          nodes.push({ t: "strong", c: parseInline(text.slice(i + 2, end)) });
+          nodes.push({ t: "strong", c: parseInline(text.slice(i + 2, end), depth + 1) });
           i = end + 2;
           continue;
         }
@@ -304,19 +332,27 @@
           }
           if (end > i + 1 && !/\s/.test(text[end - 1]) && (ch === "*" || !isWordChar(text[end + 1]))) {
             flush();
-            nodes.push({ t: "em", c: parseInline(text.slice(i + 1, end)) });
+            nodes.push({ t: "em", c: parseInline(text.slice(i + 1, end), depth + 1) });
             i = end + 1;
             continue;
           }
         }
       }
       if (ch === "[") {
-        const match = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/.exec(text.slice(i));
-        if (match) {
-          flush();
-          nodes.push({ t: "link", href: match[2], c: parseInline(match[1]) });
-          i += match[0].length;
-          continue;
+        // [label](http(s)://url): the label runs to the first "]" and must
+        // not be empty, the URL has no whitespace and ends at the first ")".
+        if (nextClose !== -1 && nextClose <= i) nextClose = text.indexOf("]", i + 1);
+        const close = nextClose;
+        const urlStart = close + 2;
+        const scheme = text.startsWith("https://", urlStart) ? 8 : text.startsWith("http://", urlStart) ? 7 : 0;
+        if (close > i + 1 && text[close + 1] === "(" && scheme) {
+          const urlEnd = urlRunEnd(urlStart);
+          if (urlEnd > urlStart + scheme && text[urlEnd] === ")") {
+            flush();
+            nodes.push({ t: "link", href: text.slice(urlStart, urlEnd), c: parseInline(text.slice(i + 1, close), depth + 1) });
+            i = urlEnd + 1;
+            continue;
+          }
         }
       }
       buf += ch;
