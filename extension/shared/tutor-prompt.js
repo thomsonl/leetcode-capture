@@ -58,9 +58,21 @@ export const STYLE_ADDENDUM = `Two additional style rules for your responses:
 - Never use an em dash ("—"). Use a plain dash ("-") instead.
 - Never use emojis.`;
 
+// How replies should lay out diagrams and tables so they read correctly in
+// the injected Tutor panel, which is narrow and resizable. The panel renders
+// a fenced block verbatim (white-space: pre, scrolling sideways), so the
+// model must never hard-wrap a diagram itself; 56 characters fits the
+// narrowest usual pane without scrolling. Kept short because the system
+// message is resent on every turn.
+export const FORMAT_ADDENDUM = `Formatting rules (your reply shows in a narrow, resizable panel):
+- Draw trees, graphs, arrays, pointer movement and step-by-step traces as plain ASCII or simple box-drawing characters inside a fenced code block with no language (not even "text").
+- Keep every line of a code block within 56 characters, and never wrap diagram lines by hand.
+- Use a Markdown table for comparisons: few columns, short cells.
+- Never use Mermaid, LaTeX, images or HTML.`;
+
 // The full system message every backend sends: the persona plus the style
-// rules.
-export const TUTOR_SYSTEM_MESSAGE = `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}`;
+// and formatting rules.
+export const TUTOR_SYSTEM_MESSAGE = `${TUTOR_SYSTEM_PROMPT}\n\n${STYLE_ADDENDUM}\n\n${FORMAT_ADDENDUM}`;
 
 // The message an options-page "Test connection" sends, in every runtime.
 export const CONNECTION_TEST_PROMPT = 'This is a connection test. Reply with the single word OK.';

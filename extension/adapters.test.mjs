@@ -241,3 +241,18 @@ test('settings: keys are kept apart, validated, removable, and never in the publ
   assert.equal(publicView(helper.settings, helper.secrets).runtime, 'helper');
   assert.equal(publicView(emptySettings(), emptySecrets()).runtime, 'helper', 'nothing chosen keeps the helper');
 });
+
+// The formatting rules that make diagrams and tables read correctly in the
+// narrow, resizable Tutor panel ride along in the one system message every
+// backend sends.
+test('the system message carries the diagram and table formatting rules', () => {
+  const m = TUTOR_SYSTEM_MESSAGE;
+  assert.match(m, /trees, graphs, arrays, pointer movement and step-by-step traces/);
+  assert.match(m, /plain ASCII or simple box-drawing characters/);
+  assert.match(m, /fenced code block with no language \(not even "text"\)/);
+  assert.match(m, /within 56 characters/);
+  assert.match(m, /never wrap diagram lines by hand/);
+  assert.match(m, /Markdown table for comparisons: few columns, short cells/);
+  assert.match(m, /Never use Mermaid, LaTeX, images or HTML/);
+  assert.ok(m.indexOf('Formatting rules') > m.indexOf('Never use emojis'), 'appended after the style rules');
+});

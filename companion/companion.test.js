@@ -27,6 +27,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { replayToScreen } from './virtual-terminal.js';
 import { SUMMARIZER_SYSTEM } from '../extension/shared/context-summary.js';
+import { TUTOR_SYSTEM_MESSAGE } from '../extension/shared/tutor-prompt.js';
 
 const isSummaryRequest = (messages) => messages?.[0]?.content === SUMMARIZER_SYSTEM;
 
@@ -732,7 +733,10 @@ const EXHAUSTION_TEST_CODE = 'def solve(nums):\n    # placeholder line for size\
 // reason growth stops) - waiting after each one for either a numbered reply
 // or the exhaustion error to appear before sending the next, so the queue
 // never races two captures against each other.
-async function runManyTurnsScenario({ turnCount, capturePort, thresholdChars, env = {} }) {
+// `roomChars` is the simulated window left after the shared system message,
+// so a change to the tutor prompt's length does not move these scenarios.
+async function runManyTurnsScenario({ turnCount, capturePort, roomChars, env = {} }) {
+  const thresholdChars = TUTOR_SYSTEM_MESSAGE.length + roomChars;
   const { server, requests } = await startExhaustionStubBackend({ thresholdChars });
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-companion-exhaustion-test-'));
   const capturesPath = path.join(scratch, 'captures.jsonl');
@@ -810,7 +814,7 @@ test('without history trimming, a long single-problem conversation eventually ex
   const { out } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18150,
-    thresholdChars: 7700,
+    roomChars: 3872,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '0' },
   });
 
@@ -830,7 +834,7 @@ test('COMPANION_LOCAL_MAX_HISTORY_TURNS keeps a long single-problem conversation
   const { out, requests } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18151,
-    thresholdChars: 7700,
+    roomChars: 3872,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' },
   });
 
@@ -856,7 +860,7 @@ test('trimmed history never leaves a dangling half-turn', async () => {
   const { requests } = await runManyTurnsScenario({
     turnCount: 6,
     capturePort: 18152,
-    thresholdChars: 6000,
+    roomChars: 2172,
     env: { COMPANION_LOCAL_MAX_HISTORY_TURNS: '1' },
   });
 
