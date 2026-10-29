@@ -1,6 +1,8 @@
 // Unit tests for panel.js's pure logic: the SSE parser, the transcript
-// reducer, and the markdown parser. The DOM integration is covered by the
-// live end-to-end check against the real page (see README.md, "Tutor panel").
+// reducer, and the markdown parser. The DOM side (incremental rendering, the
+// header row, pane choice) is covered by e2e/panel-render.e2e.mjs in a real
+// headless Chromium, and by the live check against the real page (see
+// README.md, "Tutor tab on LeetCode").
 //
 // Run with: node --test panel.test.js
 
@@ -11,7 +13,9 @@ const {
   createSseParser,
   createState,
   applyEvent,
+  RESTARTED,
   itemsFor,
+  firstChangedBlock,
   parseInline,
   parseBlocks,
   problemSlugFromPath,
@@ -190,4 +194,127 @@ test("a pipe inside a code span or escaped with a backslash does not split a tab
   assert.equal(table.rows[0][0][0].v, "x|y");
   assert.equal(table.rows[0][1][0].v, "bitwise or");
   assert.equal(table.rows[1][0][0].v, "a | b");
+});
+
+test("a relay restart (new epoch) resets lastSeq, interrupts pending turns and says so", () => {
+  const state = createState();
+  applyEvent(state, { type: "user", problemSlug: "a", text: "hi", seq: 1, epoch: "e1" });
+  applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "a", seq: 2, epoch: "e1" });
+  applyEvent(state, { type: "chunk", turnId: "t1", text: "Thinking", seq: 3, epoch: "e1" });
+  applyEvent(state, { type: "status", companionOnline: true, epoch: "e1" });
+  assert.deepEqual([state.epoch, state.lastSeq], ["e1", 3]);
+  const turn = itemsFor(state, "a")[1];
+  const revBefore = turn.rev;
+
+  // The new run's replay arrives before its status event, and its numbering
+  // starts over at 1: it must not be mistaken for an old replay.
+  assert.equal(applyEvent(state, { type: "user", problemSlug: "a", text: "again", seq: 1, epoch: "e2" }), RESTARTED);
+  assert.deepEqual([state.epoch, state.lastSeq], ["e2", 1]);
+  assert.deepEqual([turn.pending, turn.interrupted, turn.text], [false, true, "Thinking"]);
+  assert.ok(turn.rev > revBefore, "the interrupted turn is re-rendered");
+  assert.deepEqual(
+    itemsFor(state, "a").map((i) => [i.kind, i.text]),
+    [["user", "hi"], ["tutor", "Thinking"], ["notice", "Session restarted"], ["user", "again"]]
+  );
+  // Later events of the same run are ordinary.
+  assert.equal(applyEvent(state, { type: "notice", problemSlug: "a", text: "x", seq: 2, epoch: "e2" }), "a");
+  assert.equal(applyEvent(state, { type: "status", companionOnline: true, epoch: "e2" }), null);
+});
+
+test("the first epoch is only stored, and a status event alone can carry a restart", () => {
+  const state = createState();
+  applyEvent(state, { type: "status", companionOnline: false, epoch: "e1" });
+  assert.equal(state.epoch, "e1");
+  assert.equal(itemsFor(state, "a").length, 0);
+  applyEvent(state, { type: "user", problemSlug: "a", text: "hi", seq: 5, epoch: "e1" });
+  // A restarted relay with an empty buffer sends only its status.
+  assert.equal(applyEvent(state, { type: "status", companionOnline: true, epoch: "e2" }), RESTARTED);
+  assert.equal(state.lastSeq, 0);
+  assert.equal(itemsFor(state, "a").at(-1).text, "Session restarted");
+  // A second restart in a row does not stack a second notice.
+  applyEvent(state, { type: "status", companionOnline: true, epoch: "e3" });
+  assert.equal(itemsFor(state, "a").filter((i) => i.kind === "notice").length, 1);
+});
+
+test("a reply interrupted by a relay restart comes back to life if its companion keeps streaming", () => {
+  const state = createState();
+  applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "a", seq: 1, epoch: "e1" });
+  applyEvent(state, { type: "status", companionOnline: true, epoch: "e2" });
+  const turn = itemsFor(state, "a")[0];
+  assert.equal(turn.interrupted, true);
+  applyEvent(state, { type: "chunk", turnId: "t1", text: "more", seq: 1, epoch: "e2" });
+  assert.deepEqual([turn.interrupted, turn.pending], [false, true]);
+  applyEvent(state, { type: "turn-end", turnId: "t1", problemSlug: "a", text: "done", seq: 2, epoch: "e2" });
+  assert.deepEqual([turn.interrupted, turn.pending, turn.text], [false, false, "done"]);
+});
+
+test("every change to a tutor item bumps its revision", () => {
+  const state = createState();
+  applyEvent(state, { type: "turn-start", turnId: "t1", problemSlug: "a", seq: 1 });
+  const turn = itemsFor(state, "a")[0];
+  const revs = [turn.rev];
+  applyEvent(state, { type: "chunk", turnId: "t1", text: "a", seq: 2 });
+  revs.push(turn.rev);
+  applyEvent(state, { type: "turn-end", turnId: "t1", problemSlug: "a", text: "ab", seq: 3 });
+  revs.push(turn.rev);
+  assert.ok(revs[0] < revs[1] && revs[1] < revs[2], JSON.stringify(revs));
+  // A replayed (already seen) event changes nothing.
+  applyEvent(state, { type: "chunk", turnId: "t1", text: "a", seq: 2 });
+  assert.equal(turn.rev, revs[2]);
+});
+
+test("the item cap also forgets the turn ids of dropped replies, and applies to late-joined turns", () => {
+  const state = createState();
+  let seq = 0;
+  for (let i = 0; i < 200; i += 1) {
+    applyEvent(state, { type: "turn-start", turnId: `t${i}`, problemSlug: "a", seq: (seq += 1) });
+    applyEvent(state, { type: "turn-end", turnId: `t${i}`, problemSlug: "a", text: String(i), seq: (seq += 1) });
+  }
+  for (let i = 200; i < 400; i += 1) {
+    // Turns whose start was trimmed from the relay's buffer: only the end.
+    applyEvent(state, { type: "turn-end", turnId: `t${i}`, problemSlug: "a", text: String(i), seq: (seq += 1) });
+  }
+  const items = itemsFor(state, "a");
+  assert.equal(items.length, 300);
+  assert.equal(state.turnProblem.size, 300);
+  assert.ok(!state.turnProblem.has("t0"));
+  assert.ok(state.turnProblem.has("t399"));
+  // A chunk for a dropped turn finds nothing instead of a stale entry.
+  assert.equal(applyEvent(state, { type: "chunk", turnId: "t0", text: "x", seq: (seq += 1) }), null);
+});
+
+test("firstChangedBlock counts the unchanged leading blocks", () => {
+  assert.equal(firstChangedBlock([], ["a"]), 0);
+  assert.equal(firstChangedBlock(["a", "b"], ["a", "b", "c"]), 2);
+  assert.equal(firstChangedBlock(["a", "b"], ["a", "B"]), 1);
+  assert.equal(firstChangedBlock(["a", "b"], ["a"]), 1);
+  // While a reply streams, only the growing last paragraph changes.
+  const before = parseBlocks("First paragraph.\n\nSecond, still stre").map((b) => JSON.stringify(b));
+  const after = parseBlocks("First paragraph.\n\nSecond, still streaming.").map((b) => JSON.stringify(b));
+  assert.equal(firstChangedBlock(before, after), 1);
+});
+
+test("table alignment markers become per-column alignments", () => {
+  const [table] = parseBlocks("| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |");
+  assert.deepEqual(table.align, ["left", "center", "right", null]);
+  const [short] = parseBlocks("| a | b |\n| --: |\n| 1 | 2 |");
+  assert.deepEqual(short.align, ["right", null]);
+});
+
+test("~~strike~~ is deletion, a lone ~ or ~~ ~~ is text", () => {
+  const [node] = parseInline("~~gone~~");
+  assert.equal(node.t, "del");
+  assert.equal(node.c[0].v, "gone");
+  assert.deepEqual(parseInline("about ~5 and ~~ ~~"), [{ t: "text", v: "about ~5 and ~~ ~~" }]);
+});
+
+test("headings may be indented up to three spaces, and keep a # that is part of the text", () => {
+  assert.deepEqual(
+    parseBlocks("   ## Indented\n\n    #### four spaces is not a heading").map((b) => b.t),
+    ["heading", "paragraph"]
+  );
+  const [csharp] = parseBlocks("## Using C#");
+  assert.equal(csharp.c[0].v, "Using C#");
+  const [closed] = parseBlocks("### Title ###");
+  assert.equal(closed.c[0].v, "Title");
 });

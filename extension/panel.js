@@ -67,6 +67,9 @@
     return {
       companionOnline: null, // null until the first status event
       lastSeq: 0,
+      // The relay run that lastSeq counts in. Sequence numbers restart at 1
+      // when the relay restarts, so a seq means nothing without its epoch.
+      epoch: null,
       byProblem: new Map(), // slug -> items[]
       turnProblem: new Map(), // turnId -> slug, so a chunk (which has no slug) finds its turn
     };
@@ -88,9 +91,77 @@
     return itemsFor(state, slug).find((item) => item.kind === "tutor" && item.turnId === turnId) || null;
   }
 
-  // Applies one relay event. Returns the problem slug it affected (or null),
-  // so the caller can re-render only when that problem is on screen.
+  // Every item carries a revision that goes up whenever applyEvent changes it
+  // after creation, which is how the renderer knows which cached DOM nodes are
+  // still current (see renderFeed).
+  function touch(item) {
+    item.rev = (item.rev || 0) + 1;
+  }
+
+  function newTurn(turnId) {
+    return { kind: "tutor", turnId, text: "", pending: true, interrupted: false, error: null, rev: 0 };
+  }
+
+  // Appends an item and enforces the per-problem cap. The turn ids of tutor
+  // items that fall off the front are forgotten too, or turnProblem would grow
+  // for as long as the tab stays open.
+  function pushItem(state, slug, item) {
+    const items = itemsFor(state, slug);
+    if (item.rev === undefined) item.rev = 0;
+    items.push(item);
+    if (items.length > MAX_ITEMS_PER_PROBLEM) {
+      for (const dropped of items.splice(0, items.length - MAX_ITEMS_PER_PROBLEM)) {
+        if (dropped.kind === "tutor" && state.turnProblem.get(dropped.turnId) === (slug || "")) {
+          state.turnProblem.delete(dropped.turnId);
+        }
+      }
+    }
+  }
+
+  // The relay restarted (its epoch changed). Everything already on screen
+  // stays, but numbering starts over, and a reply that was still streaming
+  // will never get its end from this relay unless the companion survived, so
+  // it stops showing the typing indicator. Returns true if any transcript
+  // changed.
+  function restartSession(state) {
+    state.lastSeq = 0;
+    let changed = false;
+    for (const [slug, items] of state.byProblem) {
+      if (!items.length) continue;
+      for (const item of items) {
+        if (item.kind === "tutor" && item.pending) {
+          item.pending = false;
+          item.interrupted = true;
+          touch(item);
+        }
+      }
+      if (items[items.length - 1].kind !== "notice" || items[items.length - 1].restart !== true) {
+        pushItem(state, slug, { kind: "notice", text: "Session restarted", restart: true });
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
+  // Applies one relay event. Returns the problem slug whose transcript it
+  // changed (or null), so the caller only touches the feed when that problem
+  // is on screen. Returns RESTARTED when the relay's epoch changed, which can
+  // touch every transcript.
+  const RESTARTED = "\u0000restarted";
   function applyEvent(state, event) {
+    // Checked per event, not only on status: a reconnect replays the buffer
+    // first and sends status last, and the replayed events already belong to
+    // the new run.
+    let restarted = false;
+    if (typeof event.epoch === "string" && event.epoch) {
+      if (state.epoch !== null && event.epoch !== state.epoch) restarted = restartSession(state);
+      state.epoch = event.epoch;
+    }
+    const affected = applyEventInEpoch(state, event);
+    return restarted ? RESTARTED : affected;
+  }
+
+  function applyEventInEpoch(state, event) {
     if (event.type === "status") {
       state.companionOnline = Boolean(event.companionOnline);
       return null;
@@ -103,28 +174,35 @@
     const slug = event.problemSlug || "";
     switch (event.type) {
       case "user":
-        itemsFor(state, slug).push({ kind: "user", text: event.text || "" });
-        break;
+        pushItem(state, slug, { kind: "user", text: event.text || "" });
+        return slug;
       case "capture":
-        itemsFor(state, slug).push({
+        pushItem(state, slug, {
           kind: "capture",
           trigger: event.trigger,
           attemptSeq: event.attemptSeq,
           title: event.problemTitle || null,
         });
-        break;
+        return slug;
       case "notice":
-        itemsFor(state, slug).push({ kind: "notice", text: event.text || "" });
-        break;
+        pushItem(state, slug, { kind: "notice", text: event.text || "" });
+        return slug;
       case "turn-start":
         if (state.turnProblem.has(event.turnId)) return null;
         state.turnProblem.set(event.turnId, slug);
-        itemsFor(state, slug).push({ kind: "tutor", turnId: event.turnId, text: "", pending: true, error: null });
-        break;
+        pushItem(state, slug, newTurn(event.turnId));
+        return slug;
       case "chunk": {
         const turn = findTurn(state, event.turnId);
         if (!turn) return null;
         turn.text += event.text || "";
+        // A reply marked interrupted by a relay restart that keeps streaming
+        // (the companion outlived the relay) is alive after all.
+        if (turn.interrupted) {
+          turn.interrupted = false;
+          turn.pending = true;
+        }
+        touch(turn);
         return state.turnProblem.get(event.turnId);
       }
       case "turn-end": {
@@ -132,20 +210,19 @@
         if (!turn) {
           // Joined after the turn started and its start was already trimmed.
           state.turnProblem.set(event.turnId, slug);
-          turn = { kind: "tutor", turnId: event.turnId, text: "", pending: true, error: null };
-          itemsFor(state, slug).push(turn);
+          turn = newTurn(event.turnId);
+          pushItem(state, slug, turn);
         }
         if (typeof event.text === "string") turn.text = event.text;
         turn.error = event.error || null;
         turn.pending = false;
+        turn.interrupted = false;
+        touch(turn);
         return state.turnProblem.get(event.turnId);
       }
       default:
         return null;
     }
-    const items = itemsFor(state, slug);
-    if (items.length > MAX_ITEMS_PER_PROBLEM) items.splice(0, items.length - MAX_ITEMS_PER_PROBLEM);
-    return slug;
   }
 
   // ---------------------------------------------------------------------
@@ -174,6 +251,16 @@
           flush();
           nodes.push({ t: "code", v: text.slice(i + 1, end) });
           i = end + 1;
+          continue;
+        }
+      }
+      if (text.startsWith("~~", i)) {
+        const end = text.indexOf("~~", i + 2);
+        const inner = end > i + 2 ? text.slice(i + 2, end) : "";
+        if (end > i + 2 && !/^\s/.test(inner) && !/\s$/.test(inner)) {
+          flush();
+          nodes.push({ t: "del", c: parseInline(inner) });
+          i = end + 2;
           continue;
         }
       }
@@ -240,12 +327,27 @@
   }
 
   const FENCE_RE = /^\s*```\s*([\w+#.-]*)\s*$/;
-  const HEADING_RE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+  // Up to three spaces of indentation, and a closing run of #s only counts
+  // after whitespace, so "## Using C#" keeps its #.
+  const HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
   const HR_RE = /^\s*([-*_])(?:\s*\1){2,}\s*$/;
   const QUOTE_RE = /^\s*>\s?(.*)$/;
   const LIST_RE = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
 
   const TABLE_SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+  // GFM alignment markers in the separator row: ":--" left, ":-:" center,
+  // "--:" right, plain "---" leaves the default.
+  function tableAlignments(separator) {
+    return splitTableRow(separator).map((cell) => {
+      const left = cell.startsWith(":");
+      const right = cell.endsWith(":") && cell.length > 1;
+      if (left && right) return "center";
+      if (right) return "right";
+      if (left) return "left";
+      return null;
+    });
+  }
 
   function splitTableRow(line) {
     let row = line.trim();
@@ -381,6 +483,7 @@
       }
       if (line.includes("|") && i + 1 < lines.length && TABLE_SEP_RE.test(lines[i + 1])) {
         const header = splitTableRow(line);
+        const aligns = tableAlignments(lines[i + 1]);
         i += 2;
         const rows = [];
         while (i < lines.length && lines[i].trim() && lines[i].includes("|")) {
@@ -390,6 +493,7 @@
         blocks.push({
           t: "table",
           header: header.map(parseInline),
+          align: header.map((_, col) => aligns[col] || null),
           rows: rows.map((r) => header.map((_, col) => parseInline(r[col] || ""))),
         });
         continue;
@@ -413,8 +517,8 @@
         const el = doc.createElement("code");
         el.textContent = node.v;
         frag.appendChild(el);
-      } else if (node.t === "strong" || node.t === "em") {
-        const el = doc.createElement(node.t === "strong" ? "strong" : "em");
+      } else if (node.t === "strong" || node.t === "em" || node.t === "del") {
+        const el = doc.createElement(node.t);
         el.appendChild(renderInline(node.c, doc));
         frag.appendChild(el);
       } else if (node.t === "link") {
@@ -473,8 +577,14 @@
         const table = doc.createElement("table");
         const head = doc.createElement("thead");
         const headRow = doc.createElement("tr");
-        for (const cell of block.header) {
+        // An attribute plus a stylesheet rule rather than an inline style, so
+        // nothing here depends on the page's CSP allowing style attributes.
+        const align = (cell, col) => {
+          if (block.align && block.align[col]) cell.setAttribute("data-align", block.align[col]);
+        };
+        for (const [col, cell] of block.header.entries()) {
           const th = doc.createElement("th");
+          align(th, col);
           th.appendChild(renderInline(cell, doc));
           headRow.appendChild(th);
         }
@@ -482,8 +592,9 @@
         const body = doc.createElement("tbody");
         for (const row of block.rows) {
           const tr = doc.createElement("tr");
-          for (const cell of row) {
+          for (const [col, cell] of row.entries()) {
             const td = doc.createElement("td");
+            align(td, col);
             td.appendChild(renderInline(cell, doc));
             tr.appendChild(td);
           }
@@ -495,6 +606,14 @@
       }
     }
     return frag;
+  }
+
+  // How many leading blocks of a re-parsed reply are unchanged, compared by a
+  // key per block (its JSON form). The renderer keeps those blocks' nodes.
+  function firstChangedBlock(oldKeys, newKeys) {
+    let same = 0;
+    while (same < oldKeys.length && same < newKeys.length && oldKeys[same] === newKeys[same]) same += 1;
+    return same;
   }
 
   function problemSlugFromPath(pathname) {
@@ -510,7 +629,9 @@
       createSseParser,
       createState,
       applyEvent,
+      RESTARTED,
       itemsFor,
+      firstChangedBlock,
       parseInline,
       parseBlocks,
       renderBlocks,
@@ -531,6 +652,7 @@
   const TAB_ATTR = "data-lc-tutor-tab";
   const ACTIVE_ATTR = "data-lc-tutor-active";
   const TUTOR_COLOR = "rgb(150, 115, 255)";
+  const MAX_MESSAGE_CHARS = 8000;
 
   const state = createState();
   let relayReachable = null; // null until the first connect attempt settles
@@ -538,6 +660,7 @@
   let unread = false;
   let mounted = null; // { tabset, container, tab, divider, host, layout, ... }
   let renderQueued = false;
+  let sending = false; // a typed message's POST is in flight
 
   const PAGE_CSS = `
     [${TAB_ATTR}] .lc-tutor-dot { display: none; width: 6px; height: 6px; margin-left: 2px; border-radius: 50%; background: #ef4743; }
@@ -547,11 +670,13 @@
     }
   `;
 
-  // Metrics below were measured on LeetCode's own Description pane (dark
-  // theme): scroll area padding 20px 16px, title 24px/32px weight 600, body
-  // 14px/21px, 16px between blocks, inline code chips 12px/16px with 2px
-  // padding, a 5px radius and a 1px border, and the browser's default
-  // (non-thin) scrollbar.
+  // Metrics below were measured on LeetCode's own panes (dark theme): the
+  // Description pane's scroll area padding 20px 16px, body 14px/21px, 16px
+  // between blocks, list items 16px in with a 33px pitch (21px line plus
+  // 12px), inline code chips 12px/16px with 2px padding, a 5px radius and a
+  // 1px border, and the browser's default (non-thin) scrollbar. There is no
+  // big title: none of the native tabs except Description has one, and
+  // Submissions opens with a slim muted row, which the header row copies.
   const PANEL_CSS = `
     :host { display: none; position: absolute; z-index: 20; box-sizing: border-box; }
     :host([data-active]) { display: block; }
@@ -562,14 +687,15 @@
       font: 400 14px/21px var(--font);
     }
     .scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 20px 16px; color-scheme: var(--scheme); }
-    .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
-    .title { margin: 0; font-size: 24px; font-weight: 600; line-height: 32px; color: var(--fg); }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 20px; margin: 0 0 16px; }
+    .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .head-right { flex: none; }
     .status { display: flex; align-items: center; gap: 4px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
     .status svg { width: 14px; height: 14px; flex: none; }
     .status[data-ok] svg { color: var(--green); }
     .feed { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; }
     .banner { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
-    .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; padding: 0 24px; color: var(--muted); text-align: center; }
+    .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; padding: 0 24px; color: color-mix(in srgb, var(--fg) 30%, transparent); text-align: center; }
     .empty p { margin: 0; max-width: 300px; }
     .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
     .chip b { font-weight: 500; color: var(--fg); }
@@ -583,22 +709,37 @@
     .tutor .h { font-weight: 600; margin: 20px 0 8px; color: var(--fg); }
     .tutor > .h:first-child { margin-top: 0; }
     .tutor .h1 { font-size: 18px; line-height: 26px; } .tutor .h2 { font-size: 16px; line-height: 24px; }
-    .tutor ul, .tutor ol { margin: 0 0 16px; padding-left: 20px; }
-    .tutor li { margin: 2px 0; }
-    .tutor li > ul, .tutor li > ol { margin: 4px 0 4px; }
-    .table-wrap { margin: 0 0 16px; overflow-x: auto; scrollbar-width: thin; }
+    .tutor ul, .tutor ol { margin: 0 0 16px; padding-left: 16px; }
+    .tutor li { margin: 0 0 12px; }
+    .tutor li:last-child { margin-bottom: 0; }
+    .tutor li > ul, .tutor li > ol { margin: 4px 0 0; }
+    .tutor li li { margin-bottom: 4px; }
+    .tutor li li:last-child { margin-bottom: 0; }
+    .table-wrap { margin: 0 0 16px; overflow-x: auto; }
     .tutor table { border-collapse: collapse; }
     .tutor th, .tutor td { padding: 6px 12px; border: 1px solid var(--chip-line); text-align: left; vertical-align: top; }
+    .tutor [data-align="center"] { text-align: center; } .tutor [data-align="right"] { text-align: right; }
     .tutor th { font-weight: 600; color: var(--fg); background: var(--fill); }
     .tutor strong { font-weight: 600; }
     .tutor a { color: var(--link); text-decoration: none; }
     .tutor a:hover { text-decoration: underline; }
     code { font: 12px/16px Menlo, Menlo-fallback, sans-serif; padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--chip-line); color: color-mix(in srgb, var(--fg) 75%, transparent); }
-    .tutor pre { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: var(--fill); border: 1px solid var(--chip-line); overflow-x: auto; scrollbar-width: thin; }
+    .tutor pre { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: var(--fill); border: 1px solid var(--chip-line); overflow-x: auto; }
+    /* A wide code block or table scrolls sideways. Chromium's own thin
+       scrollbar draws arrow buttons that sit over the rounded corners, so it
+       gets a slim styled one without buttons. Setting scrollbar-width would
+       switch these rules off in Chromium, so only browsers without them
+       (Firefox) get it. */
+    .tutor pre::-webkit-scrollbar, .table-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+    .tutor pre::-webkit-scrollbar-button, .table-wrap::-webkit-scrollbar-button { display: none; }
+    .tutor pre::-webkit-scrollbar-track, .table-wrap::-webkit-scrollbar-track, .tutor pre::-webkit-scrollbar-corner, .table-wrap::-webkit-scrollbar-corner { background: transparent; }
+    .tutor pre::-webkit-scrollbar-thumb, .table-wrap::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 4px; background: color-mix(in srgb, var(--fg) 22%, transparent) padding-box; }
+    @supports not selector(::-webkit-scrollbar) { .tutor pre, .table-wrap { scrollbar-width: thin; } }
     .tutor pre code { padding: 0; border: 0; background: none; white-space: pre; font-size: 12px; line-height: 20px; color: var(--body); }
     .tutor blockquote { margin: 0 0 16px; padding-left: 16px; border-left: 2px solid var(--line-strong); color: var(--muted); }
     .tutor hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
     .err { color: var(--red); }
+    .tutor .note { margin: 0; font-size: 12px; line-height: 16px; color: var(--muted); }
     .dots { display: inline-flex; gap: 4px; padding: 6px 0; }
     .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite ease-in-out; }
     .dots i:nth-child(2) { animation-delay: 0.15s; } .dots i:nth-child(3) { animation-delay: 0.3s; }
@@ -645,6 +786,26 @@
     return null;
   }
 
+  // The native pane currently shown in our tabset. Panes are absolutely
+  // positioned siblings of the tabsets, so the visible one is the pane laid out
+  // exactly over this tabset's content area. DOM order means nothing here: the
+  // layout can list another tabset's pane (the Code editor, say) first, and
+  // picking that one would make the editor inert while the Tutor tab is open.
+  function paneUnderTabset(m) {
+    const content = m.tabset.querySelector(".flexlayout__tabset_content");
+    if (!content) return null;
+    const want = content.getBoundingClientRect();
+    if (!want.width || !want.height) return null;
+    const near = (a, b) => Math.abs(a - b) <= 1;
+    return (
+      [...m.layout.querySelectorAll(".flexlayout__tab")].find((pane) => {
+        if (pane === m.host) return false;
+        const r = pane.getBoundingClientRect();
+        return near(r.left, want.left) && near(r.top, want.top) && near(r.width, want.width) && near(r.height, want.height);
+      }) || null
+    );
+  }
+
   // Relative luminance below 0.5 is a dark surface.
   function isLight(cssColor) {
     const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(cssColor);
@@ -671,8 +832,7 @@
     style.setProperty("--muted", muted);
     // Body copy in the Description pane is pure white while its title and the
     // tab labels are 245; keep that distinction.
-    const nativePane = [...m.layout.querySelectorAll(".flexlayout__tab")].find((t) => t !== m.host);
-    style.setProperty("--body", pick(nativePane, "color", fg));
+    style.setProperty("--body", pick(paneUnderTabset(m), "color", fg));
     style.setProperty("--scheme", getComputedStyle(document.documentElement).colorScheme || "dark");
     style.setProperty("--font", getComputedStyle(document.body).fontFamily);
     style.setProperty("--fill", "color-mix(in srgb, var(--fg) 7%, transparent)");
@@ -777,14 +937,22 @@
     const wrap = el("div", "wrap");
     wrap.setAttribute("role", "tabpanel");
     wrap.setAttribute("aria-label", "Tutor");
-    // The title row scrolls away with the content, like the Description pane's.
+    // A slim header row like the one Submissions opens with, scrolling away
+    // with the content: the connection status on the left, and room on the
+    // right for controls (a settings gear and the model's name are planned
+    // there).
     const head = el("div", "head");
-    head.appendChild(el("h2", "title", "Tutor"));
+    const headLeft = el("div", "head-left");
     const status = el("div", "status");
+    // A polite live region: screen readers announce "Offline" and the like
+    // when it changes, without interrupting.
+    status.setAttribute("role", "status");
+    status.appendChild(statusIcon());
     const statusText = el("span", "", "Connecting");
     status.appendChild(statusText);
-    status.appendChild(statusIcon());
-    head.appendChild(status);
+    headLeft.appendChild(status);
+    const headRight = el("div", "head-right");
+    head.append(headLeft, headRight);
 
     const banner = el("div", "banner");
     banner.hidden = true;
@@ -799,6 +967,8 @@
     input.rows = 1;
     input.placeholder = "Ask the tutor about this problem";
     input.setAttribute("aria-label", "Message the tutor");
+    // The relay refuses longer messages (relay-server/panel-broker.js).
+    input.maxLength = MAX_MESSAGE_CHARS;
     const send = document.createElement("button");
     send.type = "button";
     send.setAttribute("aria-label", "Send");
@@ -820,7 +990,7 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, status, statusText, banner, scroll, feed, input, send, hint };
+    return { host, status, statusText, headRight, banner, scroll, feed, input, send, hint };
   }
 
   function currentSlug() {
@@ -847,6 +1017,9 @@
   }
 
   function renderBanner(node, text) {
+    // Rebuilt only when the text changes, like everything in the header.
+    if (node.dataset.text === (text || "")) return;
+    node.dataset.text = text || "";
     node.textContent = "";
     if (!text) {
       node.hidden = true;
@@ -860,7 +1033,35 @@
     });
   }
 
-  function renderItem(item) {
+  function emptyStateText(conn) {
+    if (relayReachable === false || state.companionOnline === false) {
+      // The composer is disabled and the banner above says how to start the
+      // companion; don't invite a question that can't be asked.
+      return "Once the companion is running, your Run and Submit attempts and the tutor's replies show up here.";
+    }
+    return conn.ok
+      ? "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below."
+      : "Run or submit your code and the tutor will review it here.";
+  }
+
+  // ---- the feed ----------------------------------------------------------
+  //
+  // The feed is patched in place, never rebuilt per event. Rebuilding it
+  // (as an earlier version did on every streamed chunk) threw away the
+  // student's text selection and reset every code block's horizontal scroll
+  // several times a second. Instead each item keeps one DOM node for its whole
+  // life (nodeCache, keyed by the item object, so a dropped item's node is
+  // garbage collected with it), and a node is only touched when its item's
+  // rev changed. A tutor reply is patched block by block: blocks whose parsed
+  // form is unchanged keep their nodes, and only the first changed block
+  // onward is rebuilt, which while streaming is normally just the last one.
+
+  const nodeCache = new WeakMap(); // item -> { node, rev, blocks: [{ key, node }], tail: [] }
+  let emptyNode = null;
+  let feedDirty = true; // the on-screen transcript changed since the last feed render
+  let renderedSlug; // the slug the feed currently shows (undefined: none yet)
+
+  function renderStaticItem(item) {
     if (item.kind === "capture") {
       const chip = el("div", "chip");
       chip.appendChild(el("b", "", item.trigger === "submit" ? "Submit" : "Run"));
@@ -868,16 +1069,71 @@
       return chip;
     }
     if (item.kind === "notice") return el("div", "notice", item.text);
-    if (item.kind === "user") return el("div", "user", item.text);
-    const wrap = el("div", "tutor");
-    if (item.text) wrap.appendChild(renderBlocks(parseBlocks(item.text), document));
-    if (item.error) wrap.appendChild(el("p", "err", item.error));
+    return el("div", "user", item.text);
+  }
+
+  function patchTutor(entry, item) {
+    const blocks = item.text ? parseBlocks(item.text) : [];
+    const keys = blocks.map((block) => JSON.stringify(block));
+    const same = firstChangedBlock(
+      entry.blocks.map((b) => b.key),
+      keys
+    );
+    for (const old of entry.blocks.splice(same)) old.node.remove();
+    // The tail (error, interruption note, typing dots) is small and always
+    // comes last, so it is simply redone.
+    for (const node of entry.tail.splice(0)) node.remove();
+    for (let k = same; k < blocks.length; k += 1) {
+      const node = renderBlocks([blocks[k]], document).firstChild;
+      entry.node.appendChild(node);
+      entry.blocks.push({ key: keys[k], node });
+    }
+    if (item.error) entry.tail.push(el("p", "err", item.error));
+    if (item.interrupted) entry.tail.push(el("p", "note", "The session restarted before this reply finished."));
     if (item.pending && !item.text) {
       const dots = el("div", "dots");
       for (let i = 0; i < 3; i += 1) dots.appendChild(document.createElement("i"));
-      wrap.appendChild(dots);
+      entry.tail.push(dots);
     }
-    return wrap;
+    for (const node of entry.tail) entry.node.appendChild(node);
+  }
+
+  function nodeFor(item) {
+    let entry = nodeCache.get(item);
+    if (!entry) {
+      const node = item.kind === "tutor" ? el("div", "tutor") : renderStaticItem(item);
+      entry = { node, rev: item.kind === "tutor" ? -1 : item.rev, blocks: [], tail: [] };
+      nodeCache.set(item, entry);
+    }
+    if (entry.rev !== item.rev) {
+      patchTutor(entry, item);
+      entry.rev = item.rev;
+    }
+    return entry.node;
+  }
+
+  // Makes the feed's children exactly `nodes`, in order, while moving as
+  // little as possible: nodes that stay are never detached (detaching would
+  // drop a selection inside them), stale ones are removed, new ones inserted.
+  function reconcile(feed, nodes) {
+    const keep = new Set(nodes);
+    for (const child of [...feed.children]) if (!keep.has(child)) child.remove();
+    nodes.forEach((node, i) => {
+      if (feed.children[i] !== node) feed.insertBefore(node, feed.children[i] || null);
+    });
+  }
+
+  function renderHeader(p, conn, slug) {
+    if (p.statusText.textContent !== conn.label) p.statusText.textContent = conn.label;
+    p.status.querySelector("path").setAttribute("d", conn.ok ? STATUS_OK : STATUS_BAD);
+    if (conn.ok) p.status.setAttribute("data-ok", "");
+    else p.status.removeAttribute("data-ok");
+    renderBanner(p.banner, conn.banner);
+
+    const canSend = conn.ok && Boolean(slug);
+    p.input.disabled = !canSend;
+    p.send.disabled = !canSend || sending || !p.input.value.trim();
+    p.input.placeholder = canSend ? "Ask the tutor about this problem" : "Start the companion to chat";
   }
 
   function render() {
@@ -886,28 +1142,32 @@
     const p = mounted.panel;
     const slug = currentSlug();
     const conn = describeConnection();
-    p.statusText.textContent = conn.label;
-    p.status.querySelector("path").setAttribute("d", conn.ok ? STATUS_OK : STATUS_BAD);
-    if (conn.ok) p.status.setAttribute("data-ok", "");
-    else p.status.removeAttribute("data-ok");
-    renderBanner(p.banner, conn.banner);
-
-    const canSend = conn.ok && Boolean(slug);
-    p.input.disabled = !canSend;
-    p.send.disabled = !canSend || !p.input.value.trim();
-    p.input.placeholder = canSend ? "Ask the tutor about this problem" : "Start the companion to chat";
+    renderHeader(p, conn, slug);
 
     if (!active) return;
+    const emptyText = emptyStateText(conn);
+    if (emptyNode && emptyNode.firstChild.textContent !== emptyText) emptyNode.firstChild.textContent = emptyText;
+    if (slug !== renderedSlug) feedDirty = true;
+    // Status changes and events for other problems end here: nothing in the
+    // feed is touched.
+    if (!feedDirty) return;
+    feedDirty = false;
+    renderedSlug = slug;
+
     const stick =
       Date.now() < mounted.stickUntil || p.scroll.scrollHeight - p.scroll.scrollTop - p.scroll.clientHeight < 80;
     const items = (slug && state.byProblem.get(slug)) || [];
-    p.feed.textContent = "";
+    let nodes;
     if (items.length === 0) {
-      const empty = el("div", "empty");
-      empty.appendChild(el("p", "", "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below."));
-      p.feed.appendChild(empty);
+      if (!emptyNode) {
+        emptyNode = el("div", "empty");
+        emptyNode.appendChild(el("p", "", emptyText));
+      }
+      nodes = [emptyNode];
+    } else {
+      nodes = items.map(nodeFor);
     }
-    for (const item of items) p.feed.appendChild(renderItem(item));
+    reconcile(p.feed, nodes);
     if (stick) p.scroll.scrollTop = p.scroll.scrollHeight;
   }
 
@@ -915,6 +1175,13 @@
     if (renderQueued) return;
     renderQueued = true;
     requestAnimationFrame(render);
+  }
+
+  // What an applied event means for the screen: the feed only needs work when
+  // the transcript on screen changed (or a relay restart touched them all).
+  function noteApplied(affected) {
+    if (affected === RESTARTED || (affected !== null && affected === currentSlug())) feedDirty = true;
+    scheduleRender();
   }
 
   // ---- placement, activation ------------------------------------------
@@ -959,12 +1226,12 @@
     mounted.tab.setAttribute("aria-selected", "true");
     document.body.setAttribute(ACTIVE_ATTR, "");
     // The native pane stays mounted behind the panel; keep keyboard focus out
-    // of it.
-    mounted.inertPane = [...mounted.layout.querySelectorAll(".flexlayout__tab")].find(
-      (t) => t !== mounted.host && t.getBoundingClientRect().width > 0
-    );
+    // of it (and only it: see paneUnderTabset).
+    mounted.inertPane = paneUnderTabset(mounted);
     if (mounted.inertPane) mounted.inertPane.inert = true;
     setUnread(false);
+    // A hint about an earlier failed send is stale by the time they come back.
+    mounted.panel.hint.hidden = true;
     render();
     mounted.panel.scroll.scrollTop = mounted.panel.scroll.scrollHeight;
     // After the browser's own mousedown focus handling, which would otherwise
@@ -1014,6 +1281,10 @@
     };
     tab.setAttribute("aria-selected", "false");
     mounted = m;
+    // A fresh panel has an empty feed; the cached item nodes move into it on
+    // the next render.
+    feedDirty = true;
+    renderedSlug = undefined;
     sampleTheme(m);
     syncRect();
 
@@ -1058,7 +1329,10 @@
     panel.input.addEventListener("input", () => {
       panel.input.style.height = "auto";
       panel.input.style.height = `${Math.min(panel.input.scrollHeight, 140)}px`;
-      panel.send.disabled = panel.input.disabled || !panel.input.value.trim();
+      panel.send.disabled = panel.input.disabled || sending || !panel.input.value.trim();
+      // They are editing; a complaint about the previous attempt no longer
+      // applies.
+      panel.hint.hidden = true;
     });
     panel.input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -1110,7 +1384,12 @@
     const p = mounted.panel;
     const text = p.input.value.trim();
     const slug = currentSlug();
-    if (!text || !slug || p.input.disabled) return;
+    // A second Enter while the first POST is in flight would send the same
+    // message again and cost a second tutor turn. The text stays visible but
+    // read-only until the relay answers.
+    if (sending || !text || !slug || p.input.disabled) return;
+    sending = true;
+    p.input.readOnly = true;
     p.send.disabled = true;
     p.hint.hidden = true;
     try {
@@ -1134,6 +1413,14 @@
         state.companionOnline = false;
         p.hint.textContent = "The tutor went offline. Your message wasn't sent.";
         p.hint.hidden = false;
+      } else if (res.status === 413 || (res.status === 400 && text.length > MAX_MESSAGE_CHARS)) {
+        p.hint.textContent = `That message is too long (${MAX_MESSAGE_CHARS} characters at most).`;
+        p.hint.hidden = false;
+      } else if (res.status === 400) {
+        // What else the relay refuses: a message that is nothing but control
+        // characters, or a page whose problem slug it doesn't accept.
+        p.hint.textContent = "The relay refused that message. Edit it and try again.";
+        p.hint.hidden = false;
       } else {
         p.hint.textContent = "Couldn't send that message.";
         p.hint.hidden = false;
@@ -1144,6 +1431,9 @@
       // whether the stream is healthy.
       p.hint.textContent = "Couldn't reach the relay server. Try again.";
       p.hint.hidden = false;
+    } finally {
+      sending = false;
+      p.input.readOnly = false;
     }
     scheduleRender();
     p.input.focus({ preventScroll: true });
@@ -1186,7 +1476,10 @@
       try {
         // no-store: see panel-broker.js; two tabs must never queue behind
         // each other's open stream through the HTTP cache.
-        const res = await fetch(`${RELAY_BASE}/panel/events?after=${state.lastSeq}`, {
+        // The epoch says which relay run lastSeq counts in; a restarted relay
+        // ignores `after` from another run and replays everything it has.
+        const epoch = state.epoch ? `&epoch=${encodeURIComponent(state.epoch)}` : "";
+        const res = await fetch(`${RELAY_BASE}/panel/events?after=${state.lastSeq}${epoch}`, {
           headers: { Accept: "text/event-stream" },
           cache: "no-store",
           signal: abort.signal,
@@ -1201,7 +1494,7 @@
           if (event.type === "status") suppressUnread = false;
           const affected = applyEvent(state, event);
           if (event.type === "turn-end" && !suppressUnread && !active && affected === currentSlug()) setUnread(true);
-          scheduleRender();
+          noteApplied(affected);
         });
         for (;;) {
           // eslint-disable-next-line no-await-in-loop
