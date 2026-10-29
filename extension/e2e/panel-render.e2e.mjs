@@ -866,6 +866,59 @@ try {
     check(await page.eval(`window.__q('.hint').hidden`), 'the hint survived re-activation');
   });
 
+  await scenario('after a send, a deliberate scroll up stops the feed following the reply at once', async () => {
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'long1', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'long1', problemSlug: 'two-sum', text: Array.from({ length: 40 }, (_, i) => 'Paragraph ' + i + ' of an earlier reply.').join('\\n\\n') })`);
+    await settle();
+    const fromBottom = `(() => { const s = window.__q('.scroll'); return s.scrollHeight - s.scrollTop - s.clientHeight; })()`;
+    const sendOne = async (text, turnId) => {
+      const before = await page.eval('window.__posts.length');
+      await page.eval(`(() => {
+        const t = window.__q('textarea');
+        t.value = ${JSON.stringify(text)};
+        t.dispatchEvent(new Event('input', { bubbles: true }));
+        t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      })()`);
+      await page.waitFor(`window.__posts.length > ${before} && window.__q('textarea').readOnly === false`, { what: 'the send' });
+      await page.eval(`window.__ev({ type: 'user', problemSlug: 'two-sum', text: ${JSON.stringify(text)} })`);
+      await page.eval(`window.__ev({ type: 'turn-start', turnId: '${turnId}', problemSlug: 'two-sum' })`);
+      await settle();
+      check((await page.eval(fromBottom)) < 2, 'the send did not bring the feed to the bottom');
+    };
+    const grow = async (turnId) => {
+      await page.eval(`window.__ev({ type: 'chunk', turnId: '${turnId}', text: Array.from({ length: 12 }, (_, i) => 'Streamed line ' + i + '.').join('\\n\\n') + '\\n\\n' })`);
+      await settle();
+    };
+
+    // A real mouse wheel notch up, then more of the reply streams in.
+    await sendOne('follow me', 'follow1');
+    const rect = await page.eval(`(() => { const r = window.__q('.scroll').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: rect.x, y: rect.y, deltaX: 0, deltaY: -60 });
+    await settle();
+    const wheeled = await page.eval(`window.__q('.scroll').scrollTop`);
+    await grow('follow1');
+    check((await page.eval(`window.__q('.scroll').scrollTop`)) === wheeled, 'a wheel scroll up was undone by the stream');
+    check((await page.eval(fromBottom)) > 80, 'the feed kept following after a wheel scroll up');
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'follow1', problemSlug: 'two-sum', text: 'done' })`);
+
+    // A scrollbar drag or a keyboard scroll (the scroll position moved by
+    // something other than the panel itself).
+    await sendOne('and again', 'follow2');
+    await page.eval(`(() => { const s = window.__q('.scroll'); s.scrollTop = s.scrollTop - 300; })()`);
+    await settle();
+    const dragged = await page.eval(`window.__q('.scroll').scrollTop`);
+    await grow('follow2');
+    check((await page.eval(`window.__q('.scroll').scrollTop`)) === dragged, 'a scrollbar scroll up was undone by the stream');
+
+    // Back at the bottom, following resumes.
+    await page.eval(`(() => { const s = window.__q('.scroll'); s.scrollTop = s.scrollHeight; })()`);
+    await settle();
+    await grow('follow2');
+    check((await page.eval(fromBottom)) < 2, 'following did not resume at the bottom');
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'follow2', problemSlug: 'two-sum', text: 'done' })`);
+    await settle();
+  });
+
   const exceptions = page.console.filter((line) => line.startsWith('exception'));
   await scenario('no exceptions in the page', async () => {
     check(exceptions.length === 0, exceptions.join('\n'));

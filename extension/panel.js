@@ -1214,6 +1214,31 @@
     const scroll = el("div", "scroll");
     const feed = el("div", "feed");
     scroll.append(banner, feed);
+    // Whether the feed follows new content to the bottom. Any scroll up by
+    // the student (wheel, touch, keys, a scrollbar drag) stops it at once;
+    // coming back near the bottom starts it again. The panel itself only
+    // ever scrolls down, and content that shrinks leaves it at the bottom.
+    const view = { follow: true, lastTop: 0 };
+    scroll.addEventListener(
+      "scroll",
+      () => {
+        const top = scroll.scrollTop;
+        const fromBottom = scroll.scrollHeight - top - scroll.clientHeight;
+        if (top < view.lastTop - 1 && fromBottom > 1) view.follow = false;
+        else if (fromBottom < 80) view.follow = true;
+        view.lastTop = top;
+      },
+      { passive: true }
+    );
+    // The wheel says so before the scroll it causes lands, so a render in
+    // between cannot pull the feed back down.
+    scroll.addEventListener(
+      "wheel",
+      (e) => {
+        if (e.deltaY < 0 && scroll.scrollTop > 0) view.follow = false;
+      },
+      { passive: true }
+    );
 
     const composer = el("div", "composer");
     const box = el("div", "box");
@@ -1244,7 +1269,7 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, status, statusText, headRight, provider, gear, banner, scroll, feed, input, send, hint };
+    return { host, status, statusText, headRight, provider, gear, banner, scroll, view, feed, input, send, hint };
   }
 
   // The options page is the only place settings (and API keys) are edited:
@@ -1459,8 +1484,7 @@
     feedDirty = false;
     renderedSlug = slug;
 
-    const stick =
-      Date.now() < mounted.stickUntil || p.scroll.scrollHeight - p.scroll.scrollTop - p.scroll.clientHeight < 80;
+    const stick = p.view.follow;
     const items = (slug && state.byProblem.get(slug)) || [];
     let nodes;
     if (items.length === 0) {
@@ -1538,6 +1562,7 @@
     // A hint about an earlier failed send is stale by the time they come back.
     mounted.panel.hint.hidden = true;
     render();
+    mounted.panel.view.follow = true;
     mounted.panel.scroll.scrollTop = mounted.panel.scroll.scrollHeight;
     // After the browser's own mousedown focus handling, which would otherwise
     // move focus to the tab button we are being activated from.
@@ -1582,7 +1607,7 @@
 
     const m = {
       tabset, container, layout, tab, divider, host: panel.host, panel,
-      selectedAtActivation: null, inertPane: null, stickUntil: 0, cleanup: null,
+      selectedAtActivation: null, inertPane: null, cleanup: null,
     };
     tab.setAttribute("aria-selected", "false");
     mounted = m;
@@ -1710,8 +1735,8 @@
         p.input.value = "";
         p.input.style.height = "auto";
         // Their own message and the reply should come into view even if they
-        // had scrolled up to reread something.
-        mounted.stickUntil = Date.now() + 4000;
+        // had scrolled up to reread something, until they scroll up again.
+        p.view.follow = true;
         p.scroll.scrollTop = p.scroll.scrollHeight;
         if (codeLeftOut || !snapshot) {
           p.hint.textContent = codeLeftOut ? CODE_TOO_LONG : EDITOR_READ_FAILED;
