@@ -544,6 +544,20 @@ try {
     await page.screenshot(path.join(SHOTS, '03-markdown.png'), { width: 1100, height: 760 });
   });
 
+  await scenario('table cells render br variants as DOM breaks without parsing other HTML', async () => {
+    const markdown = '| First | Second | Third | Unsafe |\n| --- | --- | --- | --- |\n| A<br>B | C<br/>D | E<br />F | <img src=x> |';
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'table-breaks', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'table-breaks', problemSlug: 'two-sum', text: ${JSON.stringify(markdown)} })`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const cells = [...window.__qa('.tutor').at(-1).querySelectorAll('td')];
+      return { breaks: cells.map((c) => c.querySelectorAll('br').length),
+        text: cells.map((c) => c.textContent), images: cells[3].querySelectorAll('img').length };
+    })()`);
+    check(JSON.stringify(m.breaks) === JSON.stringify([1, 1, 1, 0]), JSON.stringify(m));
+    check(JSON.stringify(m.text) === JSON.stringify(['AB', 'CD', 'EF', '<img src=x>']) && m.images === 0, JSON.stringify(m));
+  });
+
   await scenario('double Enter sends once, and the textarea is read-only while the POST is in flight', async () => {
     await page.eval(`(() => { window.__postDelayMs = 400; window.__posts.length = 0; })()`);
     await page.eval(`(() => {

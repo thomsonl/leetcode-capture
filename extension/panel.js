@@ -643,25 +643,33 @@
     return blocks;
   }
 
-  function renderInline(nodes, doc) {
+  function renderInline(nodes, doc, tableCell = false) {
     const frag = doc.createDocumentFragment();
     for (const node of nodes) {
       if (node.t === "text") {
-        frag.appendChild(doc.createTextNode(node.v));
+        if (tableCell) {
+          const parts = node.v.split(/(<br\s*\/?>)/gi);
+          for (const part of parts) {
+            if (/^<br\s*\/?>$/i.test(part)) frag.appendChild(doc.createElement("br"));
+            else if (part) frag.appendChild(doc.createTextNode(part));
+          }
+        } else {
+          frag.appendChild(doc.createTextNode(node.v));
+        }
       } else if (node.t === "code") {
         const el = doc.createElement("code");
         el.textContent = node.v;
         frag.appendChild(el);
       } else if (node.t === "strong" || node.t === "em" || node.t === "del") {
         const el = doc.createElement(node.t);
-        el.appendChild(renderInline(node.c, doc));
+        el.appendChild(renderInline(node.c, doc, tableCell));
         frag.appendChild(el);
       } else if (node.t === "link") {
         const el = doc.createElement("a");
         el.href = node.href;
         el.target = "_blank";
         el.rel = "noopener noreferrer";
-        el.appendChild(renderInline(node.c, doc));
+        el.appendChild(renderInline(node.c, doc, tableCell));
         frag.appendChild(el);
       }
     }
@@ -725,7 +733,7 @@
         for (const [col, cell] of block.header.entries()) {
           const th = doc.createElement("th");
           align(th, col);
-          th.appendChild(renderInline(cell, doc));
+          th.appendChild(renderInline(cell, doc, true));
           headRow.appendChild(th);
         }
         head.appendChild(headRow);
@@ -735,7 +743,7 @@
           for (const [col, cell] of row.entries()) {
             const td = doc.createElement("td");
             align(td, col);
-            td.appendChild(renderInline(cell, doc));
+            td.appendChild(renderInline(cell, doc, true));
             tr.appendChild(td);
           }
           body.appendChild(tr);
