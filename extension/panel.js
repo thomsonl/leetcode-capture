@@ -1059,6 +1059,9 @@
     button:hover:not(:disabled) { background: var(--fill); }
     button:disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
     .hint { margin: 6px 2px 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+    .counter { margin: 6px 2px 0; font-size: 12px; line-height: 16px; color: var(--muted); text-align: right; }
+    .counter[hidden] { display: none; }
+    .counter.over { color: var(--red); font-weight: 600; }
   `;
 
   function el(tag, className, text) {
@@ -1367,8 +1370,7 @@
     input.rows = 1;
     input.placeholder = "Ask the tutor about this problem";
     input.setAttribute("aria-label", "Message the tutor");
-    // The relay refuses longer messages (relay-server/panel-broker.js).
-    input.maxLength = MAX_MESSAGE_CHARS;
+    // Preserve a long paste so the student can edit it down to the relay limit.
     const send = document.createElement("button");
     send.type = "button";
     send.setAttribute("aria-label", "Send");
@@ -1381,6 +1383,10 @@
     const hint = el("div", "hint", "");
     hint.hidden = true;
     composer.appendChild(hint);
+    const counter = el("div", "counter", "");
+    counter.hidden = true;
+    counter.setAttribute("aria-live", "polite");
+    composer.appendChild(counter);
 
     wrap.append(head, scroll, composer);
     root.append(style, wrap);
@@ -1390,7 +1396,7 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, wrap, status, statusText, headRight, provider, gear, banner, scroll, view, feed, box, input, send, hint };
+    return { host, wrap, status, statusText, headRight, provider, gear, banner, scroll, view, feed, box, input, send, hint, counter };
   }
 
   // ---- live resizing ----------------------------------------------------
@@ -1409,6 +1415,13 @@
     if (!input.value) return;
     const max = parseFloat(getComputedStyle(input).maxHeight) || 140;
     input.style.height = `${Math.min(input.scrollHeight, max)}px`;
+  }
+
+  function updateCounter(p) {
+    const length = p.input.value.length;
+    p.counter.hidden = length < MAX_MESSAGE_CHARS * 0.8;
+    p.counter.textContent = `${length} / ${MAX_MESSAGE_CHARS}`;
+    p.counter.classList.toggle("over", length > MAX_MESSAGE_CHARS);
   }
 
   // Scrolls the panel itself, telling the scroll listener so.
@@ -1685,7 +1698,7 @@
 
     const canSend = conn.ok && Boolean(slug);
     p.input.disabled = !canSend;
-    p.send.disabled = !canSend || sending || !p.input.value.trim();
+    p.send.disabled = !canSend || sending || !p.input.value.trim() || p.input.value.length > MAX_MESSAGE_CHARS;
     p.input.placeholder = canSend ? "Ask the tutor about this problem" : "Start the companion to chat";
   }
 
@@ -1921,7 +1934,8 @@
   function wireComposer(panel) {
     panel.input.addEventListener("input", () => {
       fitInput(panel);
-      panel.send.disabled = panel.input.disabled || sending || !panel.input.value.trim();
+      updateCounter(panel);
+      panel.send.disabled = panel.input.disabled || sending || !panel.input.value.trim() || panel.input.value.length > MAX_MESSAGE_CHARS;
       // They are editing; a complaint about the previous attempt no longer
       // applies.
       panel.hint.hidden = true;
@@ -2195,7 +2209,7 @@
     // A second Enter while the first POST is in flight would send the same
     // message again and cost a second tutor turn. The text stays visible but
     // read-only until the relay answers.
-    if (sending || !text || !slug || p.input.disabled) return;
+    if (sending || !text || p.input.value.length > MAX_MESSAGE_CHARS || !slug || p.input.disabled) return;
     sending = true;
     p.input.readOnly = true;
     p.send.disabled = true;
@@ -2212,6 +2226,7 @@
       if (res.status === 202) {
         p.input.value = "";
         fitInput(p);
+        updateCounter(p);
         // Their own message and the reply should come into view even if they
         // had scrolled up to reread something, until they scroll up again.
         p.view.follow = true;

@@ -675,7 +675,7 @@ try {
 
   await scenario('a 413 says the message is too long, and typing clears the hint', async () => {
     const max = await page.eval(`window.__q('textarea').maxLength`);
-    check(max === 8000, `maxlength: ${max}`);
+    check(max === -1, `maxlength silently truncates pasted text: ${max}`);
     await page.eval(`(() => {
       window.__postStatus = 413;
       const t = window.__q('textarea');
@@ -688,6 +688,28 @@ try {
     check(hint === 'That message is too long (8000 characters at most).', `hint: ${hint}`);
     await page.eval(`(() => { window.__postStatus = 202; const t = window.__q('textarea'); t.value += '!'; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     check(await page.eval(`window.__q('.hint').hidden`), 'typing did not clear the hint');
+  });
+
+  await scenario('pasting more than 8000 characters preserves the text and disables Send', async () => {
+    const pasted = 'p'.repeat(8101);
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await page.send('Browser.grantPermissions', {
+      origin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    });
+    await page.eval(`navigator.clipboard.writeText(${JSON.stringify(pasted)})`);
+    await page.eval(`window.__q('textarea').focus()`);
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 });
+    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 });
+    await settle();
+    const m = await page.eval(`({ length: window.__q('textarea').value.length,
+      disabled: window.__q('button[aria-label="Send"]').disabled,
+      counter: window.__q('.counter')?.textContent || '' })`);
+    check(m.length === 8101 && m.disabled && /8101 \/ 8000/.test(m.counter), JSON.stringify(m));
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = t.value.slice(0, 7000); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    const under = await page.eval(`({ disabled: window.__q('button[aria-label="Send"]').disabled,
+      counter: window.__q('.counter')?.textContent || '' })`);
+    check(!under.disabled && /7000 \/ 8000/.test(under.counter), JSON.stringify(under));
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   });
 
   await scenario('a relay restart: the reconnect names the epoch, a pending reply stops typing, the new run shows', async () => {
