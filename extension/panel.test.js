@@ -89,13 +89,26 @@ test("captures and notices become transcript items; status only updates the flag
     itemsFor(state, "a").map((i) => i.kind),
     ["capture", "notice"]
   );
-  assert.equal(itemsFor(state, "a")[0].note, null);
+  assert.equal(state.companionBusy, false);
 });
 
-test("a Run chip keeps its quiet note", () => {
+test("a Run chip carries no note, even one an older companion sends", () => {
   const state = createState();
   applyEvent(state, { type: "capture", problemSlug: "a", trigger: "run", attemptSeq: 1, note: "Kept for your next message", seq: 1 });
-  assert.equal(itemsFor(state, "a")[0].note, "Kept for your next message");
+  assert.equal(itemsFor(state, "a")[0].note, undefined);
+});
+
+test("the status event's busy flag counts only while the companion is online", () => {
+  const state = createState();
+  applyEvent(state, { type: "status", companionOnline: true, busy: true });
+  assert.equal(state.companionBusy, true);
+  applyEvent(state, { type: "status", companionOnline: true, busy: false });
+  assert.equal(state.companionBusy, false);
+  applyEvent(state, { type: "status", companionOnline: false, busy: true });
+  assert.equal(state.companionBusy, false);
+  // An older relay sends no busy flag at all.
+  applyEvent(state, { type: "status", companionOnline: true });
+  assert.equal(state.companionBusy, false);
 });
 
 test("a transcript is capped so a long session cannot grow without bound", () => {

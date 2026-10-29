@@ -9,6 +9,8 @@
 //     student typed into the panel, handed to onMessage. It reconnects with
 //     backoff for as long as the bridge runs, which is also how the panel
 //     learns whether a companion is online at all.
+//   - setBusy(busy): tells the relay whether the tutor is working on a turn
+//     (POST /panel/activity), for the panel's "Processing" light.
 //   - dropProblem(slug): asks the relay to forget one problem's buffered
 //     events (POST /panel/drop-problem) once the tutor has moved on from it.
 //     It goes out after everything published before it, so the old
@@ -123,6 +125,7 @@ export function createPanelBridge({
         } else if (res.ok && res.body) {
           reconnectDelay = RECONNECT_MIN_MS;
           setState('connected');
+          if (busy) flushing = flushing.then(postActivity);
           const decoder = new TextDecoder();
           let buffer = '';
           // eslint-disable-next-line no-restricted-syntax
@@ -164,6 +167,34 @@ export function createPanelBridge({
     }
   }
 
+  // Tells the relay whether the tutor is working on (or has queued) a turn,
+  // for the panel's status light. Sent in order after everything published
+  // before it, and again whenever the inbox (re)connects, since a restarted
+  // relay starts out idle.
+  let busy = false;
+  async function postActivity() {
+    try {
+      await fetchImpl(`${baseUrl}/panel/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...COMPANION_HEADERS },
+        body: JSON.stringify({ busy }),
+        signal: AbortSignal.timeout(publishTimeoutMs),
+      });
+    } catch {
+      // Best effort - see the file header.
+    }
+  }
+
+  function setBusy(next) {
+    if (stopped || busy === Boolean(next)) return;
+    busy = Boolean(next);
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushing = flushing.then(flushQueue).then(postActivity);
+  }
+
   function dropProblem(problemSlug) {
     if (stopped || typeof problemSlug !== 'string' || !problemSlug) return;
     if (flushTimer) {
@@ -176,6 +207,7 @@ export function createPanelBridge({
   return {
     publish,
     dropProblem,
+    setBusy,
     start() {
       runInbox();
     },

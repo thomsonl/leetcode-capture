@@ -656,9 +656,10 @@ test("drop-problem forgets one problem's buffered events, and only the companion
   assert.equal((await drop(COMPANION)).status, 200);
   const after = await buffered();
   assert.ok(!after.some((e) => e.problemSlug === "two-sum" || e.turnId === "t-old"), JSON.stringify(after));
-  // The other problem's events stay, the chip note included, and the dropped
-  // reply is no longer listed as open.
-  assert.equal(after.find((e) => e.type === "capture").note, "Kept for your next message");
+  // The other problem's events stay (a chip note from an older companion is
+  // not passed on), and the dropped reply is no longer listed as open.
+  assert.equal(after.find((e) => e.type === "capture").attemptSeq, 1);
+  assert.equal(after.find((e) => e.type === "capture").note, undefined);
   assert.deepEqual(after.find((e) => e.type === "status").openTurns, []);
   inbox.close();
 });
@@ -708,4 +709,36 @@ test("a panel message body is capped at 256 KB, a snapshot's code at 100,000 cha
   assert.deepEqual(events[1].snapshot, { code });
   assert.equal(events[2].snapshot.problemDescription.length, 50_000);
   inbox.close();
+});
+
+test("the companion's busy flag reaches every panel in the status event, and clears when it leaves", async (t) => {
+  const port = PORT + 11;
+  await startServer(t, port);
+  const activity = (body, headers = COMPANION) => request({ port, method: "POST", route: "/panel/activity", headers, body });
+  const panel = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+  const lastStatus = (events) => events.filter((x) => x.type === "status").pop();
+  await panel.waitFor((e) => e.some((x) => x.type === "status"));
+  const inbox = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await inbox.ready();
+  await panel.waitFor((e) => lastStatus(e).companionOnline === true);
+  assert.equal(lastStatus(await panel.waitFor((e) => e.length > 0)).busy, false);
+
+  assert.equal((await activity({ busy: true }, { origin: LEETCODE })).status, 403);
+  assert.equal((await activity({ busy: true }, {})).status, 403);
+  assert.equal((await activity({ busy: "yes" })).status, 400);
+  assert.equal((await activity({ busy: true })).status, 200);
+  await panel.waitFor((e) => lastStatus(e).busy === true);
+  // A panel opened now gets it too.
+  const later = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+  assert.equal(lastStatus(await later.waitFor((e) => e.some((x) => x.type === "status"))).busy, true);
+  later.close();
+  assert.equal((await activity({ busy: false })).status, 200);
+  await panel.waitFor((e) => lastStatus(e).busy === false);
+  assert.equal((await activity({ busy: true })).status, 200);
+  await panel.waitFor((e) => lastStatus(e).busy === true);
+  // The companion goes away mid-turn: nothing would ever clear it, so the relay does.
+  inbox.close();
+  const gone = await panel.waitFor((e) => lastStatus(e).companionOnline === false);
+  assert.equal(lastStatus(gone).busy, false);
+  panel.close();
 });

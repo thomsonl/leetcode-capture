@@ -54,13 +54,15 @@ With the companion running, the extension adds a **Tutor** tab to the left tab s
 It mirrors the same conversation you see in the terminal: your Run and Submit attempts show up as small chips as they happen, the tutor's replies stream in, and you can type to it from the page.
 The terminal chat keeps working exactly as before, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
 
+The header shows a small status light: green with "Connected" while the tutor is idle, yellow with "Processing" while it works on a message or Submit (including one waiting behind another), red with "Offline" when the relay can't be reached, and grey while connecting or with the tutor offline.
+
 Each problem has its own transcript.
 A message you type in the terminal before your first Run or Submit stays in the terminal, since it belongs to no problem's transcript yet.
 
 ### What the tutor is sent
 
-- A Run (the button or Ctrl+') is never sent to the tutor on its own. It is recorded as the newest code for that problem, and its chip says "Kept for your next message".
-- A Submit is sent automatically, but only if the code changed since the tutor last saw it. Otherwise the tab notes that it was unchanged and nothing is sent.
+- A Run (the button or Ctrl+') is never sent to the tutor on its own. It is recorded silently as the newest code for that problem.
+- A Submit is sent automatically, but only if the code changed since the tutor last saw it. Otherwise nothing is sent and nothing changes in the tab.
 - When you send a message from the Tutor tab, the tab reads the live editor and sends it along. If the code changed since the tutor last saw it, your message goes with a diff (line numbered, with a little context), not the whole code again. If nothing changed, your message goes as typed.
 - The live code goes along only if it fits the relay's limits (100,000 characters of code, 50,000 of problem statement, 256 KB for the whole message). Code past that is never cut short: the message goes without any code and the tab says so.
 - A message typed in the terminal cannot read the editor, so it uses the newest recorded Run or Submit instead.

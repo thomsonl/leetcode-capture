@@ -1037,8 +1037,35 @@ let panelTurnCounter = 0;
 // problem is active (see code-ledger.js). In memory only: a restart starts
 // the backends from nothing too.
 const ledger = createCodeLedger({ maxProblems: DEFAULT_MAX_PROBLEMS });
-// The capture chip's note in the panel for a Run (see handleCaptureLine).
-const RUN_PANEL_NOTE = 'Kept for your next message';
+
+// The panel's "Processing" light: how many tutor turns are running or
+// queued. A typed message counts from the moment it is queued, a Submit from
+// when it turns out to need the tutor (a Run, or an unchanged Submit, never
+// does). Going idle is told a moment late, so the gap between two queued
+// turns does not flash "Connected" in between.
+let busyTurns = 0;
+let busyIdleTimer = null;
+const BUSY_IDLE_DELAY_MS = 100;
+function holdBusy() {
+  busyTurns += 1;
+  if (busyIdleTimer) {
+    clearTimeout(busyIdleTimer);
+    busyIdleTimer = null;
+  }
+  if (panelBridge) panelBridge.setBusy(true);
+  let released = false;
+  return function releaseBusy() {
+    if (released) return;
+    released = true;
+    busyTurns -= 1;
+    if (busyTurns > 0 || busyIdleTimer) return;
+    busyIdleTimer = setTimeout(() => {
+      busyIdleTimer = null;
+      if (busyTurns === 0 && panelBridge) panelBridge.setBusy(false);
+    }, BUSY_IDLE_DELAY_MS);
+    busyIdleTimer.unref();
+  };
+}
 
 function panelPublish(event) {
   if (!panelBridge) return;
@@ -1802,7 +1829,8 @@ rl.on('line', (line) => {
   panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
   // The terminal cannot read the live editor, so the code reference is the
   // newest Run or Submit recorded for the active problem.
-  queueTurn(() => sendChatTurn({ label: null, text, problemId: ledger.activeProblemId }));
+  const releaseBusy = holdBusy();
+  queueTurn(() => sendChatTurn({ label: null, text, problemId: ledger.activeProblemId })).finally(releaseBusy);
 });
 
 // A typed message (terminal or panel), inside the turn queue: prefixed with
@@ -1971,7 +1999,6 @@ async function handleCaptureLine(line) {
     problemTitle: capture.problemTitle || null,
     trigger: capture.trigger,
     attemptSeq: Number.isInteger(capture.attemptSeq) ? capture.attemptSeq : null,
-    ...(sends ? {} : { note: RUN_PANEL_NOTE }),
   });
   const shownTitle = capture.problemTitle || capture.problemSlug || 'this problem';
 
@@ -2010,68 +2037,67 @@ async function handleCaptureLine(line) {
           dim(`companion: your Submit for ${shownTitle} (attempt ${capture.attemptSeq ?? '?'}) ${why} - not sent`)
       );
       turnBoundaryPending = true;
-      panelPublish({
-        type: 'notice',
-        problemSlug: capture.problemSlug || null,
-        text:
-          plan.kind === 'unchanged'
-            ? 'Submit unchanged since the tutor last saw it, so it was not sent.'
-            : 'That Submit carried no code, so it was not sent.',
-      });
       return;
     }
 
-    // An instant, local, non-LLM acknowledgement before the backend call
-    // starts: the tutor's own acknowledgement is baked into its reply and can
-    // lag several seconds behind.
-    printAboveInput(consumeTurnBoundary() + dim(`companion: got your Submit for ${shownTitle} - taking a look...`));
+    // From here on the tutor is working on this Submit (the panel's
+    // "Processing" light, see holdBusy).
+    const releaseBusy = holdBusy();
+    try {
+      // An instant, local, non-LLM acknowledgement before the backend call
+      // starts: the tutor's own acknowledgement is baked into its reply and can
+      // lag several seconds behind.
+      printAboveInput(consumeTurnBoundary() + dim(`companion: got your Submit for ${shownTitle} - taking a look...`));
 
-    // Only Submits drive the vault auto-summary, and only when the toggle is
-    // on - see the "vault auto-summary" section above. One extra instruction
-    // rides on the same message; no second LLM call.
-    let vaultContext = null;
-    if (VAULT_AUTO_SUMMARY) {
-      try {
-        vaultContext = prepareVaultContext({
-          capture,
-          vaultPath: VAULT_PATH,
-          algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER,
-        });
-      } catch (err) {
-        printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
+      // Only Submits drive the vault auto-summary, and only when the toggle is
+      // on - see the "vault auto-summary" section above. One extra instruction
+      // rides on the same message; no second LLM call.
+      let vaultContext = null;
+      if (VAULT_AUTO_SUMMARY) {
+        try {
+          vaultContext = prepareVaultContext({
+            capture,
+            vaultPath: VAULT_PATH,
+            algorithmsSubfolder: VAULT_ALGORITHMS_SUBFOLDER,
+          });
+        } catch (err) {
+          printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
+        }
       }
-    }
-    const message = buildSubmitMessage({
-      headerLine: captureHeaderLine(capture),
-      plan,
-      addendum: SUBMIT_ADDENDUM + (vaultContext ? vaultContext.addendum : ''),
-    });
-    const ok = await sendAndPrintTurn(label, message.text, {
-      onReply: vaultContext
-        ? (reply) => {
-            const { displayText, vaultData } = extractVaultBlock(reply, {
-              warn: (msg) => printAboveInput(dim(`companion: warning: ${msg}`)),
-            });
-            if (vaultData) {
-              try {
-                writeVaultAutoSummary({ capture, vaultContext, vaultData });
-              } catch (err) {
-                printAboveInput(dim(`companion: warning: vault auto-summary write failed (${err.message})`));
+      const message = buildSubmitMessage({
+        headerLine: captureHeaderLine(capture),
+        plan,
+        addendum: SUBMIT_ADDENDUM + (vaultContext ? vaultContext.addendum : ''),
+      });
+      const ok = await sendAndPrintTurn(label, message.text, {
+        onReply: vaultContext
+          ? (reply) => {
+              const { displayText, vaultData } = extractVaultBlock(reply, {
+                warn: (msg) => printAboveInput(dim(`companion: warning: ${msg}`)),
+              });
+              if (vaultData) {
+                try {
+                  writeVaultAutoSummary({ capture, vaultContext, vaultData });
+                } catch (err) {
+                  printAboveInput(dim(`companion: warning: vault auto-summary write failed (${err.message})`));
+                }
+              } else {
+                printAboveInput(
+                  dim('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write')
+                );
               }
-            } else {
-              printAboveInput(
-                dim('companion: warning: vault auto-summary was on but the reply had no vault data block; skipping this write')
-              );
+              return displayText;
             }
-            return displayText;
-          }
-        : undefined,
-      problemContext: ledger.context(problemId) || captureProblemContext(capture),
-      heldCode: ledger.held(problemId),
-      compactText: message.compactText,
-      panelMeta: { problemSlug: capture.problemSlug || null },
-    });
-    if (ok) ledger.commit(problemId, plan);
+          : undefined,
+        problemContext: ledger.context(problemId) || captureProblemContext(capture),
+        heldCode: ledger.held(problemId),
+        compactText: message.compactText,
+        panelMeta: { problemSlug: capture.problemSlug || null },
+      });
+      if (ok) ledger.commit(problemId, plan);
+    } finally {
+      releaseBusy();
+    }
   });
 }
 
@@ -2107,6 +2133,7 @@ function handlePanelMessage(message) {
   if (problemSlug) panelProblemSlug = problemSlug;
   panelPublish({ type: 'user', text, problemSlug: panelProblemSlug });
   const label = dim(`[panel] ${text}`);
+  const releaseBusy = holdBusy();
   queueTurn(async () => {
     if (!problemSlug) {
       await sendChatTurn({ label, text, problemId: ledger.activeProblemId });
@@ -2137,7 +2164,7 @@ function handlePanelMessage(message) {
       return notes.length ? notes.join('\n') : null;
     };
     await sendChatTurn({ label, text, problemId: problemSlug, preamble, codeUnavailable });
-  });
+  }).finally(releaseBusy);
 }
 
 async function poll() {

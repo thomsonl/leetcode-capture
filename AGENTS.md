@@ -783,6 +783,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     each rule; the new settings routes must reuse the same helper. Every `/panel/` route also refuses a
     `Sec-Fetch-Mode` other than `cors`: a page's no-cors fetch, `<img>` or `<iframe>` carries no Origin and, unreadable
     as it is, used to hold one of the 20 panel-stream slots. Both real callers send `cors` (Node's fetch included).
+  - The header's status light reads the relay's `status` event: `busy` (set by the companion on companion-only
+    `POST /panel/activity`, from when a message is queued or a Submit turns out to need the tutor until it is answered,
+    going idle 100 ms late so back-to-back turns do not flash) shows yellow "Processing"; the relay clears it when the
+    last companion leaves. Runs and unchanged Submits show nothing beyond their chip (no note, no notice).
   - Sequence numbers restart with the relay, so each event carries the relay run's random `epoch`. The panel compares
     it per event (a reconnect's replay arrives before its `status` event) and reconnects with `?after=N&epoch=X`.
   - A companion that exits mid-reply sends no `turn-end`. When the last inbox stream closes (or a publish lands with

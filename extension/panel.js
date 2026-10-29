@@ -66,6 +66,9 @@
   function createState() {
     return {
       companionOnline: null, // null until the first status event
+      // The tutor is working on a turn, or has one queued (the relay's status
+      // event carries it, see panel-broker.js).
+      companionBusy: false,
       lastSeq: 0,
       // The relay run that lastSeq counts in. Sequence numbers restart at 1
       // when the relay restarts, so a seq means nothing without its epoch.
@@ -207,6 +210,7 @@
   function applyEventInEpoch(state, event) {
     if (event.type === "status") {
       state.companionOnline = Boolean(event.companionOnline);
+      state.companionBusy = state.companionOnline && event.busy === true;
       // The companion left (it exited, crashed, or its terminal closed), so
       // nothing will end a reply it was still streaming. The relay ends
       // those itself (a turn-end marked interrupted, see panel-broker.js's
@@ -231,9 +235,6 @@
           trigger: event.trigger,
           attemptSeq: event.attemptSeq,
           title: event.problemTitle || null,
-          // A quiet note on the chip: a Run is kept for the next message,
-          // not sent to the tutor.
-          note: typeof event.note === "string" && event.note ? event.note : null,
         });
         return slug;
       case "notice":
@@ -868,16 +869,21 @@
     }
     .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .head-right { flex: none; }
-    .status { display: flex; align-items: center; gap: 4px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
-    .status svg { width: 14px; height: 14px; flex: none; }
-    .status[data-ok] svg { color: var(--green); }
+    .status { display: flex; align-items: center; gap: 6px; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
+    /* The status light: neutral (the text color) while connecting or with
+       the tutor offline, red with no relay, green idle, yellow working. The
+       text next to it always says the same, for anyone who cannot tell the
+       colors apart. */
+    .status .light { width: 8px; height: 8px; border-radius: 50%; flex: none; background: currentColor; }
+    .status[data-state="ok"] .light { background: var(--green); }
+    .status[data-state="busy"] .light { background: var(--yellow); }
+    .status[data-state="bad"] .light { background: var(--red); }
     .feed { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; }
     .banner { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
     .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; padding: 0 24px; color: color-mix(in srgb, var(--fg) 30%, transparent); text-align: center; }
     .empty p { margin: 0; max-width: 300px; }
     .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
     .chip b { font-weight: 500; color: var(--fg); }
-    .chip-note::before { content: "\\00b7"; margin-right: 6px; }
     .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1058,6 +1064,9 @@
     // surface instead.
     style.setProperty("--link", light ? "#0b63e5" : "#4b9bff");
     style.setProperty("--red", "#ef4743");
+    // LeetCode's own "Medium" yellow in the dark theme; on white a darker
+    // shade, so the light keeps at least 3:1 against the panel.
+    style.setProperty("--yellow", light ? "#b97c00" : "#ffc01e");
     document.documentElement.style.setProperty("--lc-tutor-muted", tabMuted);
   }
 
@@ -1111,30 +1120,6 @@
 
   // ---- the panel -------------------------------------------------------
 
-  function svgIcon(pathData, size) {
-    const NS = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(NS, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", String(size));
-    svg.setAttribute("height", String(size));
-    svg.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS(NS, "path");
-    path.setAttribute("fill", "currentColor");
-    path.setAttribute("d", pathData);
-    svg.appendChild(path);
-    return svg;
-  }
-
-  // Outlined circle with a check, like the native "Solved" mark; with an
-  // exclamation mark instead when the tutor isn't reachable.
-  const RING = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 1.8a8.2 8.2 0 1 1 0 16.4 8.2 8.2 0 0 1 0-16.4z";
-  const STATUS_OK = `${RING}M10.6 15.8 7.2 12.4l1.2-1.2 2.2 2.2 5-5 1.2 1.2z`;
-  const STATUS_BAD = `${RING}M11.1 7h1.8v6.2h-1.8zm0 7.8h1.8v1.9h-1.8z`;
-
-  function statusIcon() {
-    return svgIcon(STATUS_BAD, 14);
-  }
-
   function buildPanel() {
     const host = document.createElement("div");
     host.id = HOST_ID;
@@ -1152,10 +1137,13 @@
     const head = el("div", "head");
     const headLeft = el("div", "head-left");
     const status = el("div", "status");
-    // A polite live region: screen readers announce "Offline" and the like
-    // when it changes, without interrupting.
+    // A polite live region: screen readers announce "Offline",
+    // "Processing" and the like when it changes, without interrupting.
     status.setAttribute("role", "status");
-    status.appendChild(statusIcon());
+    status.dataset.state = "neutral";
+    const light = el("div", "light");
+    light.setAttribute("aria-hidden", "true");
+    status.appendChild(light);
     const statusText = el("span", "", "Connecting");
     status.appendChild(statusText);
     headLeft.appendChild(status);
@@ -1210,6 +1198,7 @@
       return {
         label: "Offline",
         ok: false,
+        light: "bad",
         banner: "Can't reach the relay server on localhost:8135. Start the companion with `leetcode`, or run `node companion.js` in the project's companion folder.",
       };
     }
@@ -1217,11 +1206,13 @@
       return {
         label: "Tutor offline",
         ok: false,
+        light: "neutral",
         banner: "The relay is running but the tutor isn't. Start the companion with `leetcode` to chat and get your attempts reviewed here.",
       };
     }
-    if (state.companionOnline === null) return { label: "Connecting", ok: false, banner: null };
-    return { label: "Connected", ok: true, banner: null };
+    if (state.companionOnline === null) return { label: "Connecting", ok: false, light: "neutral", banner: null };
+    if (state.companionBusy) return { label: "Processing", ok: true, light: "busy", banner: null };
+    return { label: "Connected", ok: true, light: "ok", banner: null };
   }
 
   function renderBanner(node, text) {
@@ -1247,9 +1238,11 @@
       // companion; don't invite a question that can't be asked.
       return "Once the companion is running, your Run and Submit attempts and the tutor's replies show up here.";
     }
+    // A Run is only recorded (the tutor sees it with the next message), so
+    // only a Submit is promised a review.
     return conn.ok
-      ? "Run or submit your code and the tutor will review it here. You can also ask a question about this problem below."
-      : "Run or submit your code and the tutor will review it here.";
+      ? "Submit your code and the tutor will review it here. You can also ask a question about this problem below."
+      : "Submit your code and the tutor will review it here.";
   }
 
   // ---- the feed ----------------------------------------------------------
@@ -1275,7 +1268,6 @@
       const chip = el("div", "chip");
       chip.appendChild(el("b", "", item.trigger === "submit" ? "Submit" : "Run"));
       if (item.attemptSeq) chip.appendChild(document.createTextNode(`Attempt ${item.attemptSeq}`));
-      if (item.note) chip.appendChild(el("span", "chip-note", item.note));
       return chip;
     }
     if (item.kind === "notice") return el("div", "notice", item.text);
@@ -1337,9 +1329,7 @@
 
   function renderHeader(p, conn, slug) {
     if (p.statusText.textContent !== conn.label) p.statusText.textContent = conn.label;
-    p.status.querySelector("path").setAttribute("d", conn.ok ? STATUS_OK : STATUS_BAD);
-    if (conn.ok) p.status.setAttribute("data-ok", "");
-    else p.status.removeAttribute("data-ok");
+    if (p.status.dataset.state !== conn.light) p.status.dataset.state = conn.light;
     renderBanner(p.banner, conn.banner);
 
     const canSend = conn.ok && Boolean(slug);

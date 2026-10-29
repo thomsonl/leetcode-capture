@@ -122,6 +122,8 @@ try {
       banner: !window.__q('.banner').hidden,
     })`);
     check(info.label === 'Tutor offline', `status label: ${info.label}`);
+    const light = await page.eval(`(() => { const l = window.__q('.status .light'); return { state: window.__q('.status').dataset.state, color: getComputedStyle(l).backgroundColor, muted: getComputedStyle(window.__q('.status')).color }; })()`);
+    check(light.state === 'neutral' && light.color === light.muted, `tutor offline light: ${JSON.stringify(light)}`);
     check(!/ask a question/i.test(info.empty) && /Once the companion is running/.test(info.empty), `empty copy: ${info.empty}`);
     check(info.disabled && info.banner, JSON.stringify(info));
     await page.screenshot(path.join(SHOTS, '01-offline.png'), { width: 1100, height: 760 });
@@ -146,7 +148,8 @@ try {
         outsideScroll: !scroll.contains(headNode),
         role: status.getAttribute('role'),
         text: status.textContent,
-        iconFirst: status.firstElementChild.tagName.toLowerCase() === 'svg',
+        lightFirst: status.firstElementChild.classList.contains('light') && status.firstElementChild.getAttribute('aria-hidden') === 'true',
+        light: (() => { const r = status.firstElementChild.getBoundingClientRect(); return { w: r.width, h: r.height, mid: r.top + r.height / 2 - (head.top + head.height / 2), radius: getComputedStyle(status.firstElementChild).borderRadius }; })(),
         font: cs.fontSize + '/' + cs.lineHeight,
         statusColor: cs.color,
         headColor: hs.color,
@@ -166,7 +169,8 @@ try {
     check(m.left && m.right, `header structure: ${JSON.stringify(m)}`);
     check(m.outsideScroll, 'the header scrolls away with the transcript');
     check(m.role === 'status', `status role: ${m.role}`);
-    check(m.text === 'Connected' && m.iconFirst, `status: ${m.text}`);
+    check(m.text === 'Connected' && m.lightFirst, `status: ${m.text}`);
+    check(m.light.w === 8 && m.light.h === 8 && m.light.radius === '50%' && Math.abs(m.light.mid) <= 0.5, `status light: ${JSON.stringify(m.light)}`);
     check(m.font === '14px/20px', `status font: ${m.font}`);
     const r = m.rect;
     // The real Submissions row sits 1px in from each side of the pane (x=11,
@@ -187,9 +191,40 @@ try {
     await page.screenshot(path.join(SHOTS, '02-header-empty.png'), { width: 1100, height: 760 });
   });
 
+  await scenario('the status light: green and Connected when idle, yellow and Processing while the tutor works, green again after', async () => {
+    const read = () => page.eval(`(() => {
+      const status = window.__q('.status');
+      return { text: status.querySelector('span').textContent, state: status.dataset.state, color: getComputedStyle(status.querySelector('.light')).backgroundColor, role: status.getAttribute('role') };
+    })()`);
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
+    await settle();
+    const idle = await read();
+    check(idle.text === 'Connected' && idle.state === 'ok' && idle.color === 'rgb(44, 187, 93)', `idle: ${JSON.stringify(idle)}`);
+    // A message waiting in the queue, then its turn: Processing until the companion is idle again.
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: true, epoch: 'e1', openTurns: [] })`);
+    await settle();
+    const busy = await read();
+    check(busy.text === 'Processing' && busy.state === 'busy' && busy.color === 'rgb(255, 192, 30)' && busy.role === 'status', `busy: ${JSON.stringify(busy)}`);
+    check(!(await page.eval(`window.__q('textarea').disabled`)), 'the composer stays usable while the tutor works');
+    await page.screenshot(path.join(SHOTS, '02c-processing.png'), { width: 1100, height: 760 });
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
+    await settle();
+    const after = await read();
+    check(after.text === 'Connected' && after.state === 'ok', `after: ${JSON.stringify(after)}`);
+  });
+
   await scenario('header row in light mode: the hairline and text follow the page theme', async () => {
     await page.eval(`document.documentElement.classList.add('light')`);
     await settle();
+    const lightColor = () => page.eval(`getComputedStyle(window.__q('.status .light')).backgroundColor`);
+    const okLight = await lightColor();
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: true, epoch: 'e1', openTurns: [] })`);
+    await settle();
+    const busyLight = await lightColor();
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
+    await settle();
+    // Darker shades on white (at least 3:1 for a graphic).
+    check(okLight === 'rgb(14, 138, 58)' && busyLight === 'rgb(185, 124, 0)', `light theme lights: ${okLight} / ${busyLight}`);
     const m = await page.eval(`(() => {
       const hs = getComputedStyle(window.__q('.head'));
       return {
@@ -469,24 +504,14 @@ try {
     check(await page.eval(`window.__q('.hint').hidden`), 'typing did not clear the note');
   });
 
-  await scenario('a Run chip shows its quiet note in the muted chip color', async () => {
+  await scenario('a Run chip carries no note, even one an older companion sends', async () => {
     await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'run', attemptSeq: 7, note: 'Kept for your next message' })`);
     await settle();
     const m = await page.eval(`(() => {
       const chip = window.__qa('.chip').pop();
-      const note = chip.querySelector('.chip-note');
-      return {
-        text: chip.textContent,
-        note: note && note.textContent,
-        noteColor: note && getComputedStyle(note).color,
-        chipColor: getComputedStyle(chip).color,
-        dot: note && getComputedStyle(note, '::before').content,
-        height: chip.getBoundingClientRect().height,
-      };
+      return { text: chip.textContent, notes: chip.querySelectorAll('.chip-note').length, height: chip.getBoundingClientRect().height };
     })()`);
-    check(m.note === 'Kept for your next message', JSON.stringify(m));
-    check(m.noteColor === m.chipColor, `note color ${m.noteColor} vs chip ${m.chipColor}`);
-    check(m.dot === '"\u00b7"' || m.dot === '"·"', `separator: ${m.dot}`);
+    check(m.notes === 0 && !/Kept for your next message/.test(m.text), JSON.stringify(m));
     check(m.height === 24, `the chip stays one line: ${m.height}`);
     await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
     await settle();
@@ -517,6 +542,8 @@ try {
     const urlsBefore = await page.eval('window.__eventsUrls.length');
     await page.eval('window.__dropStream()');
     await page.waitFor(`window.__q('.status span').textContent === 'Offline'`, { what: 'the panel to notice the relay is gone' });
+    const offline = await page.eval(`({ state: window.__q('.status').dataset.state, color: getComputedStyle(window.__q('.status .light')).backgroundColor })`);
+    check(offline.state === 'bad' && offline.color === 'rgb(239, 71, 67)', `relay unreachable light: ${JSON.stringify(offline)}`);
     await page.waitFor(`window.__eventsUrls.length > ${urlsBefore} && window.__streamOpen()`, { timeout: 5000, what: 'the reconnect' });
     const url = await page.eval('window.__eventsUrls.at(-1)');
     check(/[?&]epoch=e1(&|$)/.test(url) && /after=\d+/.test(url) && !/after=0/.test(url), `reconnect URL: ${url}`);

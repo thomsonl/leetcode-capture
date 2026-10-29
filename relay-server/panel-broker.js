@@ -18,6 +18,7 @@
 //   GET  /panel/inbox               companion SSE stream of the panel's typed messages
 //   POST /panel/drop-problem        companion { problemSlug }: forget that problem's buffered events
 //   POST /panel/trim-captures       companion { before, path }: drop the capture log's first `before` bytes
+//   POST /panel/activity            companion { busy }: the tutor is working on (or has queued) a turn
 //
 // Unlike /capture (which only ingests data, so a permissive CORS `*` is
 // harmless), these routes can READ tutor replies, which contain the student's
@@ -29,7 +30,7 @@
 //   - Origin must be absent or exactly https://leetcode.com. Browsers always
 //     send Origin on a CORS request and on any POST, and a page cannot forge
 //     it, so every other website is rejected.
-// The companion-only routes (publish, inbox, drop-problem, trim-captures) additionally go through
+// The companion-only routes (publish, inbox, drop-problem, trim-captures, activity) additionally go through
 // companionOnlyRejection below. A missing Origin alone is NOT proof of the
 // companion: a page's `fetch(url, { mode: "no-cors" })` GET carries no Origin
 // either. What a browser page cannot do is add a custom header without a CORS
@@ -108,6 +109,7 @@ const COMPANION_ONLY_ROUTES = new Set([
   "GET /panel/inbox",
   "POST /panel/drop-problem",
   "POST /panel/trim-captures",
+  "POST /panel/activity",
 ]);
 
 const EVENT_TYPES = new Set(["user", "capture", "turn-start", "chunk", "turn-end", "notice"]);
@@ -150,11 +152,6 @@ function sanitizeEvent(raw) {
   if (raw.attemptSeq !== undefined && raw.attemptSeq !== null) {
     if (!Number.isInteger(raw.attemptSeq) || raw.attemptSeq < 0) return null;
     event.attemptSeq = raw.attemptSeq;
-  }
-  // A capture chip's quiet note ("Kept for your next message" on a Run).
-  if (raw.note !== undefined && raw.note !== null) {
-    if (!isShortString(raw.note, 200)) return null;
-    event.note = raw.note;
   }
   return event;
 }
@@ -211,6 +208,11 @@ function createPanelBroker({ port, captureLog = null }) {
   // interrupted. `closed` marks one ended that way, so a companion that only
   // lost its stream and keeps streaming the same turn reopens it.
   const openTurns = new Map();
+  // Whether the companion is working on a turn or has one queued (it says so
+  // on POST /panel/activity). Shown in the panel's header as "Processing";
+  // cleared when the last companion goes away, since nothing will clear it
+  // then.
+  let companionBusy = false;
 
   function corsHeaders(req) {
     // Only ever echoed for the one allowed origin; a request with no Origin
@@ -246,7 +248,7 @@ function createPanelBroker({ port, captureLog = null }) {
   function statusEvent() {
     const open = [];
     for (const [turnId, turn] of openTurns) if (!turn.closed) open.push(turnId);
-    return { type: "status", companionOnline: consumers.size > 0, epoch, openTurns: open };
+    return { type: "status", companionOnline: consumers.size > 0, busy: consumers.size > 0 && companionBusy, epoch, openTurns: open };
   }
 
   function broadcastStatus() {
@@ -425,7 +427,10 @@ function createPanelBroker({ port, captureLog = null }) {
     if (route === "GET /panel/inbox") {
       openStream(req, res, () => {
         consumers.delete(res);
-        if (consumers.size === 0) closeOpenTurns();
+        if (consumers.size === 0) {
+          closeOpenTurns();
+          companionBusy = false;
+        }
         broadcastStatus();
       });
       consumers.add(res);
@@ -504,6 +509,21 @@ function createPanelBroker({ port, captureLog = null }) {
           return;
         }
         sendJson(req, res, 200, { ok: true, removed: result.removed, size: result.size });
+      });
+      return true;
+    }
+
+    if (route === "POST /panel/activity") {
+      readBody(req, res, 4096, (body) => {
+        if (!body || typeof body.busy !== "boolean") {
+          sendJson(req, res, 400, { error: "a boolean `busy` is required" });
+          return;
+        }
+        if (companionBusy !== body.busy) {
+          companionBusy = body.busy;
+          broadcastStatus();
+        }
+        sendJson(req, res, 200, { ok: true });
       });
       return true;
     }

@@ -365,7 +365,7 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
   assert.ok(JSON.stringify(requests[0].messages).includes('any hints?'));
   assert.ok(out.includes('[panel] any hints?'), 'the terminal echoes panel messages under a [panel] label');
 
-  // 2. A Run is mirrored as a capture chip with its note, and never reaches
+  // 2. A Run is mirrored as a capture chip (with no note), and never reaches
   // the model: no tutor turn.
   fs.appendFileSync(
     capturesPath,
@@ -384,7 +384,7 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
   const capture = panel.events.find((e) => e.type === 'capture');
   assert.deepEqual(
     { slug: capture.problemSlug, trigger: capture.trigger, seq: capture.attemptSeq, title: capture.problemTitle, note: capture.note },
-    { slug: 'two-sum', trigger: 'run', seq: 1, title: 'Two Sum', note: 'Kept for your next message' }
+    { slug: 'two-sum', trigger: 'run', seq: 1, title: 'Two Sum', note: undefined }
   );
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(requests.length, 1, 'a Run must not reach the model');

@@ -37,12 +37,13 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 // "Reply <n>", or answers 500 while `failNext` is above zero.
 function startStubModel() {
   const requests = [];
-  const state = { failNext: 0 };
+  const state = { failNext: 0, delayMs: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
-    req.on('end', () => {
+    req.on('end', async () => {
       requests.push(JSON.parse(body).messages);
+      if (state.delayMs) await pause(state.delayMs);
       if (state.failNext > 0) {
         state.failNext -= 1;
         res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -216,7 +217,7 @@ test('Runs are only recorded; a Submit goes only when changed; messages carry di
   assert.equal(c.requests.length, 0, 'a Run must not reach the model');
   const runChip = (await c.relayEvents()).find((e) => e.type === 'capture');
   assert.equal(runChip.trigger, 'run');
-  assert.equal(runChip.note, 'Kept for your next message');
+  assert.equal(runChip.note, undefined, 'a Run is recorded silently in the panel');
   assert.ok(!(await c.relayEvents()).some((e) => e.type === 'turn-start'), 'no tutor turn for a Run');
 
   // 2. The first Submit carries the full code, with the statement.
@@ -234,10 +235,7 @@ test('Runs are only recorded; a Submit goes only when changed; messages carry di
   await until(() => c.out().includes('unchanged since the tutor last saw it'), 10000, 'the unchanged note');
   await pause(500);
   assert.equal(c.requests.length, 1, 'an unchanged Submit must not reach the model');
-  assert.ok(
-    (await c.relayEvents()).some((e) => e.type === 'notice' && /unchanged since the tutor last saw it/i.test(e.text)),
-    'the panel says why nothing happened'
-  );
+  assert.ok(!(await c.relayEvents()).some((e) => e.type === 'notice'), 'an unchanged Submit shows nothing in the panel');
 
   // 4. Three Runs, then a message typed in the terminal: only the diff from
   // what the tutor holds to the newest Run.
@@ -404,4 +402,60 @@ test('a panel message whose editor could not be read goes without code; the newe
   await c.panel('and now?', 'two-sum', { code: solution('typed'), language: 'Python3' });
   await until(() => c.requests.length === 2, 10000, 'the second message');
   assert.match(c.lastUser(), /in full:[\s\S]*# typed/);
+});
+
+// Every status event the relay sends a panel, from now on.
+function watchStatus(port) {
+  const statuses = [];
+  let buffer = '';
+  const req = http.get({ host: '127.0.0.1', port, path: '/panel/events?after=0', headers: { origin: LEETCODE } }, (res) => {
+    res.setEncoding('utf8');
+    res.on('data', (chunk) => {
+      buffer += chunk;
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const data = block.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+        if (!data) continue;
+        const event = JSON.parse(data);
+        if (event.type === 'status') statuses.push(event.busy);
+      }
+    });
+  });
+  req.on('error', () => {});
+  return { statuses, close: () => req.destroy() };
+}
+
+test("the panel's busy flag: on while a message or Submit is queued or answered, never for a Run or an unchanged Submit", async (t) => {
+  const c = await startCompanion(t, { port: 18220 });
+  const watch = watchStatus(18220);
+  t.after(() => watch.close());
+  await until(() => watch.statuses.length >= 1, 5000, 'the first status');
+
+  await c.capture({ trigger: 'run', code: solution('run') });
+  await until(() => c.out().includes('recorded your Run'), 10000, 'the Run');
+  await pause(400);
+  assert.ok(!watch.statuses.includes(true), `a Run made the tutor busy: ${watch.statuses}`);
+
+  // Two messages back to back on a slow model: busy from the first until the
+  // second is answered, with no idle gap between them.
+  c.model.state.delayMs = 600;
+  const from = watch.statuses.length;
+  await c.panel('first?', 'two-sum', { code: solution('run'), language: 'Python3' });
+  await c.panel('second?', 'two-sum', { code: solution('run'), language: 'Python3' });
+  await until(() => watch.statuses.slice(from).includes(true), 5000, 'busy');
+  await until(() => c.requests.length === 2 && watch.statuses.at(-1) === false, 10000, 'idle again');
+  assert.deepEqual(watch.statuses.slice(from), [true, false], 'one busy stretch for both messages');
+
+  // A changed Submit is busy too; the same code again is not.
+  const before = watch.statuses.length;
+  await c.capture({ trigger: 'submit', code: solution('submitted') });
+  await until(() => c.requests.length === 3 && watch.statuses.at(-1) === false, 10000, 'the Submit to finish');
+  assert.deepEqual(watch.statuses.slice(before), [true, false]);
+  const afterSubmit = watch.statuses.length;
+  await c.capture({ trigger: 'submit', code: solution('submitted') });
+  await until(() => c.out().includes('unchanged since the tutor last saw it'), 10000, 'the unchanged Submit');
+  await pause(400);
+  assert.deepEqual(watch.statuses.slice(afterSubmit), [], 'an unchanged Submit never shows as busy');
 });
