@@ -1283,7 +1283,9 @@
         label: "Offline",
         ok: false,
         light: "bad",
-        banner: "Can't reach the relay server on localhost:8135. Start the companion with `leetcode`, or run `node companion.js` in the project's companion folder.",
+        banner:
+          "Can't reach the relay server on localhost:8135. Start the companion with `leetcode`, or run `node companion.js` in the project's companion folder." +
+          (HELPER_HINTS[helperState] ? ` ${HELPER_HINTS[helperState]}` : ""),
       };
     }
     if (state.companionOnline === false) {
@@ -1692,6 +1694,9 @@
       // tell the tutor what changed since it last saw the code.
       const snapshot = await requestEditorSnapshot(document);
       const { body, codeLeftOut } = buildMessageBody(text, slug, snapshot);
+      // This tab holds the active problem now (the helper launcher's rule
+      // for which tab closing resets the tutor).
+      postToWorker({ type: "active" });
       const res = await transport.send(body);
       if (res.status === 202) {
         p.input.value = "";
@@ -1869,6 +1874,13 @@
   let bgPort = null;
   let bgDelay = 500;
   let providerChosen = null; // from the worker: whether a provider is chosen at all
+  // From the worker: the Native Messaging helper's state when the extension
+  // is set to launch it ("not-installed", "error", ...), or null.
+  let helperState = null;
+  const HELPER_HINTS = {
+    "not-installed": "Or set up the helper app in Settings (the gear above) so the tutor starts on its own.",
+    error: "The helper app could not start the tutor; Settings (the gear above) shows why.",
+  };
   const pendingReplies = new Map(); // id -> { resolve, reject, timer }
   let nextReplyId = 1;
 
@@ -1904,6 +1916,9 @@
       if (message.type === "runtime") {
         providerChosen = message.chosen !== false;
         useTransport(message.runtime === "extension" ? extensionTransport : relayTransport);
+      } else if (message.type === "helper") {
+        helperState = typeof message.state === "string" ? message.state : null;
+        scheduleRender();
       } else if (message.type === "event" && transport === extensionTransport && message.event) {
         if (sourceReachable !== true) {
           sourceReachable = true;

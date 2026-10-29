@@ -68,7 +68,16 @@ function withTimeout(promise, ms, what) {
 // storage: { get(keys) -> Promise<object>, set(object) -> Promise }
 // permissions: { contains({ origins }) -> Promise<boolean> }
 // extensionOrigin: 'chrome-extension://<id>' (or moz-extension://<uuid>)
-export function createTutorService({ storage, permissions, extensionOrigin, log = () => {}, buildBackendImpl = buildBackend }) {
+// onRuntime(runtime): called once the settings are read and after every save,
+// with 'extension' or 'helper' (the background's helper launcher follows it).
+export function createTutorService({
+  storage,
+  permissions,
+  extensionOrigin,
+  log = () => {},
+  buildBackendImpl = buildBackend,
+  onRuntime = () => {},
+}) {
   const hub = createEventHub();
   const engine = createTutorEngine({ hub, log });
   const ports = new Set();
@@ -85,6 +94,7 @@ export function createTutorService({ storage, permissions, extensionOrigin, log 
       log(`could not read settings: ${err.message}`);
     }
     await applyToEngine();
+    onRuntime(runtimeFor(settings));
   })();
 
   async function permissionFor(current) {
@@ -194,6 +204,7 @@ export function createTutorService({ storage, permissions, extensionOrigin, log 
     secrets = next.secrets;
     await applyToEngine();
     broadcastRuntime();
+    onRuntime(runtimeFor(settings));
     return view({ saved: true });
   }
 
