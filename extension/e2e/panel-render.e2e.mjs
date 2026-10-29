@@ -1283,6 +1283,52 @@ try {
   });
 
   const exceptions = page.console.filter((line) => line.startsWith('exception'));
+  await scenario('the injected Tutor tab sits right after Description, and stays there as LeetCode adds and removes tabs', async () => {
+    await page.eval(`(() => {
+      const container = document.querySelector('.flexlayout__tabset_tabbar_inner_tab_container');
+      window.__strip = () => [...container.children].map((n) => n.classList.contains('flexlayout__tabset_tab_divider') ? '|'
+        : ([...n.querySelectorAll('*')].find((c) => !c.children.length && c.textContent.trim()) || n).textContent.trim());
+      window.__nativeTab = (label) => {
+        const b = [...container.children].find((n) => n.matches('.flexlayout__tab_button:not([data-lc-tutor-tab])') && n.textContent.includes('Submissions')).cloneNode(true);
+        b.removeAttribute('data-layout-path');
+        for (const leaf of b.querySelectorAll('.label > div')) leaf.textContent = label;
+        b.dataset.added = '';
+        const d = document.createElement('div');
+        d.className = 'flexlayout__tabset_tab_divider';
+        d.dataset.added = '';
+        return [d, b];
+      };
+      // Counts strip mutations after things settle: a placement that keeps
+      // re-moving itself would never stop.
+      window.__quiet = () => new Promise((resolve) => {
+        let n = 0;
+        const o = new MutationObserver((records) => { n += records.length; window.__dbg = records.map((r) => r.type + ':' + (r.target.className || r.target.nodeName) + ':+' + [...r.addedNodes].map((x) => x.className || x.nodeName) + '-' + [...r.removedNodes].map((x) => x.className || x.nodeName)); });
+        o.observe(container, { childList: true, subtree: true });
+        setTimeout(() => { o.disconnect(); resolve(n); }, 150);
+      });
+    })()`);
+    const at = (what) => page.eval('window.__strip().join(" ")').then((s) => ({ what, s }));
+    let r = await at('mounted');
+    check(r.s === 'Description | Tutor | Submissions', `${r.what}: ${r.s}`);
+    // LeetCode's own "Accepted" tab after a submit, added at the end.
+    await page.eval(`(() => { const c = document.querySelector('.flexlayout__tabset_tabbar_inner_tab_container'); c.append(...window.__nativeTab('Accepted')); })()`);
+    await settle();
+    r = await at('Accepted appended');
+    check(r.s === 'Description | Tutor | Submissions | Accepted', `${r.what}: ${r.s}`);
+    // A tab inserted right after Description and its divider (as React puts
+    // a new keyed tab before the next native one) goes after the Tutor tab.
+    await page.eval(`(() => { const d = [...document.querySelectorAll('.flexlayout__tab_button')].find((b) => b.textContent.includes('Description')); const [dv, b] = window.__nativeTab('Editorial'); d.nextElementSibling.after(b, dv); })()`);
+    await settle();
+    r = await at('Editorial after Description');
+    check(r.s === 'Description | Tutor | Editorial | Submissions | Accepted', `${r.what}: ${r.s}`);
+    check((await page.eval('window.__quiet()')) === 0, 'the strip kept changing after the Tutor tab was placed: ' + JSON.stringify(await page.eval('window.__dbg')));
+    await page.eval(`document.querySelectorAll('[data-added]').forEach((n) => n.remove())`);
+    await settle();
+    r = await at('added tabs removed');
+    check(r.s === 'Description | Tutor | Submissions', `${r.what}: ${r.s}`);
+    check((await page.eval('window.__quiet()')) === 0, 'the strip kept changing after the tabs were removed');
+  });
+
   await scenario('no exceptions in the page', async () => {
     check(exceptions.length === 0, exceptions.join('\n'));
   });

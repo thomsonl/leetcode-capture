@@ -59,8 +59,10 @@ const { buildFixture } = await import('./flexlayout/build.mjs');
 const fx = await buildFixture();
 console.log(`fixture: flexlayout-react ${fx.version}`);
 
+// PANEL_JS=<file> runs the scenarios against another copy of panel.js (for
+// example the version before a fix, to see the scenarios catch the bug).
 const panelSource = fs
-  .readFileSync(path.join(here, '..', 'panel.js'), 'utf8')
+  .readFileSync(process.env.PANEL_JS || path.join(here, '..', 'panel.js'), 'utf8')
   .replace('const RELAY_BASE = "http://localhost:8135";', 'const RELAY_BASE = "http://127.0.0.1:9";');
 if (!panelSource.includes('http://127.0.0.1:9')) throw new Error('could not repoint RELAY_BASE in the injected panel.js');
 const bridgeSource = fs.readFileSync(path.join(here, '..', 'layout-bridge.js'), 'utf8');
@@ -667,6 +669,17 @@ try {
   await c.eval(`new Function(${JSON.stringify(panelSource)})()`);
   await c.waitFor(`!!document.querySelector('.flexlayout__tab_button[data-lc-tutor-tab]:not([data-lc-tutor-button])')`, { what: 'the injected Tutor tab' });
   const cio = input(c);
+
+  await scenario('clone fallback: the injected tab sits right after Description, not after the last tab', async () => {
+    const strip = await c.eval(`(() => {
+      const t = window.__tutorButtons()[0];
+      const label = (n) => n.classList.contains('flexlayout__tabset_tab_divider') ? '|' : n === t ? 'Tutor' : n.classList.contains('flexlayout__tab_button') ? n.textContent.trim() : '?';
+      return [...t.parentElement.children].map(label);
+    })()`);
+    const at = strip.indexOf('Tutor');
+    const before = strip.slice(0, at).filter((l) => l !== '|' && l !== '?');
+    check(before.length === 1 && before[0].startsWith('Description') && at < strip.length - 1, `strip: ${JSON.stringify(strip)}`);
+  });
 
   await scenario('clone fallback: the injected tab opens over the real layout, and native tabs switch back', async () => {
     const t = await c.eval(`window.__center(window.__tutorButtons()[0])`);

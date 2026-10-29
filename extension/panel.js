@@ -1238,6 +1238,31 @@
     return { tab, divider };
   }
 
+  // Puts the injected tab right after Description, as the bridge does for the
+  // real tab: Description, its divider, Tutor, our divider, then the rest.
+  // flexlayout draws a divider after every tab but the last, so when
+  // Description is last ours goes before the Tutor tab instead. Without a
+  // Description button in the strip the tab stays where it is (appended on
+  // the first call). Does nothing when the tab is already in place.
+  function placeTab(container, tab, divider) {
+    const desc = [...container.querySelectorAll(".flexlayout__tab_button")].find(
+      (b) => !b.hasAttribute(TAB_ATTR) && labelOf(b) === "description"
+    );
+    if (!desc) {
+      if (!tab.isConnected) container.append(...(divider ? [divider, tab] : [tab]));
+      return;
+    }
+    const next = desc.nextElementSibling;
+    const nativeDivider = next && next !== divider && next.classList.contains("flexlayout__tabset_tab_divider") ? next : null;
+    if (nativeDivider) {
+      if (nativeDivider.nextElementSibling === tab && (!divider || tab.nextElementSibling === divider)) return;
+      nativeDivider.after(...(divider ? [tab, divider] : [tab]));
+    } else {
+      if (divider ? next === divider && divider.nextElementSibling === tab : next === tab) return;
+      desc.after(...(divider ? [divider, tab] : [tab]));
+    }
+  }
+
   // ---- the panel -------------------------------------------------------
 
   function buildPanel() {
@@ -1809,8 +1834,7 @@
     const built = buildTab(container);
     if (!built) return;
     const { tab, divider } = built;
-    if (divider) container.appendChild(divider);
-    container.appendChild(tab);
+    placeTab(container, tab, divider);
 
     const panel = buildPanel();
     layout.appendChild(panel.host);
@@ -1848,11 +1872,15 @@
     // panel only covers a tab it didn't select, so when the page's own
     // selection moves, ours steps aside.
     const strip = new MutationObserver(() => {
+      // LeetCode adds and removes tabs (Accepted after a Submit, for one);
+      // ours stays right after Description. A move only happens when the
+      // spot is wrong, so the mutations it causes settle on the next call.
+      placeTab(container, tab, divider);
       if (!active) return;
       const now = selectedRealButton(m);
       if ((now ? labelOf(now) : null) !== m.selectedAtActivation) deactivate();
     });
-    strip.observe(container, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    strip.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
 
     const rects = new MutationObserver(syncRect);
     rects.observe(tabset, { attributes: true, attributeFilter: ["style"] });
@@ -1922,9 +1950,9 @@
       if (mounted && (!document.contains(mounted.tab) || !document.contains(mounted.host))) teardown();
       if (!mounted) {
         mount();
-      } else if (mounted.container.lastElementChild !== mounted.tab) {
-        // React appended something after us; keep Tutor last.
-        mounted.container.appendChild(mounted.tab);
+      } else {
+        // React re-rendered the strip; keep Tutor right after Description.
+        placeTab(mounted.container, mounted.tab, mounted.divider);
       }
     }
     const slug = currentSlug();
