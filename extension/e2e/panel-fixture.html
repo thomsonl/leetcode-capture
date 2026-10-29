@@ -1,0 +1,114 @@
+<!doctype html>
+<!--
+  The smallest stand-in for a leetcode.com problem page that panel.js can
+  mount into (see findTabset, buildTab, mount, sampleTheme, activate): a
+  flexlayout layout whose left tabset holds Description and Submissions, with
+  the panes as absolutely positioned siblings of the tabsets, like the real
+  page. The Code pane comes FIRST in DOM order on purpose (the layout can do
+  that), so a pane chosen by DOM order would be the wrong one.
+
+  window.fetch is replaced before panel.js runs, so nothing here touches the
+  network: /panel/events is a stream the test writes into with __push(text),
+  /panel/message answers with __postStatus after __postDelayMs. Served by
+  panel-render.e2e.mjs under /problems/<slug>/ so the panel sees a slug.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fixture problem page</title>
+<style>
+  html { color-scheme: dark; }
+  body { margin: 0; background: rgb(26, 26, 26); color: rgb(255, 255, 255); font-family: -apple-system, "Segoe UI", sans-serif; }
+  .flexlayout__layout { position: absolute; inset: 0; overflow: hidden; }
+  .flexlayout__tabset { position: absolute; left: 8px; top: 8px; width: 560px; height: 700px; background: rgb(38, 38, 38); border-radius: 8px; }
+  .flexlayout__tabset_tabbar_outer { height: 36px; display: flex; align-items: center; padding: 0 8px; }
+  .flexlayout__tabset_tabbar_inner_tab_container { display: flex; align-items: center; gap: 2px; }
+  .flexlayout__tab_button { display: flex; align-items: center; height: 28px; padding: 0 8px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  .flexlayout__tab_button--selected { color: rgb(245, 245, 245); font-weight: 600; }
+  .flexlayout__tab_button--unselected { color: rgba(255, 255, 255, 0.6); }
+  .flexlayout__tab_button_content { display: flex; align-items: center; gap: 4px; }
+  .label { position: relative; }
+  .label .ghost { position: absolute; inset: 0; visibility: hidden; font-weight: 400; }
+  .flexlayout__tabset_tab_divider { width: 1px; height: 14px; background: rgba(255, 255, 255, 0.15); }
+  .flexlayout__tabset_content { position: absolute; left: 0; top: 36px; right: 0; bottom: 0; }
+  .flexlayout__tab { position: absolute; overflow: auto; padding: 20px 16px; box-sizing: border-box; }
+  #pane-code { left: 576px; top: 44px; width: 440px; height: 664px; background: rgb(30, 30, 30); color: rgb(212, 212, 212); }
+  #pane-desc { left: 8px; top: 44px; width: 560px; height: 664px; color: rgb(255, 255, 255); font-size: 14px; line-height: 21px; }
+  #pane-subs { display: none; }
+</style>
+<script>
+  (() => {
+    window.__eventsUrls = [];
+    window.__posts = [];
+    window.__postDelayMs = 0;
+    window.__postStatus = 202;
+    let controller = null;
+    const encoder = new TextEncoder();
+    window.__push = (text) => {
+      if (!controller) throw new Error("no open /panel/events stream");
+      controller.enqueue(encoder.encode(text));
+    };
+    window.__event = (obj) => window.__push(`data: ${JSON.stringify(obj)}\n\n`);
+    // Ends the stream as a relay going away would.
+    window.__dropStream = () => {
+      if (controller) controller.error(new TypeError("network error"));
+      controller = null;
+    };
+    window.__streamOpen = () => controller !== null;
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(typeof input === "string" ? input : input.url, location.href);
+      if (url.pathname === "/panel/events") {
+        window.__eventsUrls.push(url.search);
+        const body = new ReadableStream({
+          start(c) {
+            controller = c;
+          },
+        });
+        if (options.signal) {
+          options.signal.addEventListener("abort", () => window.__dropStream());
+        }
+        return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (url.pathname === "/panel/message") {
+        window.__posts.push(JSON.parse(options.body));
+        await new Promise((r) => setTimeout(r, window.__postDelayMs));
+        return new Response("{}", { status: window.__postStatus, headers: { "Content-Type": "application/json" } });
+      }
+      throw new TypeError(`fixture: no network for ${url.href}`);
+    };
+  })();
+</script>
+</head>
+<body>
+  <div class="flexlayout__layout">
+    <div class="flexlayout__tab" id="pane-code">class Solution: <button id="editor-button">focusable editor control</button></div>
+    <div class="flexlayout__tabset">
+      <div class="flexlayout__tabset_tabbar_outer">
+        <div class="flexlayout__tabset_tabbar_inner">
+          <div class="flexlayout__tabset_tabbar_inner_tab_container">
+            <div class="flexlayout__tab_button flexlayout__tab_button--selected" data-layout-path="/ts0/tb0" draggable="true">
+              <div class="flexlayout__tab_button_content">
+                <svg width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h16v16H4z"/></svg>
+                <div class="label"><div>Description</div><div class="ghost">Description</div></div>
+              </div>
+            </div>
+            <div class="flexlayout__tabset_tab_divider"></div>
+            <div class="flexlayout__tab_button flexlayout__tab_button--unselected" data-layout-path="/ts0/tb1" draggable="true">
+              <div class="flexlayout__tab_button_content">
+                <svg width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h16v16H4z"/></svg>
+                <div class="label"><div>Submissions</div><div class="ghost">Submissions</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flexlayout__tabset_content"></div>
+    </div>
+    <div class="flexlayout__tab" id="pane-desc">
+      <p>Given an array of integers, return indices of the two numbers such that they add up to a target. <button id="desc-button">focusable description control</button></p>
+      <ul><li>First native item</li><li>Second native item</li></ul>
+    </div>
+    <div class="flexlayout__tab" id="pane-subs">Submissions</div>
+  </div>
+</body>
+</html>
