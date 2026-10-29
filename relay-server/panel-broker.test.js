@@ -625,3 +625,59 @@ test("the status event lists the replies still open, so a panel that lost its st
   assert.deepEqual((await statusOf()).openTurns, ["t-open"]);
   back.close();
 });
+
+test("drop-problem forgets one problem's buffered events, and only the companion may ask", async (t) => {
+  const port = PORT + 8;
+  await startServer(t, port);
+  const publish = (events) => request({ port, method: "POST", route: "/panel/publish", headers: COMPANION, body: { events } });
+  const drop = (headers, body = { problemSlug: "two-sum" }) =>
+    request({ port, method: "POST", route: "/panel/drop-problem", headers, body });
+  const inbox = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await inbox.ready();
+  await publish([
+    { type: "user", text: "old question", problemSlug: "two-sum" },
+    { type: "turn-start", turnId: "t-old", problemSlug: "two-sum" },
+    { type: "chunk", turnId: "t-old", text: "half a reply" },
+    { type: "capture", trigger: "run", problemSlug: "house-robber", attemptSeq: 1, note: "Kept for your next message" },
+  ]);
+  const buffered = async () => {
+    const panel = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
+    const events = await panel.waitFor((e) => e.some((x) => x.type === "status"));
+    panel.close();
+    return events;
+  };
+
+  // A page (even leetcode.com) cannot wipe the transcript.
+  assert.equal((await drop({ origin: LEETCODE })).status, 403);
+  assert.equal((await drop({})).status, 403, "the companion header is required");
+  assert.equal((await drop(COMPANION, { problemSlug: "../x" })).status, 400);
+  assert.equal((await buffered()).filter((e) => e.problemSlug === "two-sum").length, 2);
+
+  assert.equal((await drop(COMPANION)).status, 200);
+  const after = await buffered();
+  assert.ok(!after.some((e) => e.problemSlug === "two-sum" || e.turnId === "t-old"), JSON.stringify(after));
+  // The other problem's events stay, the chip note included, and the dropped
+  // reply is no longer listed as open.
+  assert.equal(after.find((e) => e.type === "capture").note, "Kept for your next message");
+  assert.deepEqual(after.find((e) => e.type === "status").openTurns, []);
+  inbox.close();
+});
+
+test("a panel message may carry the live editor code; a malformed one is dropped, not the message", async (t) => {
+  const port = PORT + 9;
+  await startServer(t, port);
+  const inbox = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await inbox.ready();
+  const send = (body) => request({ port, method: "POST", route: "/panel/message", headers: { origin: LEETCODE }, body });
+  const code = "def f():\n    return 1\n".repeat(4000); // well past the old 64 KB body cap
+  assert.equal(
+    (await send({ text: "why?", problemSlug: "two-sum", snapshot: { code, language: "Python3", problemTitle: "Two Sum", problemDescription: "D", extra: "x" } })).status,
+    202
+  );
+  assert.equal((await send({ text: "bad", problemSlug: "two-sum", snapshot: { code: 42 } })).status, 202);
+  const events = await inbox.waitFor((e) => e.length >= 2);
+  assert.deepEqual(events[0].snapshot, { code, language: "Python3", problemTitle: "Two Sum", problemDescription: "D" });
+  assert.equal(events[1].text, "bad");
+  assert.equal(events[1].snapshot, undefined);
+  inbox.close();
+});

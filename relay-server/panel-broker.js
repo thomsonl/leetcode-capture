@@ -16,6 +16,7 @@
 //   POST /panel/message             panel     a typed message for the tutor
 //   POST /panel/publish             companion one event, or { events: [...] }
 //   GET  /panel/inbox               companion SSE stream of the panel's typed messages
+//   POST /panel/drop-problem        companion { problemSlug }: forget that problem's buffered events
 //
 // Unlike /capture (which only ingests data, so a permissive CORS `*` is
 // harmless), these routes can READ tutor replies, which contain the student's
@@ -27,7 +28,7 @@
 //   - Origin must be absent or exactly https://leetcode.com. Browsers always
 //     send Origin on a CORS request and on any POST, and a page cannot forge
 //     it, so every other website is rejected.
-// The companion-only routes (publish, inbox) additionally go through
+// The companion-only routes (publish, inbox, drop-problem) additionally go through
 // companionOnlyRejection below. A missing Origin alone is NOT proof of the
 // companion: a page's `fetch(url, { mode: "no-cors" })` GET carries no Origin
 // either. What a browser page cannot do is add a custom header without a CORS
@@ -57,7 +58,11 @@ const PANEL_ORIGIN = "https://leetcode.com";
 const COMPANION_HEADER = "x-lc-companion";
 
 const MAX_BUFFERED_EVENTS = 2000;
-const MAX_MESSAGE_BYTES = 64 * 1024;
+// A message may carry the live editor code (its `snapshot`), so the body cap
+// is sized for a long solution, not for the typed text alone.
+const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
+const MAX_SNAPSHOT_CODE_CHARS = 500_000;
+const MAX_SNAPSHOT_DESCRIPTION_CHARS = 100_000;
 const MAX_PUBLISH_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 200_000;
 const MAX_MESSAGE_CHARS = 8000;
@@ -91,7 +96,7 @@ function companionOnlyRejection(req) {
   return null;
 }
 
-const COMPANION_ONLY_ROUTES = new Set(["POST /panel/publish", "GET /panel/inbox"]);
+const COMPANION_ONLY_ROUTES = new Set(["POST /panel/publish", "GET /panel/inbox", "POST /panel/drop-problem"]);
 
 const EVENT_TYPES = new Set(["user", "capture", "turn-start", "chunk", "turn-end", "notice"]);
 
@@ -134,7 +139,28 @@ function sanitizeEvent(raw) {
     if (!Number.isInteger(raw.attemptSeq) || raw.attemptSeq < 0) return null;
     event.attemptSeq = raw.attemptSeq;
   }
+  // A capture chip's quiet note ("Kept for your next message" on a Run).
+  if (raw.note !== undefined && raw.note !== null) {
+    if (!isShortString(raw.note, 200)) return null;
+    event.note = raw.note;
+  }
   return event;
+}
+
+// The live editor code a panel message may carry (read by the extension at
+// send time), reduced to the fields the companion uses. Anything malformed
+// is dropped and the message goes without it: the companion then falls back
+// to the newest recorded Run or Submit. The code itself is passed on as is;
+// the companion never prints it.
+function sanitizeSnapshot(raw) {
+  if (!raw || typeof raw !== "object" || !isShortString(raw.code, MAX_SNAPSHOT_CODE_CHARS)) return null;
+  const snapshot = { code: raw.code };
+  if (isShortString(raw.language, 50)) snapshot.language = stripControlChars(raw.language);
+  if (isShortString(raw.problemTitle, 300)) snapshot.problemTitle = stripControlChars(raw.problemTitle);
+  if (isShortString(raw.problemDescription, MAX_SNAPSHOT_DESCRIPTION_CHARS)) {
+    snapshot.problemDescription = stripControlChars(raw.problemDescription);
+  }
+  return snapshot;
 }
 
 function createPanelBroker({ port }) {
@@ -382,8 +408,30 @@ function createPanelBroker({ port }) {
           return;
         }
         const message = { id: nextMessageId++, text, problemSlug: slug };
+        const snapshot = sanitizeSnapshot(body.snapshot);
+        if (snapshot) message.snapshot = snapshot;
         for (const consumer of consumers) sseWrite(consumer, { id: message.id, data: message });
         sendJson(req, res, 202, { ok: true, id: message.id });
+      });
+      return true;
+    }
+
+    // The companion moved on from a problem (its tutor context was reset), so
+    // that problem's transcript is no longer kept for panels that connect or
+    // reload later. Panels already showing it keep what they have.
+    if (route === "POST /panel/drop-problem") {
+      readBody(req, res, MAX_MESSAGE_BYTES, (body) => {
+        const slug = body && body.problemSlug;
+        if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+          sendJson(req, res, 400, { error: "a valid problemSlug is required" });
+          return;
+        }
+        const before = events.length;
+        // Chunks carry no slug of their own, only their turn's id.
+        const turnIds = new Set(events.filter((e) => e.problemSlug === slug && e.turnId).map((e) => e.turnId));
+        events = events.filter((e) => e.problemSlug !== slug && !(e.turnId && turnIds.has(e.turnId)));
+        for (const [turnId, turn] of openTurns) if (turn.problemSlug === slug) openTurns.delete(turnId);
+        sendJson(req, res, 200, { ok: true, dropped: before - events.length });
       });
       return true;
     }
