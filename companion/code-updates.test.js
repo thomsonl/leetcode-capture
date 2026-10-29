@@ -454,7 +454,13 @@ test("the panel's busy flag: on while a message or Submit is queued or answered,
   // A changed Submit is busy too; the same code again is not.
   const before = watch.statuses.length;
   await c.capture({ trigger: 'submit', code: solution('submitted') });
-  await until(() => c.requests.length === 3 && watch.statuses.at(-1) === false, 10000, 'the Submit to finish');
+  // The last status is still the earlier idle until this Submit's own busy
+  // arrives, so wait for that busy first, then for the idle after it.
+  await until(
+    () => c.requests.length === 3 && watch.statuses.slice(before).includes(true) && watch.statuses.at(-1) === false,
+    10000,
+    'the Submit to finish',
+  );
   assert.deepEqual(watch.statuses.slice(before), [true, false]);
   const afterSubmit = watch.statuses.length;
   await c.capture({ trigger: 'submit', code: solution('submitted') });
