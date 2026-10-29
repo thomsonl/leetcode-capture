@@ -4,8 +4,8 @@
   "private": true,
   "description": "MV3 content script that captures LeetCode Run/Submit attempts - no build step, no dependencies. This package.json exists to run content.test.js and to alias the web-ext (AMO tooling) commands in AMO_SUBMISSION_CHECKLIST.md - web-ext itself is fetched on demand via npx, not a declared dependency, so this stays dependency-free.",
   "scripts": {
-    "test": "node --test content.test.js panel.test.js shared.test.js adapters.test.mjs engine.test.mjs helper-launcher.test.mjs",
-    "lint:amo": "npx --yes web-ext lint --source-dir . --ignore-files \"content.test.js\" \"panel.test.js\" \"shared.test.js\" \"adapters.test.mjs\" \"engine.test.mjs\" \"helper-launcher.test.mjs\" \"shared/package.json\" \"e2e/**\" \"package.json\" \"AMO_SUBMISSION_CHECKLIST.md\" \"CHROME_SUBMISSION_CHECKLIST.md\" \"PRIVACY_POLICY.md\" \"web-ext-artifacts/**\" \"icons/screenshot*\"",
-    "build:amo": "npx --yes web-ext build --source-dir . --overwrite-dest --ignore-files \"content.test.js\" \"panel.test.js\" \"shared.test.js\" \"adapters.test.mjs\" \"engine.test.mjs\" \"helper-launcher.test.mjs\" \"shared/package.json\" \"e2e/**\" \"package.json\" \"AMO_SUBMISSION_CHECKLIST.md\" \"CHROME_SUBMISSION_CHECKLIST.md\" \"PRIVACY_POLICY.md\" \"web-ext-artifacts/**\" \"icons/screenshot*\""
+    "test": "node --test content.test.js panel.test.js shared.test.js adapters.test.mjs engine.test.mjs helper-launcher.test.mjs layout-bridge.test.js",
+    "lint:amo": "npx --yes web-ext lint --source-dir . --ignore-files \"content.test.js\" \"panel.test.js\" \"shared.test.js\" \"adapters.test.mjs\" \"engine.test.mjs\" \"helper-launcher.test.mjs\" \"layout-bridge.test.js\" \"shared/package.json\" \"e2e/**\" \"package.json\" \"AMO_SUBMISSION_CHECKLIST.md\" \"CHROME_SUBMISSION_CHECKLIST.md\" \"PRIVACY_POLICY.md\" \"web-ext-artifacts/**\" \"icons/screenshot*\"",
+    "build:amo": "npx --yes web-ext build --source-dir . --overwrite-dest --ignore-files \"content.test.js\" \"panel.test.js\" \"shared.test.js\" \"adapters.test.mjs\" \"engine.test.mjs\" \"helper-launcher.test.mjs\" \"layout-bridge.test.js\" \"shared/package.json\" \"e2e/**\" \"package.json\" \"AMO_SUBMISSION_CHECKLIST.md\" \"CHROME_SUBMISSION_CHECKLIST.md\" \"PRIVACY_POLICY.md\" \"web-ext-artifacts/**\" \"icons/screenshot*\""
   }
 }

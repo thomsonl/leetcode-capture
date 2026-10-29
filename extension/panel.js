@@ -864,6 +864,14 @@
   const HOST_ID = "lc-tutor-panel-host";
   const TAB_ATTR = "data-lc-tutor-tab";
   const ACTIVE_ATTR = "data-lc-tutor-active";
+  // Set by layout-bridge.js on the native Tutor tab's pane and button.
+  const PANE_ATTR = "data-lc-tutor-pane";
+  const BUTTON_ATTR = "data-lc-tutor-button";
+  const CHAT_PATH = "M5 3h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7.2L6 21.5V17H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z";
+  const CHAT_PATH_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='${CHAT_PATH}'/></svg>`;
+  // How long a page that has a layout may wait for the bridge's answer
+  // before the injected tab is used instead.
+  const BRIDGE_WAIT_MS = 3000;
   const TUTOR_COLOR = "rgb(150, 115, 255)";
   const MAX_MESSAGE_CHARS = 8000;
   // A message, Run or Submit whose code could not be read from the editor
@@ -879,10 +887,29 @@
   let active = false;
   let unread = false;
   let mounted = null; // { tabset, container, tab, divider, host, layout, ... }
+  // How the Tutor tab exists: "native" (a real tab of the page's own layout,
+  // added by layout-bridge.js), "clone" (an injected copy of a tab button
+  // over the Description tabset, the fallback) or "pending" until the bridge
+  // has answered.
+  let layoutMode = "pending";
+  let pendingSince = 0;
+  let nativePanel = null; // the native mode's panel, kept across panes
   let renderQueued = false;
   let sending = false; // a typed message's POST is in flight
 
   const PAGE_CSS = `
+    /* The native Tutor tab's button is flexlayout's own, rendered by the
+       page; it is only decorated, through attributes and pseudo-elements,
+       which React never touches. */
+    .flexlayout__tab_button[${BUTTON_ATTR}] { display: flex; align-items: center; }
+    .flexlayout__tab_button[${BUTTON_ATTR}]:not(:has(svg))::before {
+      content: ""; flex: none; width: 1em; height: 1em; margin-right: 4px; background: ${TUTOR_COLOR};
+      -webkit-mask: url("data:image/svg+xml,${encodeURIComponent(CHAT_PATH_SVG)}") center / contain no-repeat;
+      mask: url("data:image/svg+xml,${encodeURIComponent(CHAT_PATH_SVG)}") center / contain no-repeat;
+    }
+    .flexlayout__tab_button[${BUTTON_ATTR}][data-unread]::after {
+      content: ""; flex: none; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: #ef4743;
+    }
     [${TAB_ATTR}] .lc-tutor-dot { display: none; width: 6px; height: 6px; margin-left: 2px; border-radius: 50%; background: #ef4743; }
     [${TAB_ATTR}][data-unread] .lc-tutor-dot { display: block; }
     body[${ACTIVE_ATTR}] .flexlayout__tabset:has([${TAB_ATTR}]) .flexlayout__tab_button--selected:not([${TAB_ATTR}]) {
@@ -1137,7 +1164,7 @@
     style.setProperty("--muted", muted);
     // Body copy in the Description pane is pure white while its title and the
     // tab labels are 245; keep that distinction.
-    style.setProperty("--body", pick(paneUnderTabset(m), "color", fg));
+    style.setProperty("--body", pick(m.native ? m.pane : paneUnderTabset(m), "color", fg));
     style.setProperty("--scheme", getComputedStyle(document.documentElement).colorScheme || "dark");
     style.setProperty("--font", getComputedStyle(document.body).fontFamily);
     style.setProperty("--fill", "color-mix(in srgb, var(--fg) 7%, transparent)");
@@ -1178,7 +1205,7 @@
     svg.style.color = TUTOR_COLOR;
     const path = document.createElementNS(NS, "path");
     path.setAttribute("fill", "currentColor");
-    path.setAttribute("d", "M5 3h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7.2L6 21.5V17H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z");
+    path.setAttribute("d", CHAT_PATH);
     svg.appendChild(path);
     return svg;
   }
@@ -1421,6 +1448,9 @@
   function observePanelSize(p) {
     let size = "";
     const observer = new ResizeObserver(() => {
+      // Hidden (its tab not selected) or between two panes: nothing is laid
+      // out, and measuring now would lose the place the student was reading.
+      if (!p.wrap.clientHeight || !p.host.isConnected) return;
       // The pane's own size (not the feed's) changes what the composer may
       // take: its width rewraps the typed text, its height sets the cap.
       const now = `${p.wrap.clientWidth}x${p.wrap.clientHeight}`;
@@ -1681,7 +1711,7 @@
   // ---- placement, activation ------------------------------------------
 
   function syncRect() {
-    if (!mounted) return;
+    if (!mounted || mounted.native) return;
     const content = mounted.tabset.querySelector(".flexlayout__tabset_content");
     if (!content) return;
     const layoutRect = mounted.layout.getBoundingClientRect();
@@ -1716,7 +1746,7 @@
   }
 
   function activate() {
-    if (!mounted || active) return;
+    if (!mounted || mounted.native || active) return;
     active = true;
     // Remember the page's own selection by label, not node: React can swap
     // the node out for the same tab (seen right after load) and that must not
@@ -1748,7 +1778,7 @@
   }
 
   function deactivate() {
-    if (!mounted || !active) return;
+    if (!mounted || mounted.native || !active) return;
     active = false;
     mounted.host.removeAttribute("data-active");
     mounted.tab.classList.remove("flexlayout__tab_button--selected");
@@ -1764,13 +1794,17 @@
     deactivate();
     mounted.cleanup();
     mounted = null;
+    active = false;
   }
 
   function mount() {
     const tabset = findTabset();
     if (!tabset) return;
     const container = tabset.querySelector(".flexlayout__tabset_tabbar_inner_tab_container");
-    const layout = tabset.parentElement;
+    // The panes are absolutely positioned under the layout element. On
+    // LeetCode that is the tabset's parent; newer flexlayout versions wrap
+    // each tabset in a container first.
+    const layout = tabset.closest(".flexlayout__layout") || tabset.parentElement;
     if (!container || !layout) return;
     const built = buildTab(container);
     if (!built) return;
@@ -1833,20 +1867,7 @@
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
     theme.observe(document.body, { attributes: true, attributeFilter: ["class", "data-theme"] });
 
-    panel.input.addEventListener("input", () => {
-      fitInput(panel);
-      panel.send.disabled = panel.input.disabled || sending || !panel.input.value.trim();
-      // They are editing; a complaint about the previous attempt no longer
-      // applies.
-      panel.hint.hidden = true;
-    });
-    panel.input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        sendTyped();
-      }
-    });
-    panel.send.addEventListener("click", sendTyped);
+    wireComposer(panel);
 
     m.cleanup = () => {
       container.removeEventListener("pointerdown", onStripPress, true);
@@ -1865,16 +1886,46 @@
     render();
   }
 
+  function wireComposer(panel) {
+    panel.input.addEventListener("input", () => {
+      fitInput(panel);
+      panel.send.disabled = panel.input.disabled || sending || !panel.input.value.trim();
+      // They are editing; a complaint about the previous attempt no longer
+      // applies.
+      panel.hint.hidden = true;
+    });
+    panel.input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendTyped();
+      }
+    });
+    panel.send.addEventListener("click", sendTyped);
+  }
+
   // Keeps the tab present across LeetCode's own re-renders and SPA
   // navigation, and drops it if the layout it lived in is gone.
   let lastSlug = null;
   function ensureMounted() {
-    if (mounted && (!document.contains(mounted.tab) || !document.contains(mounted.host))) teardown();
-    if (!mounted) {
-      mount();
-    } else if (mounted.container.lastElementChild !== mounted.tab) {
-      // React appended something after us; keep Tutor last.
-      mounted.container.appendChild(mounted.tab);
+    if (layoutMode === "pending") {
+      // The bridge has not answered yet. Once the page has a layout, it gets
+      // a few seconds before the injected tab takes over.
+      if (findTabset()) {
+        if (!pendingSince) pendingSince = Date.now();
+        else if (Date.now() - pendingSince > BRIDGE_WAIT_MS) useClone();
+      }
+      if (layoutMode === "pending") return;
+    }
+    if (layoutMode === "native") {
+      syncNative();
+    } else {
+      if (mounted && (!document.contains(mounted.tab) || !document.contains(mounted.host))) teardown();
+      if (!mounted) {
+        mount();
+      } else if (mounted.container.lastElementChild !== mounted.tab) {
+        // React appended something after us; keep Tutor last.
+        mounted.container.appendChild(mounted.tab);
+      }
     }
     const slug = currentSlug();
     if (slug !== lastSlug) {
@@ -1883,6 +1934,159 @@
         deactivate();
         scheduleRender();
       }
+    }
+  }
+
+  // ---- the native tab (layout-bridge.js) --------------------------------
+  //
+  // The Tutor tab is a real tab of the page's flexlayout layout: flexlayout
+  // draws its button, drags, drops, splits, maximizes, selects and hides it.
+  // The panel only lives in the tab's pane (the element the bridge marks)
+  // and follows it when React moves or re-creates it, keeping one panel, so
+  // the feed and its scroll survive every move.
+
+  function sendBridge(cmd) {
+    document.dispatchEvent(new CustomEvent("lc-tutor:layout-command", { detail: JSON.stringify({ cmd }) }));
+  }
+
+  function startBridge() {
+    const runtime = typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.getURL === "function" ? chrome.runtime : null;
+    if (!runtime) {
+      layoutMode = "clone";
+      return;
+    }
+    document.addEventListener("lc-tutor:layout-state", (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(typeof event.detail === "string" ? event.detail : "");
+      } catch {
+        return;
+      }
+      if (!msg || msg.ready) return;
+      if (msg.native === false) {
+        useClone();
+      } else if (msg.native === true && layoutMode !== "clone") {
+        layoutMode = "native";
+        nativeState = msg;
+        syncNative();
+      }
+    });
+    const script = document.createElement("script");
+    script.id = "lc-tutor-layout-bridge";
+    try {
+      script.src = runtime.getURL("layout-bridge.js");
+    } catch {
+      layoutMode = "clone";
+      return;
+    }
+    script.onload = () => {
+      script.remove();
+      sendBridge("start");
+    };
+    script.onerror = () => {
+      script.remove();
+      useClone();
+    };
+    (document.head || document.documentElement).appendChild(script);
+  }
+
+  // The injected tab from now on: the bridge could not start, or gave up.
+  function useClone() {
+    if (layoutMode === "clone") return;
+    const wasNative = layoutMode === "native";
+    layoutMode = "clone";
+    if (wasNative) {
+      sendBridge("stop");
+      if (mounted) teardown();
+    }
+    ensureMounted();
+  }
+
+  let nativeState = { present: false, visible: false };
+  let focusWanted = 0;
+
+  function buildNative() {
+    const panel = buildPanel();
+    panel.host.setAttribute("data-native", "");
+    panel.host.setAttribute("data-active", "");
+    panel.host.style.inset = "0";
+    const panelSize = observePanelSize(panel);
+    const theme = new MutationObserver(() => mounted && mounted.native && mounted.pane && sampleTheme(mounted));
+    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
+    theme.observe(document.body, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    wireComposer(panel);
+    // Pressing the Tutor tab is asking to type to the tutor, as it was for
+    // the injected tab; flexlayout selects it on its own.
+    const onPress = (event) => {
+      if (event.type === "pointerdown" && event.button !== 0) return;
+      const button = event.target.closest && event.target.closest(`[${BUTTON_ATTR}]`);
+      if (!button) return;
+      focusWanted = Date.now();
+      setTimeout(syncNative, 0);
+    };
+    document.addEventListener("pointerdown", onPress, true);
+    document.addEventListener("click", onPress, true);
+    return {
+      native: true, panel, host: panel.host, pane: null, tab: null, tabset: null, container: null, layout: null,
+      cleanup: () => {
+        document.removeEventListener("pointerdown", onPress, true);
+        document.removeEventListener("click", onPress, true);
+        panelSize.disconnect();
+        theme.disconnect();
+        panel.host.remove();
+      },
+    };
+  }
+
+  function syncNative() {
+    if (layoutMode !== "native") return;
+    if (!mounted) {
+      if (!nativePanel) nativePanel = buildNative();
+      mounted = nativePanel;
+      feedDirty = true;
+      renderedSlug = undefined;
+    }
+    const m = mounted;
+    const pane = document.querySelector(`[${PANE_ATTR}]`);
+    const button = document.querySelector(`[${BUTTON_ATTR}]`);
+    if (!button || !nativeState.present) {
+      // Between two renders, or the layout is gone (the panel and its feed
+      // are kept for when it comes back).
+      if (m.host.isConnected && (!pane || !pane.contains(m.host))) m.host.remove();
+      active = false;
+      return;
+    }
+    // A tab's pane exists only once it has been shown.
+    if (!pane) {
+      if (m.host.isConnected) m.host.remove();
+    } else if (m.host.parentNode !== pane) {
+      pane.appendChild(m.host);
+    }
+    const tabsChanged = m.tab !== button;
+    m.pane = pane;
+    m.tab = button;
+    m.container = button.parentElement;
+    m.tabset = button.closest(".flexlayout__tabset");
+    m.layout = button.closest(".flexlayout__layout");
+    button.setAttribute(TAB_ATTR, "");
+    button.setAttribute("aria-selected", nativeState.visible ? "true" : "false");
+    if (tabsChanged) setUnread(unread);
+    const shown = !!nativeState.visible && !!pane && pane.getBoundingClientRect().width > 0;
+    if (shown && !active) {
+      active = true;
+      if (m.tabset) sampleTheme(m);
+      setUnread(false);
+      m.panel.hint.hidden = true;
+      render();
+      keepScrollAnchor(m.panel);
+    } else if (!shown && active) {
+      active = false;
+    }
+    if (shown && focusWanted && Date.now() - focusWanted < 1500) {
+      focusWanted = 0;
+      setTimeout(() => {
+        if (active && mounted && !mounted.panel.input.disabled) mounted.panel.input.focus({ preventScroll: true });
+      }, 0);
     }
   }
 
@@ -2229,6 +2433,7 @@
     pageStyle.textContent = PAGE_CSS;
     document.head.appendChild(pageStyle);
 
+    startBridge();
     ensureMounted();
     // LeetCode builds its layout after document_idle and swaps it on
     // navigation, so keep checking; each check is a couple of DOM lookups.

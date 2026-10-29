@@ -47,6 +47,7 @@ const contentSource = fs
   .replace('const RELAY_URL = "http://localhost:8135/capture";', 'const RELAY_URL = "http://127.0.0.1:9/capture";');
 if (!contentSource.includes('http://127.0.0.1:9/capture')) throw new Error('could not repoint RELAY_URL in the injected content.js');
 const injectSource = fs.readFileSync(path.join(here, '..', 'inject.js'), 'utf8');
+const bridgeSource = fs.readFileSync(path.join(here, '..', 'layout-bridge.js'), 'utf8');
 
 // Serves the fixture at any /problems/<slug>/ path, on a random free port.
 const server = http.createServer((req, res) => {
@@ -56,6 +57,11 @@ const server = http.createServer((req, res) => {
   } else if (req.url === '/ext/inject.js') {
     res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
     res.end(injectSource);
+  } else if (req.url === '/ext/layout-bridge.js') {
+    // The real bridge: this fixture has no React, so it answers
+    // { native: false } and the panel uses its injected tab.
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+    res.end(bridgeSource);
   } else {
     res.writeHead(404);
     res.end();

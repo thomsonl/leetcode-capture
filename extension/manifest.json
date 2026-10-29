@@ -47,7 +47,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "inject.js"
+        "inject.js",
+        "layout-bridge.js"
       ],
       "matches": [
         "https://leetcode.com/*"
