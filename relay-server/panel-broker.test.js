@@ -681,3 +681,31 @@ test("a panel message may carry the live editor code; a malformed one is dropped
   assert.equal(events[1].snapshot, undefined);
   inbox.close();
 });
+
+test("a panel message body is capped at 256 KB, a snapshot's code at 100,000 characters and its description at 50,000", async (t) => {
+  const port = PORT + 10;
+  await startServer(t, port);
+  const inbox = openSse({ port, route: "/panel/inbox", headers: COMPANION });
+  await inbox.ready();
+  const send = (body) => request({ port, method: "POST", route: "/panel/message", headers: { origin: LEETCODE }, body });
+  // Over the whole-message cap: refused outright.
+  assert.equal((await send({ text: "big", problemSlug: "two-sum", snapshot: { code: "x".repeat(300 * 1024) } })).status, 413);
+  // Under the body cap, but the code is past its own cap: the message goes, without the snapshot.
+  assert.equal((await send({ text: "long code", problemSlug: "two-sum", snapshot: { code: "y".repeat(100_001) } })).status, 202);
+  // Code at its cap is kept; a description past its cap is dropped, the code is not.
+  const code = "z".repeat(100_000);
+  assert.equal(
+    (await send({ text: "at cap", problemSlug: "two-sum", snapshot: { code, problemDescription: "d".repeat(50_001) } })).status,
+    202
+  );
+  assert.equal(
+    (await send({ text: "both at cap", problemSlug: "two-sum", snapshot: { code, problemDescription: "d".repeat(50_000) } })).status,
+    202
+  );
+  const events = await inbox.waitFor((e) => e.length >= 3);
+  assert.equal(events[0].text, "long code");
+  assert.equal(events[0].snapshot, undefined);
+  assert.deepEqual(events[1].snapshot, { code });
+  assert.equal(events[2].snapshot.problemDescription.length, 50_000);
+  inbox.close();
+});

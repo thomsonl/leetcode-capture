@@ -458,3 +458,44 @@ test("requestEditorSnapshot gets content.js's answer for its own request only, a
   });
   assert.equal(await requestEditorSnapshot(empty, 500), null);
 });
+
+test("buildMessageBody never makes a body past the relay's cap, and never truncates code", () => {
+  const { buildMessageBody, MAX_MESSAGE_BYTES, MAX_SNAPSHOT_CODE_CHARS, MAX_SNAPSHOT_DESCRIPTION_CHARS } = require("./panel.js");
+  assert.equal(MAX_MESSAGE_BYTES, 256 * 1024);
+  assert.equal(MAX_SNAPSHOT_CODE_CHARS, 100_000);
+  assert.equal(MAX_SNAPSHOT_DESCRIPTION_CHARS, 50_000);
+  const bytes = (body) => Buffer.byteLength(body, "utf8");
+
+  // No snapshot, or a normal one: sent as is.
+  assert.deepEqual(buildMessageBody("hi", "two-sum", null), { body: JSON.stringify({ text: "hi", problemSlug: "two-sum" }), codeLeftOut: false });
+  const small = { code: "x = 1\n", language: "Python3", problemTitle: "Two Sum", problemDescription: "Given..." };
+  const normal = buildMessageBody("hi", "two-sum", small);
+  assert.equal(normal.codeLeftOut, false);
+  assert.deepEqual(JSON.parse(normal.body).snapshot, small);
+
+  // Code past its cap: the whole snapshot is left out, never a cut copy.
+  const long = buildMessageBody("hi", "two-sum", { ...small, code: "a".repeat(MAX_SNAPSHOT_CODE_CHARS + 1) });
+  assert.equal(long.codeLeftOut, true);
+  assert.deepEqual(JSON.parse(long.body), { text: "hi", problemSlug: "two-sum" });
+
+  // Code at its cap is kept, and an over-cap description is dropped instead of the code.
+  const atCap = "b".repeat(MAX_SNAPSHOT_CODE_CHARS);
+  const descTooLong = buildMessageBody("hi", "two-sum", { ...small, code: atCap, problemDescription: "d".repeat(MAX_SNAPSHOT_DESCRIPTION_CHARS + 1) });
+  assert.equal(descTooLong.codeLeftOut, false);
+  assert.equal(JSON.parse(descTooLong.body).snapshot.code, atCap);
+  assert.equal(JSON.parse(descTooLong.body).snapshot.problemDescription, undefined);
+
+  // Within the character caps but past the byte cap once encoded (non-ASCII
+  // and escaped characters): the description goes first, then the snapshot.
+  const wide = "é中\u0001".repeat(30_000); // 90,000 chars, far more than 256 KB as JSON
+  const tooWide = buildMessageBody("hi", "two-sum", { ...small, code: wide });
+  assert.equal(tooWide.codeLeftOut, true);
+  assert.ok(bytes(tooWide.body) <= MAX_MESSAGE_BYTES);
+  assert.equal(JSON.parse(tooWide.body).snapshot, undefined);
+  const codeFits = "中".repeat(70_000); // 210,000 bytes: fits alone, not with a long description
+  const dropDesc = buildMessageBody("hi", "two-sum", { ...small, code: codeFits, problemDescription: "中".repeat(40_000) });
+  assert.equal(dropDesc.codeLeftOut, false);
+  assert.equal(JSON.parse(dropDesc.body).snapshot.code, codeFits);
+  assert.equal(JSON.parse(dropDesc.body).snapshot.problemDescription, undefined);
+  assert.ok(bytes(dropDesc.body) <= MAX_MESSAGE_BYTES);
+});

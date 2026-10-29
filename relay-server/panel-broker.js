@@ -59,10 +59,14 @@ const COMPANION_HEADER = "x-lc-companion";
 
 const MAX_BUFFERED_EVENTS = 2000;
 // A message may carry the live editor code (its `snapshot`), so the body cap
-// is sized for a long solution, not for the typed text alone.
-const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
-const MAX_SNAPSHOT_CODE_CHARS = 500_000;
-const MAX_SNAPSHOT_DESCRIPTION_CHARS = 100_000;
+// is sized for a long solution, not for the typed text alone. Real solutions
+// are a few KB; the snapshot's code and description caps (plus the typed
+// text) fit well under the body cap as plain JSON. extension/panel.js keeps
+// the same three numbers and leaves the snapshot out of a message rather than
+// send a body past them (never a truncated copy of the code).
+const MAX_MESSAGE_BYTES = 256 * 1024;
+const MAX_SNAPSHOT_CODE_CHARS = 100_000;
+const MAX_SNAPSHOT_DESCRIPTION_CHARS = 50_000;
 const MAX_PUBLISH_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 200_000;
 const MAX_MESSAGE_CHARS = 8000;
@@ -289,16 +293,26 @@ function createPanelBroker({ port }) {
     });
   }
 
+  // A body past maxBytes is answered with a 413, but the rest of it is still
+  // read and thrown away (up to a hard ceiling) before the connection closes:
+  // resetting the socket while the client is still uploading makes it see a
+  // network error instead of the 413 (the panel would then say the relay is
+  // unreachable rather than that the message is too long).
   function readBody(req, res, maxBytes, onBody) {
     let received = 0;
     const chunks = [];
     let aborted = false;
     req.on("data", (chunk) => {
       received += chunk.length;
+      if (aborted) {
+        if (received > maxBytes * 4) req.destroy();
+        return;
+      }
       if (received > maxBytes) {
         aborted = true;
+        chunks.length = 0;
+        res.setHeader("Connection", "close");
         sendJson(req, res, 413, { error: "payload too large" });
-        req.destroy();
         return;
       }
       chunks.push(chunk);

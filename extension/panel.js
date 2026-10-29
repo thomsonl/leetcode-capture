@@ -748,6 +748,40 @@
     });
   }
 
+  // The relay's caps on a panel message (relay-server/panel-broker.js keeps
+  // the same numbers). Real code is a few KB, so these only matter for a
+  // pathological editor; the point is that the panel never sends a body the
+  // relay would refuse.
+  const MAX_MESSAGE_BYTES = 256 * 1024;
+  const MAX_SNAPSHOT_CODE_CHARS = 100_000;
+  const MAX_SNAPSHOT_DESCRIPTION_CHARS = 50_000;
+
+  function utf8Length(text) {
+    return new TextEncoder().encode(text).length;
+  }
+
+  // The JSON body of a typed message, with the live editor snapshot when it
+  // fits. The code is never cut: a truncated copy would look to the tutor
+  // like deleted code. So when it does not fit, the description goes first
+  // (the tutor already has it from earlier turns or a capture), then the
+  // whole snapshot, and `codeLeftOut` tells the caller to say so; the
+  // companion then uses the newest Run or Submit instead.
+  function buildMessageBody(text, problemSlug, snapshot) {
+    const bare = JSON.stringify({ text, problemSlug });
+    if (!snapshot || typeof snapshot.code !== "string") return { body: bare, codeLeftOut: false };
+    if (snapshot.code.length > MAX_SNAPSHOT_CODE_CHARS) return { body: bare, codeLeftOut: true };
+    const withSnapshot = { ...snapshot };
+    if (typeof withSnapshot.problemDescription === "string" && withSnapshot.problemDescription.length > MAX_SNAPSHOT_DESCRIPTION_CHARS) {
+      delete withSnapshot.problemDescription;
+    }
+    let body = JSON.stringify({ text, problemSlug, snapshot: withSnapshot });
+    if (utf8Length(body) <= MAX_MESSAGE_BYTES) return { body, codeLeftOut: false };
+    delete withSnapshot.problemDescription;
+    body = JSON.stringify({ text, problemSlug, snapshot: withSnapshot });
+    if (utf8Length(body) <= MAX_MESSAGE_BYTES) return { body, codeLeftOut: false };
+    return { body: bare, codeLeftOut: true };
+  }
+
   // Test-only hook (same pattern as content.js): `module` is undefined in a
   // real content script, so this is a no-op in the browser.
   if (typeof module !== "undefined" && module.exports) {
@@ -765,6 +799,10 @@
       renderBlocks,
       problemSlugFromPath,
       requestEditorSnapshot,
+      buildMessageBody,
+      MAX_MESSAGE_BYTES,
+      MAX_SNAPSHOT_CODE_CHARS,
+      MAX_SNAPSHOT_DESCRIPTION_CHARS,
     };
     return;
   }
@@ -1566,10 +1604,11 @@
       // The live editor code goes with the message, so the companion can
       // tell the tutor what changed since it last saw the code.
       const snapshot = await requestEditorSnapshot(document);
+      const { body, codeLeftOut } = buildMessageBody(text, slug, snapshot);
       const res = await fetch(`${RELAY_BASE}/panel/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(snapshot ? { text, problemSlug: slug, snapshot } : { text, problemSlug: slug }),
+        body,
         cache: "no-store",
         // A send must never hang the composer: the browser queues a request
         // behind its per-host connection limit, so give up and say so.
@@ -1582,6 +1621,10 @@
         // had scrolled up to reread something.
         mounted.stickUntil = Date.now() + 4000;
         p.scroll.scrollTop = p.scroll.scrollHeight;
+        if (codeLeftOut) {
+          p.hint.textContent = "Your code is too long to send with a message, so the tutor sees your last Run or Submit.";
+          p.hint.hidden = false;
+        }
       } else if (res.status === 503) {
         state.companionOnline = false;
         p.hint.textContent = "The tutor went offline. Your message wasn't sent.";

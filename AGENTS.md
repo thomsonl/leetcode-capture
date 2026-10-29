@@ -369,7 +369,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`formatDiffBody` in `context-budget.js`) against the held code, or the full code when nothing is held or the diff
   passes 80% of the code. The held code advances only on `commit()` after a successful backend call, and is memory only.
   Panel messages carry a live editor `snapshot` (content.js reads the Monaco model only, never the DOM scrape, which can
-  be truncated); terminal messages fall back to the newest Run or Submit. Every capture, message and reset runs inside
+  be truncated); terminal messages fall back to the newest Run or Submit. Caps: 256 KB per message body, 100,000 characters
+  of snapshot code, 50,000 of description (`panel-broker.js`, mirrored in `panel.js`'s `buildMessageBody`, which drops the
+  description and then the whole snapshot rather than send a body past them, and never truncates code). Every capture, message and reset runs inside
   `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with
   `COMPANION_AUTO_CLEAR_CONTEXT` on, the default) calls the backend's `resetContext()`, drops the old problem from the
   ledger and asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`); `captures.jsonl` is

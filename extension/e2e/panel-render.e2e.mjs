@@ -415,6 +415,27 @@ try {
     await page.eval('window.__noEditor = false');
   });
 
+  await scenario('code past the cap: the message goes without the snapshot (never a cut copy) and a note says so', async () => {
+    await page.eval(`(() => {
+      window.__posts.length = 0;
+      window.__savedEditorCode = window.__editorCode;
+      window.__editorCode = 'x = 1\\n'.repeat(20000);
+      const t = window.__q('textarea');
+      t.value = 'huge file';
+      t.dispatchEvent(new Event('input', { bubbles: true }));
+      t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    })()`);
+    await page.waitFor(`window.__posts.length === 1`, { what: 'the message POST' });
+    const body = await page.eval('window.__posts[0]');
+    check(body.text === 'huge file' && !('snapshot' in body), `body keys: ${Object.keys(body)}`);
+    await page.waitFor(`!window.__q('.hint').hidden`, { what: 'the note' });
+    const hint = await page.eval(`window.__q('.hint').textContent`);
+    check(hint === 'Your code is too long to send with a message, so the tutor sees your last Run or Submit.', `hint: ${hint}`);
+    check((await page.eval(`window.__q('textarea').value`)) === '', 'the message was not cleared after the send');
+    await page.eval(`(() => { window.__editorCode = window.__savedEditorCode; const t = window.__q('textarea'); t.value = 'a'; t.dispatchEvent(new Event('input', { bubbles: true })); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    check(await page.eval(`window.__q('.hint').hidden`), 'typing did not clear the note');
+  });
+
   await scenario('a Run chip shows its quiet note in the muted chip color', async () => {
     await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'run', attemptSeq: 7, note: 'Kept for your next message' })`);
     await settle();
