@@ -434,8 +434,8 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
   assert.ok(JSON.stringify(requests[0].messages).includes('any hints?'));
   assert.ok(out.includes('[panel] any hints?'), 'the terminal echoes panel messages under a [panel] label');
 
-  // 2. A Run is mirrored as a capture chip (with no note), and never reaches
-  // the model: no tutor turn.
+  // 2. A Run never reaches the model and shows nothing in the panel: no
+  // chip, no tutor turn.
   fs.appendFileSync(
     capturesPath,
     `${JSON.stringify({
@@ -448,16 +448,35 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
       attemptSeq: 1,
     })}\n`
   );
-  await until(() => panel.events.some((e) => e.type === 'capture'), 10000, 'the capture event');
   await until(() => out.includes('recorded your Run for Two Sum'), 10000, 'the Run note in the terminal');
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(requests.length, 1, 'a Run must not reach the model');
+  assert.ok(!panel.events.some((e) => e.type === 'capture'), 'a Run shows no chip');
+  assert.equal(panel.events.filter((e) => e.type === 'turn-start').length, 1, 'no tutor turn for a Run');
+
+  // 2b. A Submit the tutor sees keeps its chip, ahead of its reply.
+  fs.appendFileSync(
+    capturesPath,
+    `${JSON.stringify({
+      problemSlug: 'two-sum',
+      problemTitle: 'Two Sum',
+      language: 'python3',
+      trigger: 'submit',
+      timestamp: new Date().toISOString(),
+      code: 'def twoSum(nums, target): return []',
+      attemptSeq: 2,
+    })}\n`
+  );
+  await until(() => panel.events.filter((e) => e.type === 'turn-end').length === 2, 10000, 'the Submit reply');
   const capture = panel.events.find((e) => e.type === 'capture');
   assert.deepEqual(
     { slug: capture.problemSlug, trigger: capture.trigger, seq: capture.attemptSeq, title: capture.problemTitle, note: capture.note },
-    { slug: 'two-sum', trigger: 'run', seq: 1, title: 'Two Sum', note: undefined }
+    { slug: 'two-sum', trigger: 'submit', seq: 2, title: 'Two Sum', note: undefined }
   );
-  await new Promise((r) => setTimeout(r, 500));
-  assert.equal(requests.length, 1, 'a Run must not reach the model');
-  assert.equal(panel.events.filter((e) => e.type === 'turn-start').length, 1, 'no tutor turn for a Run');
+  assert.ok(
+    panel.events.indexOf(capture) < panel.events.findLastIndex((e) => e.type === 'turn-start'),
+    'the chip comes before the reply'
+  );
 
   // 3. Switching to another problem in the panel starts a fresh tutor session.
   const before = requests.length;
@@ -547,8 +566,9 @@ test('end to end: untrusted text never reaches the terminal as escape sequences'
   // problem id) was on screen too.
   await until(() => companion.text().includes('new problem detected (evil-problem)'), 10000, 'the reset notice');
   await until(() => relay.flat().filter((e) => e.type === 'turn-end').length >= 1, 10000, 'the published turn-end');
-  await until(() => relay.flat().some((e) => e.type === 'capture'), 10000, 'the published capture');
+  await until(() => relay.flat().some((e) => e.type === 'notice'), 10000, 'the published reset notice');
   assert.equal(requests.length, 1, 'an unknown trigger must not reach the model');
+  assert.ok(!relay.flat().some((e) => e.type === 'capture'), 'a capture the tutor never sees shows no chip');
 
   const out = companion.output();
   const at = out.indexOf(ESC);

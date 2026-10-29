@@ -228,7 +228,6 @@ export function createTutorEngine({ hub, log = () => {} }) {
       // the old problem's attempt numbers; numbering this one first is fine.
       const attemptSeq = slug ? (attempts.get(slug) || 0) + 1 : null;
       if (slug) attempts.set(slug, attemptSeq);
-      publish({ type: 'capture', problemSlug: slug, problemTitle: capture.problemTitle || null, trigger: capture.trigger, attemptSeq });
       queueTurn(async () => {
         if (problemId) {
           activateProblem(problemId, slug);
@@ -242,6 +241,9 @@ export function createTutorEngine({ hub, log = () => {} }) {
         if (!sendsToTutor(capture.trigger)) return;
         const plan = problemId ? ledger.planUpdate(problemId) : { kind: 'none' };
         if (plan.kind === 'unchanged' || plan.kind === 'none') return;
+        // Only a capture the tutor is about to see shows its chip in the
+        // panel: a Run or an unchanged Submit shows nothing at all.
+        publish({ type: 'capture', problemSlug: slug, problemTitle: capture.problemTitle || null, trigger: capture.trigger, attemptSeq });
         const releaseBusy = holdBusy();
         try {
           const message = buildSubmitMessage({ headerLine: captureHeaderLine(capture), plan, addendum: SUBMIT_ADDENDUM });

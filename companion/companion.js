@@ -1505,13 +1505,6 @@ async function handleCaptureLine(line) {
   const problemId = captureProblemId(capture);
   const sends = sendsToTutor(capture.trigger);
   if (capture.problemSlug) panelProblemSlug = capture.problemSlug;
-  panelPublish({
-    type: 'capture',
-    problemSlug: capture.problemSlug || null,
-    problemTitle: capture.problemTitle || null,
-    trigger: capture.trigger,
-    attemptSeq: Number.isInteger(capture.attemptSeq) ? capture.attemptSeq : null,
-  });
   const shownTitle = capture.problemTitle || capture.problemSlug || 'this problem';
 
   // Everything else happens in the turn queue, in arrival order: the reset
@@ -1551,6 +1544,16 @@ async function handleCaptureLine(line) {
       turnBoundaryPending = true;
       return;
     }
+
+    // Only a capture the tutor is about to see shows its chip in the panel:
+    // a Run or an unchanged Submit shows nothing there.
+    panelPublish({
+      type: 'capture',
+      problemSlug: capture.problemSlug || null,
+      problemTitle: capture.problemTitle || null,
+      trigger: capture.trigger,
+      attemptSeq: Number.isInteger(capture.attemptSeq) ? capture.attemptSeq : null,
+    });
 
     // From here on the tutor is working on this Submit (the panel's
     // "Processing" light, see holdBusy).

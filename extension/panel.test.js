@@ -92,10 +92,13 @@ test("captures and notices become transcript items; status only updates the flag
   assert.equal(state.companionBusy, false);
 });
 
-test("a Run chip carries no note, even one an older companion sends", () => {
+test("a Run shows no chip, even one an older companion still publishes", () => {
   const state = createState();
   applyEvent(state, { type: "capture", problemSlug: "a", trigger: "run", attemptSeq: 1, note: "Kept for your next message", seq: 1 });
-  assert.equal(itemsFor(state, "a")[0].note, undefined);
+  assert.equal(itemsFor(state, "a").length, 0);
+  assert.equal(state.lastSeq, 1, "the event still counts for the replay position");
+  applyEvent(state, { type: "capture", problemSlug: "a", trigger: "submit", attemptSeq: 2, note: "x", seq: 2 });
+  assert.deepEqual(itemsFor(state, "a").map((i) => [i.trigger, i.attemptSeq, i.note]), [["submit", 2, undefined]]);
 });
 
 test("the status event's busy flag counts only while the companion is online", () => {

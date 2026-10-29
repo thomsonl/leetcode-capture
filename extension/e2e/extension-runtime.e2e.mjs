@@ -175,9 +175,10 @@ try {
     // it again to look.
     await new Promise((r) => setTimeout(r, 300));
     await page.eval('window.__openTutor()');
-    await page.waitFor(`window.__qa('.feed .chip').length >= 1`, { what: 'the Run chip' });
     await new Promise((r) => setTimeout(r, 800));
     check(model.requests.length === before, 'a Run reached the model');
+    const chips = () => page.eval(`window.__qa('.feed .chip').map((n) => n.textContent)`);
+    check((await chips()).length === 0, `a Run showed a chip: ${JSON.stringify(await chips())}`);
     await page.eval(`document.getElementById('editor-button').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`);
     await new Promise((r) => setTimeout(r, 300));
     await page.eval('window.__openTutor()');
@@ -185,12 +186,14 @@ try {
     const submit = model.requests[model.requests.length - 1].body.messages.at(-1).content;
     check(/\[LeetCode capture\] Submit/.test(submit), `submit header: ${submit}`);
     check(/seen = \{\}/.test(submit) && !/def twoSum/.test(submit.split('\n').filter((l) => !l.startsWith(' ')).join('\n')) , `a diff, not the whole code: ${submit}`);
+    check(JSON.stringify(await chips()) === JSON.stringify(['SubmitAttempt 2']), `the Submit's chip: ${JSON.stringify(await chips())}`);
     await page.screenshot(path.join(shots, 'submit-dark.png'), { width: 1100, height: 760 });
     // The same code submitted again is not sent.
     const count = model.requests.length;
     await page.eval(`document.getElementById('editor-button').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`);
     await new Promise((r) => setTimeout(r, 1200));
     check(model.requests.length === count, 'an unchanged Submit reached the model');
+    check((await chips()).length === 1, `an unchanged Submit showed a chip: ${JSON.stringify(await chips())}`);
   });
 
   await scenario('a reload replays the conversation from the worker', async () => {

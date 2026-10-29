@@ -250,6 +250,9 @@
         pushItem(state, slug, { kind: "user", text: event.text || "" });
         return slug;
       case "capture":
+        // Only a Submit sent to the tutor shows a chip; an older companion
+        // still publishes its Runs too.
+        if (event.trigger !== "submit") return null;
         pushItem(state, slug, {
           kind: "capture",
           trigger: event.trigger,

@@ -212,14 +212,12 @@ function solution(marker) {
 test('Runs are only recorded; a Submit goes only when changed; messages carry diffs against what the tutor holds', async (t) => {
   const c = await startCompanion(t, { port: 18210 });
 
-  // 1. A Run never calls the model. It shows as a quiet chip in the panel.
+  // 1. A Run never calls the model, and shows nothing in the panel.
   await c.capture({ trigger: 'run', code: solution('run one') });
   await until(() => c.out().includes('recorded your Run for Two Sum'), 10000, 'the Run note');
   await pause(800);
   assert.equal(c.requests.length, 0, 'a Run must not reach the model');
-  const runChip = (await c.relayEvents()).find((e) => e.type === 'capture');
-  assert.equal(runChip.trigger, 'run');
-  assert.equal(runChip.note, undefined, 'a Run is recorded silently in the panel');
+  assert.ok(!(await c.relayEvents()).some((e) => e.type === 'capture'), 'a Run shows no chip in the panel');
   assert.ok(!(await c.relayEvents()).some((e) => e.type === 'turn-start'), 'no tutor turn for a Run');
 
   // 2. The first Submit carries the full code, with the statement.
@@ -231,6 +229,8 @@ test('Runs are only recorded; a Submit goes only when changed; messages carry di
   assert.match(c.lastUser(), /This was a Submit/);
   assert.match(c.lastPrompt(), /TWO-SUM-STATEMENT/);
   await c.settle();
+  const chips = async () => (await c.relayEvents()).filter((e) => e.type === 'capture');
+  assert.deepEqual((await chips()).map((e) => e.trigger), ['submit'], 'a Submit sent to the tutor shows its chip');
 
   // 3. The same code submitted again is not sent.
   await c.capture({ trigger: 'submit', code: solution('first submit') });
@@ -238,6 +238,7 @@ test('Runs are only recorded; a Submit goes only when changed; messages carry di
   await pause(500);
   assert.equal(c.requests.length, 1, 'an unchanged Submit must not reach the model');
   assert.ok(!(await c.relayEvents()).some((e) => e.type === 'notice'), 'an unchanged Submit shows nothing in the panel');
+  assert.equal((await chips()).length, 1, 'an unchanged Submit shows no chip');
 
   // 4. Three Runs, then a message typed in the terminal: only the diff from
   // what the tutor holds to the newest Run.

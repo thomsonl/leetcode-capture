@@ -133,7 +133,7 @@ Plain `leetcode` uses whatever provider you picked on the settings page (see bel
 ## Tutor tab on LeetCode
 
 The extension adds a **Tutor** tab to the left tab strip on every problem page, next to Description, Submissions, Editorial, and Solutions.
-Your Run and Submit attempts show up as small chips as they happen, the tutor's replies stream in, and you can type to it from the page.
+Each Submit the tutor reviews shows up as a small chip (Runs and unchanged Submits show nothing), the tutor's replies stream in, and you can type to it from the page.
 In the helper runtime it mirrors the companion's terminal chat, and the two stay in sync (a message typed in the page appears in the terminal under a `[panel]` label).
 In the browser runtime it talks to the extension's background worker over a port instead of the relay, and a reload replays the conversation from the worker.
 

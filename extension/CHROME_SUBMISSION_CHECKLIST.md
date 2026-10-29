@@ -72,7 +72,7 @@ LeetCode Capture adds a Tutor tab to every LeetCode problem page. It sees each R
 
 How it works
 - Open a problem and click the Tutor tab, next to Description and Submissions.
-- Run or Submit as usual. Your attempts show up as chips, and the tutor reacts to Submits.
+- Run or Submit as usual. Each Submit the tutor reviews shows up as a chip; Runs show nothing.
 - Type to the tutor at any time. Your message carries the code currently in the editor, so you never paste it.
 - Each problem keeps its own conversation.
 

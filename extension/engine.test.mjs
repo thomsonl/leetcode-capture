@@ -169,6 +169,8 @@ test('the code rules: Runs are never sent, a Submit only when changed, messages 
   assert.deepEqual(await service.handleMessage(capture('run', code1), CONTENT_SCRIPT), { handled: true });
   await settle(service);
   assert.equal(backend.calls.length, 0, 'a Run is only recorded');
+  const chips = () => service.hub.events().filter((e) => e.type === 'capture');
+  assert.equal(chips().length, 0, 'a Run shows no chip');
 
   await service.handleMessage(capture('submit', code1), CONTENT_SCRIPT);
   await settle(service);
@@ -177,10 +179,21 @@ test('the code rules: Runs are never sent, a Submit only when changed, messages 
   assert.match(backend.calls[0].text, /line 29/, 'the first Submit carries the full code');
   assert.match(backend.calls[0].text, /This was a Submit/);
   assert.equal(backend.calls[0].options.problemContext.description, 'About two-sum.');
+  assert.deepEqual(
+    chips().map((e) => [e.trigger, e.attemptSeq]),
+    [['submit', 2]],
+    'a Submit sent to the tutor keeps its chip, numbered after the Run'
+  );
+  const events = service.hub.events();
+  assert.ok(
+    events.indexOf(chips()[0]) < events.findIndex((e) => e.type === 'turn-start'),
+    'the chip comes before the reply'
+  );
 
   await service.handleMessage(capture('submit', code1), CONTENT_SCRIPT);
   await settle(service);
   assert.equal(backend.calls.length, 1, 'an unchanged Submit is not sent');
+  assert.equal(chips().length, 1, 'an unchanged Submit shows no chip');
 
   const port = fakePort();
   service.connectPort(port);

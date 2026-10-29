@@ -627,18 +627,23 @@ try {
     check(await page.eval(`window.__q('.hint').hidden`), 'typing did not clear the note');
   });
 
-  await scenario('a Run chip carries no note, even one an older companion sends', async () => {
+  await scenario('a Run shows no chip, and a sent Submit\'s chip carries no note', async () => {
+    const before = await page.eval(`window.__qa('.chip').length`);
     await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'run', attemptSeq: 7, note: 'Kept for your next message' })`);
+    await settle();
+    check((await page.eval(`window.__qa('.chip').length`)) === before, 'a Run (from an older companion) rendered a chip');
+    await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'submit', attemptSeq: 8, note: 'Kept for your next message' })`);
     await settle();
     const m = await page.eval(`(() => {
       const chip = window.__qa('.chip').pop();
       return { text: chip.textContent, notes: chip.querySelectorAll('.chip-note').length, height: chip.getBoundingClientRect().height };
     })()`);
+    check(/Submit/.test(m.text) && /Attempt 8/.test(m.text), `chip text: ${m.text}`);
     check(m.notes === 0 && !/Kept for your next message/.test(m.text), JSON.stringify(m));
     check(m.height === 24, `the chip stays one line: ${m.height}`);
     await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
     await settle();
-    await page.screenshot(path.join(SHOTS, '04-run-chip.png'), { width: 1100, height: 760 });
+    await page.screenshot(path.join(SHOTS, '04-submit-chip.png'), { width: 1100, height: 760 });
   });
 
   await scenario('a 413 says the message is too long, and typing clears the hint', async () => {

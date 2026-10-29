@@ -795,7 +795,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   - The header's status light reads the relay's `status` event: `busy` (set by the companion on companion-only
     `POST /panel/activity`, from when a message is queued or a Submit turns out to need the tutor until it is answered,
     going idle 100 ms late so back-to-back turns do not flash) shows yellow "Processing"; the relay clears it when the
-    last companion leaves. Runs and unchanged Submits show nothing beyond their chip (no note, no notice).
+    last companion leaves. Runs and unchanged Submits show nothing in the panel; only a Submit sent to the tutor gets a chip.
   - Sequence numbers restart with the relay, so each event carries the relay run's random `epoch`. The panel compares
     it per event (a reconnect's replay arrives before its `status` event) and reconnects with `?after=N&epoch=X`.
   - A companion that exits mid-reply sends no `turn-end`. When the last inbox stream closes (or a publish lands with
