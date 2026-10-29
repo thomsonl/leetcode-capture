@@ -17,6 +17,7 @@
 //   POST /panel/publish             companion one event, or { events: [...] }
 //   GET  /panel/inbox               companion SSE stream of the panel's typed messages
 //   POST /panel/drop-problem        companion { problemSlug }: forget that problem's buffered events
+//   POST /panel/trim-captures       companion { before, path }: drop the capture log's first `before` bytes
 //
 // Unlike /capture (which only ingests data, so a permissive CORS `*` is
 // harmless), these routes can READ tutor replies, which contain the student's
@@ -28,7 +29,7 @@
 //   - Origin must be absent or exactly https://leetcode.com. Browsers always
 //     send Origin on a CORS request and on any POST, and a page cannot forge
 //     it, so every other website is rejected.
-// The companion-only routes (publish, inbox, drop-problem) additionally go through
+// The companion-only routes (publish, inbox, drop-problem, trim-captures) additionally go through
 // companionOnlyRejection below. A missing Origin alone is NOT proof of the
 // companion: a page's `fetch(url, { mode: "no-cors" })` GET carries no Origin
 // either. What a browser page cannot do is add a custom header without a CORS
@@ -52,6 +53,8 @@
 "use strict";
 
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const PANEL_ORIGIN = "https://leetcode.com";
 // Sent by companion/panel-bridge.js on every companion-only request.
@@ -100,7 +103,12 @@ function companionOnlyRejection(req) {
   return null;
 }
 
-const COMPANION_ONLY_ROUTES = new Set(["POST /panel/publish", "GET /panel/inbox", "POST /panel/drop-problem"]);
+const COMPANION_ONLY_ROUTES = new Set([
+  "POST /panel/publish",
+  "GET /panel/inbox",
+  "POST /panel/drop-problem",
+  "POST /panel/trim-captures",
+]);
 
 const EVENT_TYPES = new Set(["user", "capture", "turn-start", "chunk", "turn-end", "notice"]);
 
@@ -167,7 +175,23 @@ function sanitizeSnapshot(raw) {
   return snapshot;
 }
 
-function createPanelBroker({ port }) {
+// Whether two paths name the same file: the companion tails the file it was
+// configured with, and a trim must never cut a different one (with only
+// LEETCODE_CAPTURES_FILE or only CAPTURE_LOG_PATH set, they differ).
+function sameFile(a, b) {
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  return real(a) === real(b);
+}
+
+// captureLog, when given, is { path, trim(before) } from server.js; without
+// it the trim route answers 404.
+function createPanelBroker({ port, captureLog = null }) {
   const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 
   // Identifies this run of the relay; see the file header.
@@ -446,6 +470,40 @@ function createPanelBroker({ port }) {
         events = events.filter((e) => e.problemSlug !== slug && !(e.turnId && turnIds.has(e.turnId)));
         for (const [turnId, turn] of openTurns) if (turn.problemSlug === slug) openTurns.delete(turnId);
         sendJson(req, res, 200, { ok: true, dropped: before - events.length });
+      });
+      return true;
+    }
+
+    // The companion has read and handled the capture log up to `before` and
+    // asks for that prefix to go (see server.js, trimCaptureLog). It moves
+    // its own read offset back by `removed` only once this answers 200.
+    if (route === "POST /panel/trim-captures") {
+      if (!captureLog) {
+        sendJson(req, res, 404, { error: "not found" });
+        return true;
+      }
+      readBody(req, res, 4096, (body) => {
+        const before = body && body.before;
+        if (!Number.isSafeInteger(before) || before < 0 || typeof body.path !== "string" || !body.path) {
+          sendJson(req, res, 400, { error: "a byte offset `before` and the log's `path` are required" });
+          return;
+        }
+        if (!sameFile(body.path, captureLog.path)) {
+          sendJson(req, res, 409, { error: "this relay writes a different capture log" });
+          return;
+        }
+        let result;
+        try {
+          result = captureLog.trim(before);
+        } catch (err) {
+          sendJson(req, res, 500, { error: `could not trim the capture log: ${err.message}` });
+          return;
+        }
+        if (result.error) {
+          sendJson(req, res, 409, { error: result.error });
+          return;
+        }
+        sendJson(req, res, 200, { ok: true, removed: result.removed, size: result.size });
       });
       return true;
     }

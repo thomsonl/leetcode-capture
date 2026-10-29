@@ -69,7 +69,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   :; done`) or split across separate tool calls instead.
 - The problem description is read from `[data-track-load="description_content"]` (an analytics hook attribute, more stable than LeetCode's generated class names - verified against live `leetcode.com/problems/*` pages). `#qd-content` also matches but additionally picks up tab labels and other page chrome, so it's avoided.
 - LeetCode's own topic tags are read from `a[href^="/tag/"]` (verified live against `leetcode.com/problems/two-sum/` and `/house-robber/` with `chrome-devtools-axi`: matches exactly the "Topics" panel's links and nothing else, present in the DOM even while that panel is visually collapsed). Sent as `problemTags` on the capture; see `vault-tool/vault-notes.js`'s `findTopicNoteByTagName` for how a tag gets matched to an existing vault topic note.
-- The relay server rebuilds its per-problem `attemptSeq` counter from the existing log file on startup, so restarts don't reset sequence numbers. Log format is one JSON object per line at `relay-server/data/captures.jsonl` (gitignored).
+- The relay server rebuilds its per-problem `attemptSeq` counter from the existing log file on startup. Log format is one JSON object per line at `relay-server/data/captures.jsonl` (gitignored).
+  The log is only a delivery queue to the companion and is cleared as it is consumed (`companion/capture-log.js`, `trimCaptureLog` in `server.js`), so a relay restart after a clear counts attempts from 1 again.
+  The companion asks (companion-only `POST /panel/trim-captures { before, path }`) to drop the bytes before its own read offset, only between polls, at start, after a problem-switch reset and past `LEETCODE_CAPTURES_TRIM_BYTES` (4 MB).
+  The relay refuses a `path` that is not its own log or a `before` not on a line boundary, cuts synchronously (so an append lands wholly before or after) by writing the rest to a temp file and renaming it, and the companion subtracts `removed` from its offset only on a 200.
+  A `pendingTrim` (the 256 bytes before the cut) in the companion's state file resolves a crash or lost answer between the cut and the saved offset.
+  A later "keep old captures" setting would copy the dropped prefix away inside `trimCaptureLog`. `companion/capture-log.test.js` has the race (a proxy posts captures right before and after the relay cuts).
 - The relay server sends permissive CORS headers (`Access-Control-Allow-Origin: *`) and answers the `OPTIONS` preflight on `/capture`. This is load-bearing, not decorative: Chrome's content-script `fetch()` bypasses CORS via the extension's `host_permissions`, but Firefox/Zen run content-script `fetch()` under the page's own origin, so without these headers every capture from Firefox/Zen is silently dropped (see git history for the original bug/fix). `relay-server/server.test.js` (`npm test` in `relay-server/`) is the regression test - run it before touching CORS or route handling in `server.js`.
 - The vault path and its algorithm-notes subfolder (Thomson's own: `~/Documents/My Brain`,
   `Study/Algorithms`) resolve through `vault-notes.js`'s `resolveVaultConfig()` - the one place both
@@ -374,8 +379,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   description and then the whole snapshot rather than send a body past them, and never truncates code). Every capture, message and reset runs inside
   `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with
   `COMPANION_AUTO_CLEAR_CONTEXT` on, the default) calls the backend's `resetContext()`, drops the old problem from the
-  ledger and asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`); `captures.jsonl` is
-  never touched. `LocalBackend` pins the held code as a system message (like the description) so `trimHistory` cannot
+  ledger, asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`) and clears the handled
+  part of `captures.jsonl` (see the `attemptSeq` bullet). `LocalBackend` pins the held code as a system message (like the description) so `trimHistory` cannot
   lose it, and an older full-code turn is sent as its `compactContent`. `ClaudeBackend` needs no pinning: its resumed
   session keeps the first full code and later diffs. `companion/code-updates.test.js` covers the rules end to end.
 - Real mouse-wheel scrolling inside the alternate screen: `companion/mouse-input.js` enables xterm's

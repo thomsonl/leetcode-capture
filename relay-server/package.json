@@ -6,6 +6,6 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test server.test.js panel-broker.test.js"
+    "test": "node --test server.test.js panel-broker.test.js capture-trim.test.js"
   }
 }

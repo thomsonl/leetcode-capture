@@ -6,6 +6,7 @@
 //
 // Log file location: ./data/captures.jsonl (relative to this file), unless
 // overridden with the CAPTURE_LOG_PATH environment variable. See README.md.
+// The log is cleared as the companion consumes it (see trimCaptureLog).
 
 const http = require("http");
 const fs = require("fs");
@@ -79,6 +80,46 @@ function appendCapture(body) {
   return entry;
 }
 
+// The log is only a short-lived delivery queue from this relay to the
+// companion, which tails it by byte offset. Once the companion has read a
+// prefix of it (and moved on from that problem, or just started), it asks for
+// that prefix to be dropped (the companion-only POST /panel/trim-captures,
+// see panel-broker.js). `before` is the companion's own read offset, so only
+// lines it already handled are dropped. Everything here is synchronous, like
+// appendCapture, so a capture that arrives meanwhile is appended wholly
+// before or wholly after the trim and is never lost or doubled; the rest of
+// the file is written to a temporary file and renamed over the log, so a
+// crash leaves either the old log or the new one. A future setting that
+// keeps old captures (for studying later) would copy the dropped prefix
+// somewhere first, here.
+// Returns { removed, size }, or { error } for a request that cannot be met.
+function trimCaptureLog(before) {
+  let size;
+  try {
+    size = fs.statSync(LOG_PATH).size;
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    size = 0;
+  }
+  if (before > size) return { error: `the log is only ${size} bytes` };
+  if (before === 0) return { removed: 0, size };
+  const fd = fs.openSync(LOG_PATH, "r");
+  let rest;
+  try {
+    const last = Buffer.alloc(1);
+    fs.readSync(fd, last, 0, 1, before - 1);
+    if (last[0] !== 0x0a) return { error: "that offset is not at the end of a line" };
+    rest = Buffer.alloc(size - before);
+    fs.readSync(fd, rest, 0, rest.length, before);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const tmp = `${LOG_PATH}.trim-tmp`;
+  fs.writeFileSync(tmp, rest);
+  fs.renameSync(tmp, LOG_PATH);
+  return { removed: before, size: rest.length };
+}
+
 // CORS headers, sent on every response to /capture (including the OPTIONS
 // preflight). Chrome's content-script fetch() inherits the extension's
 // host_permissions grant and skips CORS entirely, but Firefox/Zen run
@@ -96,7 +137,7 @@ const CORS_HEADERS = {
 // The in-page tutor panel's broker (see panel-broker.js). Its routes do their
 // own, much stricter origin checks, so they run before the permissive
 // /capture handling below.
-const panelBroker = createPanelBroker({ port: PORT });
+const panelBroker = createPanelBroker({ port: PORT, captureLog: { path: LOG_PATH, trim: trimCaptureLog } });
 
 const server = http.createServer((req, res) => {
   if (panelBroker.handle(req, res)) return;

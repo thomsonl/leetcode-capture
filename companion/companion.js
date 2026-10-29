@@ -52,6 +52,7 @@ import {
 import { ENABLE_MOUSE_TRACKING, DISABLE_MOUSE_TRACKING, createMouseFilter } from './mouse-input.js';
 import { estimateMessagesTokens, buildMessages as buildLocalMessages } from './context-budget.js';
 import { createPanelBridge } from './panel-bridge.js';
+import { requestCaptureTrim, pendingTrimFor, pendingTrimHappened, isPendingTrim } from './capture-log.js';
 import { stripControlChars, oneLine, sanitizeCapture } from './sanitize.js';
 import {
   createCodeLedger,
@@ -274,6 +275,10 @@ const CAPTURES_PATH =
 const STATE_PATH =
   process.env.LEETCODE_COMPANION_STATE_FILE || path.join(__dirname, '.companion-state.json');
 const POLL_MS = Number(process.env.LEETCODE_COMPANION_POLL_MS || 1000);
+// The size backstop for clearing the capture log (see "capture tailing"
+// below): once the handled part passes this, it is dropped even without a
+// problem switch.
+const CAPTURE_LOG_TRIM_BYTES = Number(process.env.LEETCODE_CAPTURES_TRIM_BYTES || 4 * 1024 * 1024);
 
 // Mirrors server.js's own HOST/PORT resolution exactly (127.0.0.1, and
 // CAPTURE_PORT if set) so the health check below asks the same address the
@@ -1086,8 +1091,9 @@ function captureHeaderLine(capture) {
 // own continuity (see each backend's resetContext, above) instead of leaving
 // it to the model to notice the switch, drops what the ledger knew about the
 // old problem (code-ledger.js's activate), and asks the relay to drop the old
-// problem's buffered chat. captures.jsonl keeps every Run and Submit with its
-// full code regardless; nothing else about an old problem is kept.
+// problem's buffered chat. The part of captures.jsonl already handled is
+// dropped too (see "capture tailing" below); nothing about an old problem is
+// kept.
 //
 // Identifier: capture.problemSlug, falling back to capture.problemTitle when
 // slug is absent. The very first problem this process sees resets nothing
@@ -1123,6 +1129,9 @@ function activateProblem(problemId, slug) {
   if (!result.reset) return result;
   backend.resetContext();
   if (result.dropped && result.dropped.slug && panelBridge) panelBridge.dropProblem(result.dropped.slug);
+  // The old problem's captures are no longer needed either: the handled
+  // part of the log goes at the end of the current poll (see pollLoop).
+  captureTrimWanted = true;
   printAboveInput(
     consumeTurnBoundary() + dim(`companion: new problem detected (${oneLine(problemId) || 'unknown'}) - clearing tutor context`)
   );
@@ -1826,12 +1835,45 @@ rl.on('close', () => {
 });
 
 // --- capture tailing (offset tracking adapted from the old watch.js) -------
+//
+// The log is a short-lived delivery queue from the relay, and it is cleared
+// as it is consumed (see capture-log.js): the handled prefix is dropped at
+// start, after a problem switch, and once it passes CAPTURE_LOG_TRIM_BYTES.
+// Always between polls (pollLoop), so `offset` then marks exactly the lines
+// already handled, and never while a poll is reading the file.
+
+// The log's bytes at [position, position + length), fewer at its end.
+function readCaptureBytes(position, length) {
+  let fd;
+  try {
+    fd = fs.openSync(CAPTURES_PATH, 'r');
+  } catch {
+    return Buffer.alloc(0);
+  }
+  try {
+    const buf = Buffer.alloc(length);
+    const read = fs.readSync(fd, buf, 0, length, Math.max(0, position));
+    return buf.subarray(0, read);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 function loadOffset() {
   try {
     const raw = fs.readFileSync(STATE_PATH, 'utf8');
     const parsed = JSON.parse(raw);
-    if (typeof parsed.offset === 'number' && parsed.offset >= 0) return parsed.offset;
+    if (typeof parsed.offset === 'number' && parsed.offset >= 0) {
+      // A trim this companion asked for before it last stopped, with no
+      // record of how it ended: the bytes before the cut tell.
+      if (isPendingTrim(parsed.pendingTrim)) {
+        const happened = pendingTrimHappened(parsed.pendingTrim, readCaptureBytes);
+        const resolved = happened ? Math.max(0, parsed.offset - parsed.pendingTrim.before) : parsed.offset;
+        saveOffset(resolved);
+        return resolved;
+      }
+      return parsed.offset;
+    }
   } catch (err) {
     if (err.code !== 'ENOENT') {
       console.error(dim(`companion: warning: could not read state file (${err.message}); starting fresh`));
@@ -1846,13 +1888,50 @@ function loadOffset() {
   }
 }
 
-function saveOffset(offset) {
+function saveOffset(offset, pendingTrim) {
   const tmp = `${STATE_PATH}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ offset }), 'utf8');
+  fs.writeFileSync(tmp, JSON.stringify(pendingTrim ? { offset, pendingTrim } : { offset }), 'utf8');
   fs.renameSync(tmp, STATE_PATH);
 }
 
 let offset = loadOffset();
+let captureTrimWanted = false;
+// Set once the relay turns out not to support trimming (or refuses), so the
+// warning is printed once and the request not repeated every poll.
+let captureTrimDisabled = false;
+
+// Asks the relay to drop the handled prefix of the log (everything before
+// `offset`), and moves `offset` back by what it removed once it confirms.
+// Only called from pollLoop, between polls.
+async function trimHandledCaptures() {
+  captureTrimWanted = false;
+  if (captureTrimDisabled || offset === 0) return;
+  const before = offset;
+  const pending = pendingTrimFor(before, readCaptureBytes);
+  saveOffset(offset, pending);
+  const result = await requestCaptureTrim({
+    baseUrl: `http://${RELAY_HOST}:${RELAY_PORT}`,
+    before,
+    logPath: path.resolve(CAPTURES_PATH),
+  });
+  if (result.outcome === 'trimmed') {
+    offset -= result.removed;
+  } else if (result.outcome === 'unknown') {
+    // No answer (a timeout, the relay restarting): whether it cut the file
+    // is read off the file itself, the same way a restart would.
+    if (pendingTrimHappened(pending, readCaptureBytes)) offset = Math.max(0, offset - before);
+  } else {
+    captureTrimDisabled = true;
+    printAboveInput(
+      dim(
+        result.outcome === 'unsupported'
+          ? 'companion: warning: the running relay server cannot clear the capture log; restart it to enable that'
+          : `companion: warning: the relay would not clear the capture log (${oneLine(result.error)}); is CAPTURE_LOG_PATH the same file as LEETCODE_CAPTURES_FILE?`
+      )
+    );
+  }
+  saveOffset(offset);
+}
 
 async function handleCaptureLine(line) {
   // A capture is new activity, not something the user asked for - if
@@ -2099,8 +2178,15 @@ async function poll() {
 }
 
 async function pollLoop() {
+  // Captures from before this start are not needed (an unread tail after the
+  // saved offset still is, and stays).
+  captureTrimWanted = true;
   while (!stopping) {
     try {
+      if (captureTrimWanted || offset > CAPTURE_LOG_TRIM_BYTES) {
+        // eslint-disable-next-line no-await-in-loop
+        await trimHandledCaptures();
+      }
       // eslint-disable-next-line no-await-in-loop
       await poll();
     } catch (err) {

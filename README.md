@@ -69,7 +69,11 @@ A message you type in the terminal before your first Run or Submit stays in the 
 
 The active problem is whichever one you last sent a message, Run or Submit from.
 Activity on a different problem resets the tutor (with `COMPANION_AUTO_CLEAR_CONTEXT` on, the default): its context, the code it held, and the old problem's chat kept by the relay are all dropped, and the new problem starts with its statement and your latest code.
-`relay-server/data/captures.jsonl` still keeps every Run and Submit with its full code.
+`relay-server/data/captures.jsonl` is only a short-lived queue from the relay to the companion, not an archive.
+The part the companion has already handled is cleared when the companion starts, when you move to another problem, and once it passes 4 MB (`LEETCODE_CAPTURES_TRIM_BYTES`).
+A Run or Submit that has not been handled yet is never cleared, including the one that switched problems.
+The relay does the clearing itself, so a capture that arrives at the same moment is still delivered exactly once.
+If the relay writes a different file than the companion reads (only one of `CAPTURE_LOG_PATH` and `LEETCODE_CAPTURES_FILE` set), it refuses and the companion prints a warning.
 If the companion isn't running, the tab says so instead of failing silently.
 If the relay restarts, the tab marks the break with "Session restarted" and carries on with the new session.
 If the companion quits in the middle of a reply (Ctrl+C, a crash, its terminal closed), that reply stops typing and says the tutor stopped before it finished, in every open tab and in any tab opened later.
@@ -94,6 +98,6 @@ Publishing tutor replies and reading the messages you type are reserved for the 
 
 - **Obsidian vault integration (experimental).**
   Logs your attempts as notes into an Obsidian vault.
-  Run `vault-tool/log-session.js` to manually log a past session, or set `VAULT_AUTO_SUMMARY=1` to have the companion turn every Submit into a vault note automatically as you go.
+  Run `vault-tool/log-session.js` to manually log the current problem's session (the capture log is cleared once you move on), or set `VAULT_AUTO_SUMMARY=1` to have the companion turn every Submit into a vault note automatically as you go.
   Point either at your own vault via `vault.config.json` (copy `vault.config.example.json`) or the `VAULT_PATH`/`VAULT_ALGORITHMS_SUBFOLDER` env vars.
   These features are experimental: the star ratings and proficiency scores they write are LLM assumptions.
