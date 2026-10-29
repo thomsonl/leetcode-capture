@@ -991,7 +991,7 @@
     .tutor strong { font-weight: 600; }
     .tutor a { color: var(--link); text-decoration: none; }
     .tutor a:hover { text-decoration: underline; }
-    code { font: 12px/16px var(--mono); -webkit-box-decoration-break: clone; box-decoration-break: clone; padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--chip-line); color: color-mix(in srgb, var(--fg) 75%, transparent); }
+    code { font: 12px/16px var(--mono); padding: 2px; border-radius: 5px; background: var(--fill); border: 1px solid var(--chip-line); color: color-mix(in srgb, var(--fg) 75%, transparent); }
     .tutor pre { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: var(--fill); border: 1px solid var(--chip-line); overflow-x: auto; }
     /* A wide code block or table scrolls sideways. Chromium's own thin
        scrollbar draws arrow buttons that sit over the rounded corners, so it
@@ -1269,23 +1269,28 @@
     // the student (wheel, touch, keys, a scrollbar drag) stops it at once;
     // coming back near the bottom starts it again. The panel itself only
     // ever scrolls down, and content that shrinks leaves it at the bottom.
-    const view = { follow: true, lastTop: 0, expectTop: null, anchor: null };
+    // `lastTop` and `metrics` are where the feed was and how big it was at
+    // the last scroll the panel saw: a scroll that comes with a size change
+    // (a resize clamping scrollTop, a rewrap) is layout, not the student.
+    const view = { follow: true, lastTop: 0, metrics: "", expectTop: null, anchor: null };
     scroll.addEventListener(
       "scroll",
       () => {
         const top = scroll.scrollTop;
+        const ownScroll = view.expectTop !== null && Math.abs(top - view.expectTop) < 1;
+        view.expectTop = null;
         // The panel's own scroll (following, or restoring the anchor after a
-        // resize) says nothing about what the student wants.
-        if (view.expectTop !== null && Math.abs(top - view.expectTop) < 1) {
-          view.expectTop = null;
-          view.lastTop = top;
+        // resize) says nothing about what the student wants, and neither
+        // does one the layout caused.
+        if (ownScroll || scrollMetrics(scroll) !== view.metrics) {
+          noteScroll(view, scroll);
+          if (view.follow && scroll.scrollHeight - top - scroll.clientHeight > 1) scrollPanelTo({ scroll, view }, scroll.scrollHeight);
           return;
         }
-        view.expectTop = null;
         const fromBottom = scroll.scrollHeight - top - scroll.clientHeight;
         if (top < view.lastTop - 1 && fromBottom > 1) view.follow = false;
         else if (fromBottom < 80) view.follow = true;
-        view.lastTop = top;
+        noteScroll(view, scroll);
         if (!view.follow) view.anchor = scrollAnchor(scroll, feed);
       },
       { passive: true }
@@ -1351,12 +1356,21 @@
   }
 
   // Scrolls the panel itself, telling the scroll listener so.
+  function scrollMetrics(scroll) {
+    return `${scroll.scrollHeight}x${scroll.clientHeight}x${scroll.clientWidth}`;
+  }
+
+  function noteScroll(view, scroll) {
+    view.lastTop = scroll.scrollTop;
+    view.metrics = scrollMetrics(scroll);
+  }
+
   function scrollPanelTo(p, top) {
     const before = p.scroll.scrollTop;
     p.scroll.scrollTop = top;
     // Only a real move fires a scroll event to recognize.
     if (p.scroll.scrollTop !== before) p.view.expectTop = p.scroll.scrollTop;
-    p.view.lastTop = p.scroll.scrollTop;
+    noteScroll(p.view, p.scroll);
   }
 
   // What the student is reading when scrolled up: the first block (a feed
@@ -1400,15 +1414,18 @@
       const delta = now - anchor.offset;
       if (Math.abs(delta) >= 0.5) scrollPanelTo(p, scroll.scrollTop + delta);
     }
+    noteScroll(view, scroll);
     view.anchor = scrollAnchor(scroll, p.feed);
   }
 
   function observePanelSize(p) {
-    let width = null;
+    let size = "";
     const observer = new ResizeObserver(() => {
-      const w = p.scroll.clientWidth;
-      if (w !== width) {
-        width = w;
+      // The pane's own size (not the feed's) changes what the composer may
+      // take: its width rewraps the typed text, its height sets the cap.
+      const now = `${p.wrap.clientWidth}x${p.wrap.clientHeight}`;
+      if (now !== size) {
+        size = now;
         fitInput(p);
       }
       keepScrollAnchor(p);

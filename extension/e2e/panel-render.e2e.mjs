@@ -9,7 +9,10 @@
 // made inert, the relay-restart (epoch) flow over a reconnect, sending
 // (double Enter, the too-long hint), the live editor code a send carries
 // (the real content.js and inject.js answering against a stand-in Monaco),
-// and some CSS metrics.
+// some CSS metrics, and tutor diagrams, tables, long URLs and identifiers
+// across live pane resizes (240 to 1000 px wide, 200 to 700 px tall, a
+// splitter drag moving the tabset and its pane together), including the
+// feed's scroll anchor while a reply streams.
 //
 // Nothing here talks to the real relay: the fixture's fetch never reaches the
 // network, and as a second guard the injected copy of panel.js points at a
@@ -917,6 +920,360 @@ try {
     check((await page.eval(fromBottom)) < 2, 'following did not resume at the bottom');
     await page.eval(`window.__ev({ type: 'turn-end', turnId: 'follow2', problemSlug: 'two-sum', text: 'done' })`);
     await settle();
+  });
+
+  // ---- diagrams, wrapping and live resizing -----------------------------
+  //
+  // A splitter drag resizes the tabset and the native pane under it together
+  // (as flexlayout does); the panel must follow both live. Sizes below are
+  // the pane's own (the tabset is 36px taller, for its tab strip).
+  const resizePane = async (w, h) => {
+    await page.eval(`(() => {
+      const ts = document.querySelector('.flexlayout__tabset');
+      ts.style.width = '${w}px';
+      ts.style.height = '${h + 36}px';
+      const desc = document.getElementById('pane-desc');
+      desc.style.width = '${w}px';
+      desc.style.height = '${h}px';
+      const code = document.getElementById('pane-code');
+      code.style.left = '${w + 16}px';
+    })()`);
+    await settle();
+  };
+  const DIAGRAM_SLUG = 'diagram-lab';
+  const TREE = ['        1', '      ┌─┴─┐', '      2   3', '     ┌┴┐  └┐', '     4 5   6'].join('\n');
+  const GRAPH = ['A ──▶ B ──▶ C', '│     │     ▲', '▼     ▼     │', 'D ──▶ E ────┘'].join('\n');
+  const TRACE = [
+    'step  nums = [2, 7, 11, 15]   target = 9',
+    '1     l=0 ^             ^ r=3   sum 17 > 9, r--',
+    '2     l=0 ^         ^ r=2       sum 13 > 9, r--',
+    '3     l=0 ^  ^ r=1              sum 9, found',
+    '\ttab-indented note (four columns)',
+  ].join('\n');
+  const WIDE = '|' + '-'.repeat(158) + '|';
+  const URL = 'https://leetcode.com/problems/two-sum/solutions/' + 'a1b2c3d4'.repeat(25) + '/';
+  const IDENT = 'maximumSubarraySumAfterRemovingAtMostOneElementWithPrefixAndSuffixKadaneArrays'.repeat(2);
+  const diagramMd = [
+    'Here is the tree:',
+    '',
+    '```',
+    TREE,
+    '```',
+    '',
+    'And the graph, as a `text` block:',
+    '',
+    '```text',
+    GRAPH,
+    '```',
+    '',
+    '1. Walk the two pointers:',
+    '   ```',
+    TRACE.split('\n').map((l) => '   ' + l).join('\n'),
+    '   ```   ',
+    '2. Then compare approaches:',
+    '',
+    '| Approach | Time | Space | Idea | Notes |',
+    '| --- | --- | --- | --- | --- |',
+    '| Brute force | O(n^2) | O(1) | try every pair | too slow for 10^4 |',
+    '| Hash map | O(n) | O(n) | complement lookup | one pass |',
+    '| Two pointers | O(n log n) | O(1) | sort, then squeeze | loses indices |',
+    '',
+    '```',
+    WIDE,
+    '```',
+    '',
+    `See ${URL} for more.`,
+    '',
+    `- The helper \`${IDENT}\` is long.`,
+    `- So is ${IDENT} written plainly.`,
+    '',
+    `## ${IDENT}`,
+  ].join('\n');
+  const SIZES = [];
+  for (const w of [240, 320, 480, 640, 1000]) for (const h of [200, 420, 700]) SIZES.push([w, h]);
+
+  // Every metric the wrapping rules promise, for the newest reply.
+  const layoutMetrics = `(() => {
+    const host = document.getElementById('lc-tutor-panel-host').getBoundingClientRect();
+    const desc = document.getElementById('pane-desc').getBoundingClientRect();
+    const scroll = window.__q('.scroll');
+    const ss = getComputedStyle(scroll);
+    const sr = scroll.getBoundingClientRect();
+    const contentLeft = sr.left + parseFloat(ss.paddingLeft);
+    const contentRight = sr.left + scroll.clientWidth - parseFloat(ss.paddingRight);
+    const tutor = window.__qa('.tutor').at(-1);
+    const outside = [];
+    for (const el of tutor.querySelectorAll('*')) {
+      if (el.closest('pre') && el.tagName !== 'PRE') continue;
+      if (el.closest('.table-wrap') && !el.classList.contains('table-wrap')) continue;
+      const r = el.getBoundingClientRect();
+      if (r.right > contentRight + 0.5 || r.left < contentLeft - 0.5) outside.push(el.tagName + '.' + el.className + ' ' + r.left + '..' + r.right);
+      for (const cr of el.getClientRects()) if (cr.right > contentRight + 0.5) outside.push('line of ' + el.tagName + ' ' + cr.right);
+    }
+    const textOverflow = [...tutor.querySelectorAll('p, li, td, th')].filter((el) => el.scrollWidth > el.clientWidth + 0.5).map((el) => el.tagName);
+    const pres = [...tutor.querySelectorAll('pre')].map((pre) => {
+      const code = pre.querySelector('code');
+      const cs = getComputedStyle(code);
+      const lines = code.textContent.split('\\n').length;
+      const lh = parseFloat(cs.lineHeight);
+      const before = pre.scrollLeft;
+      pre.scrollLeft = 40;
+      const moved = pre.scrollLeft;
+      pre.scrollLeft = before;
+      return {
+        cls: pre.className, text: code.textContent, ws: cs.whiteSpace, ox: getComputedStyle(pre).overflowX,
+        lh, fs: cs.fontSize, lig: cs.fontVariantLigatures, tab: cs.tabSize, wrapped: Math.abs(code.getBoundingClientRect().height - lines * lh) > 0.5,
+        scrollable: pre.scrollWidth > pre.clientWidth, moved, right: pre.getBoundingClientRect().right,
+      };
+    });
+    const tw = tutor.querySelector('.table-wrap');
+    const table = tw.querySelector('table');
+    const cell = tw.querySelector('td');
+    const url = [...tutor.querySelectorAll('p')].find((p) => p.textContent.startsWith('See '));
+    const ident = tutor.querySelector('li code');
+    const head = window.__q('.head');
+    const hr = head.getBoundingClientRect();
+    const light = window.__q('.status .light').getBoundingClientRect();
+    const gear = window.__q('button.gear').getBoundingClientRect();
+    const ta = window.__q('textarea');
+    const send = window.__q('.box button').getBoundingClientRect();
+    const box = window.__q('.box').getBoundingClientRect();
+    const composer = window.__q('.composer').getBoundingClientRect();
+    return {
+      host: [host.left, host.top, host.width, host.height], desc: [desc.left, desc.top, desc.width, desc.height],
+      descInert: document.getElementById('pane-desc').inert,
+      feedScrollsSideways: scroll.scrollWidth > scroll.clientWidth, ox: ss.overflowX,
+      outside, textOverflow, pres,
+      table: { wider: table.offsetWidth > tw.clientWidth, scrollable: tw.scrollWidth > tw.clientWidth, ox: getComputedStyle(tw).overflowX, wrap: getComputedStyle(cell).overflowWrap, right: tw.getBoundingClientRect().right },
+      urlLines: url.getClientRects().length && Math.round(url.getBoundingClientRect().height / 21), urlWrap: getComputedStyle(url).overflowWrap,
+      identRects: ident.getClientRects().length, contentRight, contentLeft,
+      head: { h: hr.height, sideways: head.scrollWidth > head.clientWidth, lightW: light.width, lightIn: light.left >= hr.left && light.right <= hr.right, gearW: gear.width, gearIn: gear.left >= hr.left && gear.right <= hr.right + 4.5, overlap: light.right > gear.left },
+      composer: { taW: ta.clientWidth, sendIn: send.right <= box.right + 0.5 && send.width === 28, bottom: composer.bottom, hostBottom: host.bottom },
+      scrollH: scroll.clientHeight,
+    };
+  })()`;
+
+  await scenario('diagrams, a wide table, a long URL and identifier lay out right from 240 to 1000 px wide and 200 to 700 px tall', async () => {
+    await page.eval(`history.pushState(null, '', '/problems/${DIAGRAM_SLUG}/description/')`);
+    await page.waitFor(`!document.getElementById('lc-tutor-panel-host').hasAttribute('data-active')`, { timeout: 5000, what: 'the panel to close on navigation' });
+    await page.eval('window.__openTutor()');
+    await page.eval(`window.__event({ type: 'config', provider: 'openai', label: 'OpenAI API key', model: 'gpt-5.5-a-long-fine-tuned-tutor-model-name', epoch: 'e1' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'dg1', problemSlug: '${DIAGRAM_SLUG}' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'dg1', problemSlug: '${DIAGRAM_SLUG}', text: ${JSON.stringify(diagramMd)} })`);
+    await settle();
+    const expected = [TREE, GRAPH, TRACE, WIDE];
+    for (const [w, h] of SIZES) {
+      await resizePane(w, h);
+      const m = await page.eval(layoutMetrics);
+      const at = `at ${w}x${h}`;
+      check(m.host.every((v, i) => Math.abs(v - m.desc[i]) <= 0.5), `${at} the panel left the Description pane rect: ${m.host} vs ${m.desc}`);
+      check(m.descInert, `${at} the Description pane is no longer inert`);
+      check(!m.feedScrollsSideways && m.ox === 'hidden', `${at} the feed scrolls sideways (${m.ox})`);
+      check(m.outside.length === 0, `${at} content runs past the feed: ${m.outside.slice(0, 4).join('; ')}`);
+      check(m.textOverflow.length === 0, `${at} text overflows its box: ${m.textOverflow}`);
+      check(m.pres.length === 4, `${at} code blocks: ${m.pres.length}`);
+      for (const [i, pre] of m.pres.entries()) {
+        check(pre.text === expected[i], `${at} block ${i} text changed: ${JSON.stringify(pre.text)}`);
+        check(pre.ws === 'pre' && pre.ox === 'auto' && !pre.wrapped, `${at} block ${i} wraps: ${JSON.stringify(pre)}`);
+        check(pre.cls === 'plain' && pre.lh === 14 && pre.fs === '12px', `${at} block ${i} line height: ${JSON.stringify(pre)}`);
+        check(pre.lig === 'none' && pre.tab === '4', `${at} block ${i} ligatures/tabs: ${pre.lig} ${pre.tab}`);
+        check(pre.right <= m.contentRight + 0.5, `${at} block ${i} sticks out: ${pre.right} > ${m.contentRight}`);
+        check(pre.scrollable === (pre.moved > 0), `${at} block ${i} scrollable but does not scroll: ${JSON.stringify(pre)}`);
+      }
+      // The 158-dash rule never fits; the 56-column diagrams fit a wide pane
+      // and scroll in a narrow one.
+      check(m.pres[3].scrollable, `${at} the wide block does not scroll`);
+      if (w >= 640) check(m.pres.slice(0, 3).every((p) => !p.scrollable), `${at} a diagram within 56 columns scrolls in a wide pane`);
+      if (w <= 320) check(m.pres[2].scrollable, `${at} the trace does not scroll in a narrow pane`);
+      check(m.table.ox === 'auto' && m.table.wrap === 'break-word' && m.table.right <= m.contentRight + 0.5, `${at} table wrapper: ${JSON.stringify(m.table)}`);
+      check(m.table.wider === m.table.scrollable, `${at} a wide table does not scroll: ${JSON.stringify(m.table)}`);
+      if (w <= 320) check(m.table.scrollable, `${at} the five-column table should scroll in a narrow pane`);
+      if (w >= 1000) check(!m.table.scrollable, `${at} the table scrolls in a wide pane`);
+      check(m.urlWrap === 'anywhere' && m.urlLines >= (w <= 480 ? 3 : 2), `${at} the long URL did not wrap: ${m.urlLines} lines`);
+      check(m.identRects >= 2, `${at} the long inline identifier did not break: ${m.identRects}`);
+      check(m.head.h === 32 && !m.head.sideways && m.head.lightW === 8 && m.head.lightIn && m.head.gearW === 24 && m.head.gearIn && !m.head.overlap, `${at} header: ${JSON.stringify(m.head)}`);
+      check(m.composer.taW >= 100 && m.composer.sendIn && Math.abs(m.composer.bottom - m.composer.hostBottom) <= 0.5, `${at} composer: ${JSON.stringify(m.composer)}`);
+      check(m.scrollH >= 60, `${at} the feed is squeezed to ${m.scrollH}px`);
+      if (w === 240 && h === 420) await page.screenshot(path.join(SHOTS, '10-diagrams-240.png'), { width: 1100, height: 760 });
+      if (w === 1000 && h === 700) await page.screenshot(path.join(SHOTS, '11-diagrams-1000.png'), { width: 1100, height: 760 });
+    }
+  });
+
+  await scenario('diagram blocks use a monospace face that has the box-drawing glyphs', async () => {
+    await resizePane(480, 600);
+    await page.send('DOM.enable');
+    await page.send('CSS.enable');
+    await page.send('DOM.getDocument', { depth: -1, pierce: true });
+    const fontsOf = async (expr) => {
+      const { result } = await page.send('Runtime.evaluate', { expression: expr });
+      const { nodeId } = await page.send('DOM.requestNode', { objectId: result.objectId });
+      const { fonts } = await page.send('CSS.getPlatformFontsForNode', { nodeId });
+      return fonts;
+    };
+    const fonts = await fontsOf(`window.__qa('.tutor').at(-1).querySelector('pre code')`);
+    check(fonts.length === 1, `the tree diagram mixes fonts (a glyph fell back): ${JSON.stringify(fonts)}`);
+    const m = await page.eval(`(() => {
+      const code = window.__qa('.tutor').at(-1).querySelector('pre code');
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = getComputedStyle(code).fontSize + ' ' + getComputedStyle(code).fontFamily;
+      const bar = ctx.measureText('│');
+      return { family: getComputedStyle(code).fontFamily, i: ctx.measureText('iiii').width, M: ctx.measureText('MMMM').width, box: ctx.measureText('┌─┴─┐').width / 5, bar: bar.fontBoundingBoxAscent + bar.fontBoundingBoxDescent };
+    })()`);
+    check(Math.abs(m.i - m.M) < 0.01 && Math.abs(m.box - m.M / 4) < 0.01, `not monospace (${fonts[0].familyName}): ${JSON.stringify(m)}`);
+    // The vertical bar spans the whole font box, so a 14px line (the box at
+    // 12px is about 14px) leaves no visible gap between rows.
+    check(m.bar >= 13.5 && m.bar <= 14.5, `line height 14px vs the ${fonts[0].familyName} box: ${m.bar}`);
+    check(/^Menlo, Menlo-fallback, .*monospace$/.test(m.family), `font stack: ${m.family}`);
+  });
+
+  await scenario('the header keeps the light and the gear at any width, cutting the label first', async () => {
+    await resizePane(240, 420);
+    const at240 = await page.eval(`(() => {
+      const p = window.__q('.provider');
+      const t = window.__q('.status span');
+      return { providerClipped: p.scrollWidth > p.clientWidth, providerOverflow: getComputedStyle(p).textOverflow, statusClipped: t.scrollWidth > t.clientWidth };
+    })()`);
+    check(at240.providerClipped && at240.providerOverflow === 'ellipsis' && !at240.statusClipped, `at 240: ${JSON.stringify(at240)}`);
+    // Narrower than anyone should drag it: the status text gives way too, the
+    // light and gear never do.
+    await resizePane(110, 300);
+    const tiny = await page.eval(`(() => {
+      const head = window.__q('.head').getBoundingClientRect();
+      const t = window.__q('.status span');
+      const light = window.__q('.status .light').getBoundingClientRect();
+      const gear = window.__q('button.gear').getBoundingClientRect();
+      return { statusClipped: t.scrollWidth > t.clientWidth, overflow: getComputedStyle(t).textOverflow, lightW: light.width, gearW: gear.width, lightLeft: light.left - head.left, gearRight: head.right - gear.right, overlap: light.right > gear.left, h: head.height };
+    })()`);
+    check(tiny.statusClipped && tiny.overflow === 'ellipsis', `status text at 110: ${JSON.stringify(tiny)}`);
+    check(tiny.lightW === 8 && tiny.gearW === 24 && !tiny.overlap && tiny.lightLeft >= 12 && tiny.gearRight >= 8 && tiny.h === 32, `light or gear lost at 110: ${JSON.stringify(tiny)}`);
+    await resizePane(480, 600);
+    const back = await page.eval(`(() => { const t = window.__q('.status span'); return t.scrollWidth > t.clientWidth; })()`);
+    check(!back, 'the status text stays cut after widening');
+  });
+
+  await scenario('the composer re-fits its text to the pane width and height, and the hint wraps', async () => {
+    await resizePane(480, 700);
+    const oneLine = await page.eval(`window.__q('textarea').getBoundingClientRect().height`);
+    const typed = Array.from({ length: 12 }, (_, i) => 'line ' + i + ' of a long question about the two pointers').join(' ');
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = ${JSON.stringify(typed)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await settle();
+    const tall = await page.eval(`window.__q('textarea').getBoundingClientRect().height`);
+    check(tall === 140, `a long question at 480x700 should take the 140px cap: ${tall}`);
+    await resizePane(480, 200);
+    const short = await page.eval(`(() => { const t = window.__q('textarea'); return { h: t.getBoundingClientRect().height, scroll: window.__q('.scroll').clientHeight }; })()`);
+    check(short.h === 60 && short.scroll >= 60, `at 480x200 the composer should give way (30% of the pane): ${JSON.stringify(short)}`);
+    await resizePane(1000, 700);
+    const wide = await page.eval(`(() => { const t = window.__q('textarea'); return { h: t.getBoundingClientRect().height, sh: t.scrollHeight }; })()`);
+    check(wide.h === Math.min(140, wide.sh) && wide.h < 140, `widening did not re-fit the composer: ${JSON.stringify(wide)}`);
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await resizePane(240, 420);
+    await page.eval(`(() => { const h = window.__q('.hint'); h.textContent = 'Your code is too long to send with a message, so the tutor has not seen this code.'; h.hidden = false; })()`);
+    await settle();
+    const hint = await page.eval(`(() => { const h = window.__q('.hint'); const c = window.__q('.composer'); const hr = h.getBoundingClientRect(); const cr = c.getBoundingClientRect(); return { sideways: h.scrollWidth > h.clientWidth, inside: hr.right <= cr.right && hr.bottom <= cr.bottom, lines: Math.round(hr.height / 16), empty: window.__q('textarea').getBoundingClientRect().height }; })()`);
+    check(!hint.sideways && hint.inside && hint.lines >= 2, `hint at 240: ${JSON.stringify(hint)}`);
+    check(hint.empty === oneLine && oneLine < 30, `an empty composer should be one line (${oneLine}px): ${hint.empty}`);
+    await page.eval(`window.__q('.hint').hidden = true`);
+  });
+
+  await scenario('a streaming reply ending inside a fence shows an open code block that settles when the fence closes', async () => {
+    await resizePane(320, 500);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'dg2', problemSlug: '${DIAGRAM_SLUG}' })`);
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'dg2', text: 'Trace:\\n\\n\`\`\`\\ni=0  [2, 7]\\n     ^' })`);
+    await settle();
+    const open = await page.eval(`(() => {
+      const t = window.__qa('.tutor').at(-1);
+      const pre = t.querySelector('pre');
+      return { kids: [...t.children].map((c) => c.tagName + (c.hasAttribute('data-open') ? '[open]' : '')), text: pre && pre.textContent, cls: pre && pre.className, ws: pre && getComputedStyle(pre.firstChild).whiteSpace };
+    })()`);
+    check(JSON.stringify(open.kids.filter((k) => k !== 'DIV')) === JSON.stringify(['P', 'PRE[open]']) && open.text === 'i=0  [2, 7]\n     ^' && open.cls === 'plain' && open.ws === 'pre', `mid-fence: ${JSON.stringify(open)}`);
+    await page.screenshot(path.join(SHOTS, '12-open-fence-320.png'), { width: 1100, height: 760 });
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'dg2', text: '\\n\`\`\`\\n\\nSo **l** moves right.' })`);
+    await settle();
+    const closed = await page.eval(`(() => {
+      const t = window.__qa('.tutor').at(-1);
+      const pre = t.querySelector('pre');
+      const last = [...t.children].filter((c) => c.tagName === 'P').at(-1);
+      return { kids: [...t.children].map((c) => c.tagName + (c.hasAttribute('data-open') ? '[open]' : '')), text: pre.textContent, last: last.textContent, strong: last.querySelector('strong') && last.querySelector('strong').textContent, lastFont: getComputedStyle(last).fontFamily === getComputedStyle(t).fontFamily };
+    })()`);
+    check(JSON.stringify(closed.kids.filter((k) => k !== 'DIV')) === JSON.stringify(['P', 'PRE', 'P']) && closed.text === 'i=0  [2, 7]\n     ^', `closed: ${JSON.stringify(closed)}`);
+    check(closed.last === 'So l moves right.' && closed.strong === 'l' && closed.lastFont, `the text after the fence: ${JSON.stringify(closed)}`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'dg2', problemSlug: '${DIAGRAM_SLUG}', text: 'Trace:\\n\\n\`\`\`\\ni=0  [2, 7]\\n     ^\\n\`\`\`\\n\\nSo **l** moves right.' })`);
+    await settle();
+  });
+
+  await scenario('a live resize during a streaming reply keeps the feed at the bottom while following, and the text in place when scrolled up', async () => {
+    await resizePane(640, 600);
+    const fromBottom = `(() => { const s = window.__q('.scroll'); return s.scrollHeight - s.scrollTop - s.clientHeight; })()`;
+    const long = Array.from({ length: 30 }, (_, i) => 'Paragraph ' + i + ' explains the pointer movement in enough words that a narrow pane wraps it onto several lines.').join('\n\n');
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'dg3', problemSlug: '${DIAGRAM_SLUG}' })`);
+    await page.eval(`window.__ev({ type: 'chunk', turnId: 'dg3', text: ${JSON.stringify(long + '\n\n')} })`);
+    await settle();
+    let n = 0;
+    const chunk = async () => {
+      n += 1;
+      await page.eval(`window.__ev({ type: 'chunk', turnId: 'dg3', text: 'Streamed ${n}.\\n\\n\`\`\`\\n[${n}, ${n + 1}]\\n ^\\n\`\`\`\\n\\n' })`);
+      await settle();
+    };
+    check((await page.eval(fromBottom)) < 1, `the reply did not open at the bottom: ${await page.eval(fromBottom)}`);
+    // Following: every resize, between chunks, leaves it at the very bottom.
+    for (const [w, h] of [[300, 600], [300, 220], [1000, 220], [1000, 700], [240, 200], [640, 600]]) {
+      await resizePane(w, h);
+      check((await page.eval(fromBottom)) < 1, `following, a resize to ${w}x${h} left the feed off the bottom by ${await page.eval(fromBottom)}`);
+      await chunk();
+      check((await page.eval(fromBottom)) < 1, `following, a chunk after ${w}x${h} left the feed off the bottom`);
+    }
+    // Scrolled up: a real wheel scroll, then a paragraph near the top edge
+    // must stay put through width and height changes and more chunks.
+    const rect = await page.eval(`(() => { const r = window.__q('.scroll').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: rect.x, y: rect.y, deltaX: 0, deltaY: -900 });
+    await settle();
+    // Line a paragraph's top up just under the edge (as reading would), with
+    // a scrollbar-style scroll the panel did not cause.
+    await page.eval(`(() => {
+      const s = window.__q('.scroll');
+      const top = s.getBoundingClientRect().top;
+      const p = [...window.__qa('.tutor').at(-1).querySelectorAll('p')].find((el) => el.getBoundingClientRect().top > top + 40);
+      s.scrollTop += p.getBoundingClientRect().top - top - 10;
+      window.__anchor = p;
+    })()`);
+    await settle();
+    const offset = `(() => window.__anchor.getBoundingClientRect().top - window.__q('.scroll').getBoundingClientRect().top)()`;
+    const start = await page.eval(offset);
+    check(Math.abs(start - 10) <= 1 && (await page.eval(fromBottom)) > 200, `could not scroll up: offset ${start}`);
+    for (const [w, h] of [[320, 600], [320, 260], [1000, 260], [240, 700], [640, 600]]) {
+      await resizePane(w, h);
+      const now = await page.eval(offset);
+      check(Math.abs(now - start) <= 1, `scrolled up, a resize to ${w}x${h} moved the text being read from ${start} to ${now}`);
+      await chunk();
+      check(Math.abs((await page.eval(offset)) - start) <= 1, `scrolled up, a chunk after ${w}x${h} moved the text being read`);
+      check((await page.eval(fromBottom)) > 80, `scrolled up, the feed started following again at ${w}x${h}`);
+    }
+    await page.screenshot(path.join(SHOTS, '13-scrolled-up-640.png'), { width: 1100, height: 760 });
+    // Back to the bottom: following resumes through the next resize.
+    await page.eval(`(() => { const s = window.__q('.scroll'); s.scrollTop = s.scrollHeight; })()`);
+    await settle();
+    await resizePane(300, 400);
+    await chunk();
+    check((await page.eval(fromBottom)) < 1, 'following did not resume at the bottom');
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'dg3', problemSlug: '${DIAGRAM_SLUG}', text: 'done' })`);
+    await settle();
+  });
+
+  await scenario('a pane that catches up with the tabset only after the drag is still made inert', async () => {
+    await page.eval(`document.querySelectorAll('.flexlayout__tab_button')[0].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))`);
+    // The tabset moved but its pane has not yet (one frame of a drag).
+    await page.eval(`document.getElementById('pane-desc').style.width = '470px'`);
+    await page.eval('window.__openTutor()');
+    await settle();
+    check(!(await page.eval(`document.getElementById('pane-desc').inert`)), 'a pane that does not match the tabset was made inert');
+    await resizePane(500, 600);
+    check(await page.eval(`document.getElementById('pane-desc').inert`), 'the Description pane was not made inert once it matched');
+    check(!(await page.eval(`document.getElementById('pane-code').inert`)), 'the editor was made inert');
+    // Restore the fixture's own layout for anything after this.
+    await resizePane(560, 664);
+    await page.eval(`(() => { document.getElementById('pane-code').style.left = '576px'; })()`);
+    await page.eval(`history.pushState(null, '', '/problems/two-sum/description/')`);
+    await page.waitFor(`!document.getElementById('lc-tutor-panel-host').hasAttribute('data-active')`, { timeout: 5000, what: 'the panel to close on navigation' });
   });
 
   const exceptions = page.console.filter((line) => line.startsWith('exception'));
