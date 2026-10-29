@@ -8,11 +8,18 @@
 // free), and the panel samples its colors from the page's own elements at
 // runtime instead of hardcoding a theme.
 //
-// All the intelligence stays in the local companion process. This script only
-// talks to the relay server on localhost:8135 (the same host the capture
-// script already uses): it streams events from GET /panel/events and posts
-// typed messages to POST /panel/message. See relay-server/panel-broker.js for
-// the protocol and its origin checks.
+// The tutor runs elsewhere, and this script only shows its events and sends
+// typed messages, over one of two transports (see "Transports" below), picked
+// from the runtime chosen in the options page:
+//   - extension: the extension's own background worker runs the tutor (a
+//     local model or an API key, nothing to install). Events and messages go
+//     over a runtime port (shared/tutor-service.js).
+//   - relay: the helper (the local companion process) runs it. Events stream
+//     from the relay server on localhost:8135 (GET /panel/events) and typed
+//     messages go to POST /panel/message. See relay-server/panel-broker.js for
+//     the protocol and its origin checks.
+// Both carry the same event protocol, so everything below the transports is
+// the same either way.
 //
 // Everything model-generated is untrusted text. It is only ever rendered with
 // createElement/textContent (never innerHTML), and links are limited to
@@ -840,7 +847,9 @@
   const CODE_TOO_LONG = "Your code is too long to send with a message, so the tutor has not seen this code.";
 
   const state = createState();
-  let relayReachable = null; // null until the first connect attempt settles
+  // Whether the current transport's event source answers; null until the
+  // first connect attempt settles.
+  let sourceReachable = null;
   let active = false;
   let unread = false;
   let mounted = null; // { tabset, container, tab, divider, host, layout, ... }
@@ -1251,7 +1260,25 @@
   }
 
   function describeConnection() {
-    if (relayReachable === false) {
+    if (sourceReachable === false && transport === extensionTransport) {
+      return {
+        label: "Offline",
+        ok: false,
+        light: "bad",
+        banner: "Lost the connection to the extension's tutor. Reload this page if it doesn't come back in a moment.",
+      };
+    }
+    if (sourceReachable === false && providerChosen === false) {
+      // Nothing chosen in the options page, and no helper running: the first
+      // thing to do is pick a model, which for most people needs no install.
+      return {
+        label: "Not set up",
+        ok: false,
+        light: "neutral",
+        banner: "Choose the tutor's model in the extension options (the gear above). A local model or an API key needs nothing else installed.",
+      };
+    }
+    if (sourceReachable === false) {
       return {
         label: "Offline",
         ok: false,
@@ -1290,7 +1317,7 @@
   }
 
   function emptyStateText(conn) {
-    if (relayReachable === false || state.companionOnline === false) {
+    if (sourceReachable === false || state.companionOnline === false) {
       // The composer is disabled and the banner above says how to start the
       // companion; don't invite a question that can't be asked.
       return "Once the companion is running, your Run and Submit attempts and the tutor's replies show up here.";
@@ -1665,15 +1692,7 @@
       // tell the tutor what changed since it last saw the code.
       const snapshot = await requestEditorSnapshot(document);
       const { body, codeLeftOut } = buildMessageBody(text, slug, snapshot);
-      const res = await fetch(`${RELAY_BASE}/panel/message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-        cache: "no-store",
-        // A send must never hang the composer: the browser queues a request
-        // behind its per-host connection limit, so give up and say so.
-        signal: AbortSignal.timeout(8000),
-      });
+      const res = await transport.send(body);
       if (res.status === 202) {
         p.input.value = "";
         p.input.style.height = "auto";
@@ -1702,10 +1721,10 @@
         p.hint.hidden = false;
       }
     } catch {
-      // Deliberately does not touch relayReachable: that is the event
-      // stream's to report. One slow or aborted POST says nothing about
+      // Deliberately does not touch sourceReachable: that is the event
+      // stream's to report. One slow or aborted send says nothing about
       // whether the stream is healthy.
-      p.hint.textContent = "Couldn't reach the relay server. Try again.";
+      p.hint.textContent = transport.unreachableHint;
       p.hint.hidden = false;
     } finally {
       sending = false;
@@ -1715,7 +1734,28 @@
     p.input.focus({ preventScroll: true });
   }
 
-  // ---- event stream ------------------------------------------------------
+  // ---- transports ----------------------------------------------------------
+  //
+  // A transport follows the tutor's events (start/stop) and sends a typed
+  // message (send(body) -> { status }, in the relay's HTTP terms: 202 queued,
+  // 503 tutor offline, 413 or 400 refused). Both feed events through
+  // deliver(), so everything else in this file is the same for either.
+
+  // A first connection replays history, which is not news; only what arrives
+  // after a reconnect (state.lastSeq > 0) can be unread. The source sends a
+  // status event once its replay is done.
+  let suppressUnread = true;
+  function beginReplay() {
+    suppressUnread = state.lastSeq === 0;
+  }
+  function deliver(event) {
+    if (event.type === "status") suppressUnread = false;
+    const affected = applyEvent(state, event);
+    if (event.type === "turn-end" && !suppressUnread && !active && affected === currentSlug()) setUnread(true);
+    noteApplied(affected);
+  }
+
+  // ---- the relay (helper runtime) ------------------------------------------
 
   // One open stream per *visible* tab. The browser allows only six
   // connections per host, and every leetcode tab with this script would
@@ -1723,6 +1763,8 @@
   // the tabs you are actually using. A hidden tab drops its stream and
   // reconnects on return, replaying what it missed from state.lastSeq.
   let streamAbort = null;
+  let relayRunning = false;
+  let relayStopped = true;
   const visibleWaiters = [];
 
   function whenVisible() {
@@ -1732,23 +1774,22 @@
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      if (streamAbort) streamAbort.abort();
+      if (streamAbort && transport === relayTransport) streamAbort.abort();
     } else {
       for (const resolve of visibleWaiters.splice(0)) resolve();
     }
   });
 
   async function streamLoop() {
+    relayRunning = true;
     let delay = 1000;
-    for (;;) {
+    while (!relayStopped) {
       // eslint-disable-next-line no-await-in-loop
       await whenVisible();
+      if (relayStopped) break;
       const abort = new AbortController();
       streamAbort = abort;
-      // A first connection replays history, which is not news; only what
-      // arrives after a reconnect (state.lastSeq > 0) can be unread. The relay
-      // sends a status event once the replay is done.
-      let suppressUnread = state.lastSeq === 0;
+      beginReplay();
       try {
         // no-store: see panel-broker.js; two tabs must never queue behind
         // each other's open stream through the HTTP cache.
@@ -1761,17 +1802,12 @@
           signal: abort.signal,
         });
         if (!res.ok || !res.body) throw new Error(`relay answered ${res.status}`);
-        relayReachable = true;
+        sourceReachable = true;
         delay = 1000;
         scheduleRender();
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        const push = createSseParser((event) => {
-          if (event.type === "status") suppressUnread = false;
-          const affected = applyEvent(state, event);
-          if (event.type === "turn-end" && !suppressUnread && !active && affected === currentSlug()) setUnread(true);
-          noteApplied(affected);
-        });
+        const push = createSseParser(deliver);
         for (;;) {
           // eslint-disable-next-line no-await-in-loop
           const { done, value } = await reader.read();
@@ -1779,16 +1815,188 @@
           push(decoder.decode(value, { stream: true }));
         }
       } catch {
-        // Fall through: either we hid the tab on purpose, or the relay is gone.
+        // Fall through: either we hid the tab (or left this transport) on
+        // purpose, or the relay is gone.
       }
+      if (relayStopped) break;
       // Hiding the tab on purpose is not an outage.
       if (abort.signal.aborted) continue;
-      relayReachable = false;
+      sourceReachable = false;
       noteApplied(streamLost(state));
       // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => setTimeout(resolve, delay));
       delay = Math.min(delay * 2, 10000);
     }
+    relayRunning = false;
+  }
+
+  const relayTransport = {
+    unreachableHint: "Couldn't reach the relay server. Try again.",
+    async send(body) {
+      const res = await fetch(`${RELAY_BASE}/panel/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        cache: "no-store",
+        // A send must never hang the composer: the browser queues a request
+        // behind its per-host connection limit, so give up and say so.
+        signal: AbortSignal.timeout(8000),
+      });
+      return { status: res.status };
+    },
+    start() {
+      relayStopped = false;
+      if (!relayRunning) streamLoop();
+    },
+    stop() {
+      relayStopped = true;
+      if (streamAbort) streamAbort.abort();
+    },
+  };
+
+  // ---- the background worker (extension runtime) ----------------------------
+  //
+  // One port per tab to the background worker (shared/tutor-service.js). It
+  // is opened in either runtime: the worker says on it which runtime the
+  // options page chose ({ type: 'runtime' }), and in the extension runtime the
+  // events and messages travel on it too. A ping every 20 seconds keeps the
+  // worker running while a problem page is open. A worker that restarted
+  // drops the port; the panel reconnects, and the new run's epoch tells
+  // applyEvent the session restarted.
+  const PANEL_PORT = "lc-tutor-panel";
+  const PING_MS = 20000;
+  const SEND_TIMEOUT_MS = 8000;
+  let bgPort = null;
+  let bgDelay = 500;
+  let providerChosen = null; // from the worker: whether a provider is chosen at all
+  const pendingReplies = new Map(); // id -> { resolve, reject, timer }
+  let nextReplyId = 1;
+
+  function extensionRuntime() {
+    const runtime =
+      (typeof browser !== "undefined" && browser.runtime) || (typeof chrome !== "undefined" && chrome.runtime) || null;
+    return runtime && runtime.id && typeof runtime.connect === "function" ? runtime : null;
+  }
+
+  function postToWorker(message) {
+    if (!bgPort) return false;
+    try {
+      bgPort.postMessage(message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function connectWorker() {
+    const runtime = extensionRuntime();
+    if (!runtime) return false;
+    let port;
+    try {
+      port = runtime.connect({ name: PANEL_PORT });
+    } catch {
+      return false;
+    }
+    bgPort = port;
+    port.onMessage.addListener((message) => {
+      if (port !== bgPort || !message || typeof message !== "object") return;
+      bgDelay = 500;
+      if (message.type === "runtime") {
+        providerChosen = message.chosen !== false;
+        useTransport(message.runtime === "extension" ? extensionTransport : relayTransport);
+      } else if (message.type === "event" && transport === extensionTransport && message.event) {
+        if (sourceReachable !== true) {
+          sourceReachable = true;
+          scheduleRender();
+        }
+        deliver(message.event);
+      } else if (message.type === "reply") {
+        const pending = pendingReplies.get(message.id);
+        if (!pending) return;
+        pendingReplies.delete(message.id);
+        clearTimeout(pending.timer);
+        pending.resolve(message);
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      if (port !== bgPort) return;
+      bgPort = null;
+      for (const [id, pending] of pendingReplies) {
+        pendingReplies.delete(id);
+        clearTimeout(pending.timer);
+        pending.reject(new Error("disconnected"));
+      }
+      if (transport === extensionTransport) {
+        sourceReachable = false;
+        noteApplied(streamLost(state));
+      }
+      // The extension was reloaded or removed under this page: there is no
+      // worker to come back to.
+      if (!extensionRuntime()) return;
+      setTimeout(() => {
+        if (!bgPort) connectWorker();
+      }, bgDelay);
+      bgDelay = Math.min(bgDelay * 2, 10000);
+    });
+    // The worker says which runtime first; in the extension runtime that is
+    // when this port subscribes (useTransport).
+    return true;
+  }
+
+  setInterval(() => postToWorker({ type: "ping" }), PING_MS);
+
+  // What the worker answers, in the relay's HTTP terms.
+  const REPLY_STATUS = { "too-long": 413, invalid: 400, helper: 503 };
+
+  const extensionTransport = {
+    unreachableHint: "Couldn't reach the extension's tutor. Try again.",
+    send(body) {
+      return new Promise((resolve, reject) => {
+        const id = nextReplyId++;
+        const timer = setTimeout(() => {
+          pendingReplies.delete(id);
+          reject(new Error("timed out"));
+        }, SEND_TIMEOUT_MS);
+        pendingReplies.set(id, {
+          resolve: (reply) => resolve({ status: reply.ok ? 202 : REPLY_STATUS[reply.error] || 500 }),
+          reject,
+          timer,
+        });
+        if (!postToWorker({ type: "message", id, ...JSON.parse(body) })) {
+          pendingReplies.delete(id);
+          clearTimeout(timer);
+          reject(new Error("no worker"));
+        }
+      });
+    },
+    start() {
+      beginReplay();
+      postToWorker({ type: "subscribe", after: state.lastSeq, epoch: state.epoch });
+    },
+    stop() {
+      postToWorker({ type: "unsubscribe" });
+    },
+  };
+
+  // The transport in use, or null before the worker said which runtime.
+  let transport = null;
+  function useTransport(next) {
+    if (transport === next) {
+      // A reconnected port in the extension runtime subscribes again.
+      if (next === extensionTransport) next.start();
+      return;
+    }
+    if (transport) {
+      transport.stop();
+      // The other source starts from nothing known about it.
+      sourceReachable = null;
+      state.companionOnline = null;
+      state.companionBusy = false;
+      noteApplied(streamLost(state));
+    }
+    transport = next;
+    transport.start();
+    scheduleRender();
   }
 
   function start() {
@@ -1825,7 +2033,9 @@
       noteApplied(affected);
     });
 
-    streamLoop();
+    // Not running as an extension (the e2e fixture injects this script into
+    // a plain page): the relay is the only way to the tutor.
+    if (!connectWorker()) useTransport(relayTransport);
   }
 
   start();

@@ -11,7 +11,7 @@
 //       { type: 'message', id, text, problemSlug, snapshot }
 //       { type: 'ping' }                      keeps the worker awake
 //     Worker to panel:
-//       { type: 'runtime', runtime }          on connect and on every change
+//       { type: 'runtime', runtime, chosen }  on connect and on every change
 //       { type: 'event', event }              one hub event
 //       { type: 'reply', id, ok, error? }     answer to a message
 //   - Answers runtime messages: a capture from content.js
@@ -153,8 +153,14 @@ export function createTutorService({ storage, permissions, extensionOrigin, log 
     return (message) => explainError(scrub(message, [secret]), { provider, serverUrl, extensionOrigin });
   }
 
+  // `chosen`: whether a provider is chosen at all, so a panel with no helper
+  // running can say to pick one rather than to start the helper.
+  function runtimeMessage() {
+    return { type: 'runtime', runtime: runtimeFor(settings), chosen: Boolean(settings.provider) };
+  }
+
   function broadcastRuntime() {
-    const message = { type: 'runtime', runtime: runtimeFor(settings) };
+    const message = runtimeMessage();
     for (const port of ports) {
       try {
         port.postMessage(message);
@@ -314,7 +320,7 @@ export function createTutorService({ storage, permissions, extensionOrigin, log 
           // disconnected
         }
       };
-      ready.then(() => post({ type: 'runtime', runtime: runtimeFor(settings) }));
+      ready.then(() => post(runtimeMessage()));
       port.onMessage.addListener((message) => {
         if (!message || typeof message !== 'object') return;
         ready.then(() => {

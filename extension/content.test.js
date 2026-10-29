@@ -29,6 +29,7 @@ const {
   isDuplicateCapture,
   answerSnapshotRequest,
   sendCapture,
+  handToBackground,
 } = require(path.join(__dirname, 'content.js'));
 
 // Minimal EventTarget-like mock so requestModelCode's CustomEvent
@@ -388,4 +389,31 @@ test('sendCapture sends nothing when the editor model cannot be read, and tells 
   await sendCapture('run', { events, readCode: async () => null });
   assert.deepEqual(seen, ['start', { trigger: 'run' }]);
   assert.deepEqual(posted, [], 'nothing reaches the relay');
+});
+
+test('a capture goes to the background worker when it runs the tutor, and to the relay otherwise', async (t) => {
+  const sent = [];
+  let answer = { handled: true };
+  globalThis.chrome = {
+    runtime: {
+      id: 'ext',
+      sendMessage: async (message) => {
+        sent.push(message);
+        if (answer instanceof Error) throw answer;
+        return answer;
+      },
+    },
+  };
+  t.after(() => {
+    delete globalThis.chrome;
+  });
+  const capture = { trigger: 'submit', code: 'x', problemSlug: 'two-sum' };
+  assert.equal(await handToBackground(capture), true);
+  assert.deepEqual(sent, [{ type: 'lc-tutor:capture', capture }]);
+  answer = { handled: false };
+  assert.equal(await handToBackground(capture), false, 'the helper runtime leaves it to the relay');
+  answer = new Error('Extension context invalidated.');
+  assert.equal(await handToBackground(capture), false, 'a reloaded extension falls back to the relay');
+  delete globalThis.chrome;
+  assert.equal(await handToBackground(capture), false, 'no extension API at all');
 });

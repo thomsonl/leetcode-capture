@@ -1,9 +1,12 @@
 // LeetCode Capture - content script
 //
 // Hooks the Run and Submit buttons on a LeetCode problem page, reads the
-// current Monaco editor model at the moment of the click, and POSTs a
-// capture payload to the local relay server. No other network calls are
-// made from this extension.
+// current Monaco editor model at the moment of the click, and hands the
+// capture to the tutor. Where it goes depends on the runtime chosen in the
+// options page: the extension's own background worker runs the tutor for a
+// local model or an API key (nothing leaves the browser except the request to
+// that provider), and otherwise the capture is POSTed to the local relay
+// server, as it always was. No other network calls are made from this script.
 
 (() => {
   const RELAY_URL = "http://localhost:8135/capture";
@@ -262,6 +265,7 @@
       url: window.location.href,
     };
 
+    if (await handToBackground(payload)) return;
     try {
       await fetch(RELAY_URL, {
         method: "POST",
@@ -272,6 +276,22 @@
       // Relay server may not be running; fail silently so it never
       // interferes with normal LeetCode use.
       console.warn("[leetcode-capture] failed to reach relay server", err);
+    }
+  }
+
+  // The extension runtime: the background worker takes the capture itself
+  // and answers { handled: true }. Resolves false when it runs the tutor
+  // through the helper (the relay) instead, or cannot be asked (the extension
+  // was reloaded under this page, or this is not running as an extension).
+  async function handToBackground(capture) {
+    const runtime =
+      (typeof browser !== "undefined" && browser.runtime) || (typeof chrome !== "undefined" && chrome.runtime) || null;
+    if (!runtime || !runtime.id || typeof runtime.sendMessage !== "function") return false;
+    try {
+      const answer = await runtime.sendMessage({ type: "lc-tutor:capture", capture });
+      return Boolean(answer && answer.handled === true);
+    } catch {
+      return false;
     }
   }
 
@@ -443,6 +463,7 @@
       isDuplicateCapture,
       answerSnapshotRequest,
       sendCapture,
+      handToBackground,
     };
     return;
   }
