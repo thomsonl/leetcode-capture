@@ -54,7 +54,7 @@ Who needs what:
 | --- | --- | --- |
 | A local model (Ollama, LM Studio, any OpenAI-compatible server) | In the browser | The extension only |
 | An Anthropic or OpenAI API key | In the browser | The extension only |
-| A Claude or ChatGPT subscription | Through the helper | The extension, Node and the companion |
+| A Claude or ChatGPT subscription | Through the helper | The extension, Node, the companion and the helper (see "Helper") |
 
 The browser asks you once per server before the extension may reach it: Save, Test connection and Find models request that site's permission (`optional_host_permissions`), so the extension holds no broad host access by default.
 If you deny it, the settings page says so and nothing is saved.
@@ -66,6 +66,38 @@ Without it Ollama answers 403 (or the browser reports a network error), and both
 
 The browser runtime follows the same rules as the companion: the same tutor instructions, the same "What the tutor is sent" rules and reset on a problem switch, the same context fitting and summary for a small local window.
 The code for both lives once, in `extension/shared/`, which the companion imports.
+
+## Helper (subscription providers)
+
+The Claude and ChatGPT subscriptions need the companion and relay on your computer.
+The helper lets the extension start and stop them for you, so you never open a terminal for them.
+It is a small program plus a registration file that tells your browser where it is (Native Messaging), not a second extension.
+It needs Node 18 or newer.
+
+1. In the extension's settings, choose Claude subscription or ChatGPT subscription.
+2. In the Helper section, press "Allow starting the helper" and accept the browser's prompt (the `nativeMessaging` permission, only asked for here).
+3. Copy the install command the Helper section shows and run it in a terminal, then press "Check again".
+   On Chrome, Chromium, Edge and Brave the command carries the extension's id, for example `npx leetcode-capture-helper install --chrome-id <id>`; on Firefox it is `npx leetcode-capture-helper install`.
+
+From then on:
+
+- The tutor starts when you open a LeetCode problem, and keeps running while at least one problem tab is open, even in the background.
+- It stops 30 seconds after you close the last problem tab; opening one again within those 30 seconds keeps it running with the conversation intact.
+- If you close the tab of the problem you were working on while other problem tabs stay open, the tutor forgets that conversation after 30 seconds but keeps running.
+- If the browser crashes, the helper, the companion and the relay stop on their own within a few minutes, so nothing is left holding port 8135.
+- A companion you start by hand (`leetcode`) still works; the helper sees the relay already running and leaves it alone.
+
+`npx leetcode-capture-helper status` shows what is registered where, and `npx leetcode-capture-helper uninstall` removes exactly what install wrote.
+
+What install writes, for your user only and without admin rights:
+
+- A copy of the helper in `~/.local/share/leetcode-capture-helper` (Linux), `~/Library/Application Support/leetcode-capture-helper` (macOS) or `%LOCALAPPDATA%\leetcode-capture-helper` (Windows), with a small script that runs it with the `node` you installed it with.
+- A registration file in each browser's `NativeMessagingHosts` folder (on Windows, in that folder plus a value under `HKCU\Software\...\NativeMessagingHosts`), for the browsers it finds; `--browser chrome,firefox` picks them yourself.
+- The helper runs the companion and relay from this repository's folder (the one the helper is in, or `--root <folder>`), so keep that folder where it is, with `npm install` done in `companion/`.
+
+The npm package name `leetcode-capture-helper` is a placeholder that has not been published yet; until it is, run `node helper/cli.js install --chrome-id <id>` from this repository instead.
+The Chrome id of an unpacked copy is shown in the Helper section and on `chrome://extensions`; set the published store ids in `helper/config.js` (`CHROME_EXTENSION_IDS`) once they exist, so the plain command works for everyone.
+The helper's log, with the companion's and relay's output, is `app/helper.log` inside that data folder.
 
 ## Start the companion
 
