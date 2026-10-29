@@ -1,0 +1,23 @@
+{
+  "name": "leetcode-capture-helper",
+  "version": "0.1.0",
+  "description": "Native Messaging helper for LeetCode Capture: lets the browser extension start and stop the local companion and relay for the Claude and ChatGPT subscriptions. The npm package name is a placeholder and has not been checked for availability.",
+  "type": "module",
+  "bin": {
+    "leetcode-capture-helper": "cli.js"
+  },
+  "files": [
+    "cli.js",
+    "config.js",
+    "framing.js",
+    "host.js",
+    "install.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test framing.test.js host.test.js install.test.js"
+  },
+  "license": "MIT"
+}
