@@ -59,6 +59,15 @@
   const POSITION_DEBOUNCE_MS = 300;
   // How long the tab's pane may take to appear after it was added.
   const PANE_TIMEOUT_MS = 2000;
+  // After a give-up the bridge keeps watching and tries again once the
+  // page's layout is a different one (another layout element, Model or
+  // URL: React drew it again, a "Default layout", a soft navigation), at
+  // most this often and this many times per page. Only a layout whose saved
+  // JSON could not be proven clean is never tried again.
+  const RETRY_AFTER_MS = 1000;
+  const RETRY_CHECK_MS = 500;
+  const MAX_RETRIES = 10;
+  const PERMANENT = new Set(["unsafe-layout"]);
 
   const TAB_JSON = {
     type: "tab",
@@ -79,7 +88,12 @@
   };
 
   let started = false;
-  let failed = null; // a reason once native mode has given up for good
+  let failed = null; // why native mode gave up, until it tries again
+  // What the layout looked like when it gave up: { layoutEl, model, path, at }.
+  let failure = null;
+  let retries = 0;
+  let retryTimer = 0;
+  let lastRetryCheck = 0;
   let model = null; // the Model the tab lives in and whose toJson is wrapped
   let unwrap = null; // undoes the toJson wrapper
   let unlisten = null;
@@ -803,12 +817,49 @@
     };
   }
 
-  function giveUp(reason) {
+  function giveUp(reason, seen = {}) {
     failed = reason;
+    failure = {
+      layoutEl: "layoutEl" in seen ? seen.layoutEl : mainLayout(),
+      model: "model" in seen ? seen.model : model,
+      path: location.pathname,
+      at: Date.now(),
+    };
+    const again = PERMANENT.has(reason) || retries >= MAX_RETRIES ? "" : " It tries again when the page's layout changes.";
+    console.warn(`LeetCode Capture: the Tutor tab is not a real tab of the page's layout now (${reason}), so the injected copy stands in.${again}`);
     if (model) removeTab(model);
     release();
     unmark();
     report({ native: false, reason });
+  }
+
+  // True when native mode may start again after a give-up: the layout on
+  // the page is not the one it gave up on. Checked at most every
+  // RETRY_CHECK_MS, and only RETRY_AFTER_MS after the give-up.
+  function mayRetry() {
+    if (!failed || PERMANENT.has(failed) || retries >= MAX_RETRIES || !failure) return false;
+    const now = Date.now();
+    const wait = Math.max(failure.at + RETRY_AFTER_MS, lastRetryCheck + RETRY_CHECK_MS) - now;
+    if (wait > 0) {
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = 0;
+          schedule();
+        }, wait);
+      }
+      return false;
+    }
+    lastRetryCheck = now;
+    const layoutEl = mainLayout();
+    const m = layoutEl ? modelFrom(layoutEl) : null;
+    if (!m) return false;
+    if (m === failure.model && layoutEl === failure.layoutEl && location.pathname === failure.path) return false;
+    retries += 1;
+    failed = null;
+    failure = null;
+    addedAt = 0;
+    lastReport = "";
+    return true;
   }
 
   // ---- the tab's DOM -----------------------------------------------------
@@ -880,7 +931,7 @@
     const strip = button.parentElement;
     if (!strip) return null;
     for (const other of strip.querySelectorAll(":scope > .flexlayout__tab_button")) {
-      if (other === button || other.hasAttribute(BUTTON_ATTR)) continue;
+      if (other === button || other.hasAttribute(BUTTON_ATTR) || other.hasAttribute(CLONE_ATTR)) continue;
       const content = [...other.children].find((n) => n.classList.contains("flexlayout__tab_button_content"));
       if (content && content.querySelector("svg") && isRealLabel(pageLabel(other))) return content;
     }
@@ -1071,7 +1122,8 @@
   }
 
   function sync() {
-    if (!started || failed) return;
+    if (!started) return;
+    if (failed && !mayRetry()) return;
     const layoutEl = mainLayout();
     if (!layoutEl) {
       // No layout yet (still loading) or none any more (left the problem).
@@ -1081,7 +1133,7 @@
     }
     const m = modelFrom(layoutEl);
     if (!m) {
-      giveUp("no-model");
+      giveUp("no-model", { layoutEl, model: null });
       return;
     }
     if (m !== model) {
@@ -1091,7 +1143,7 @@
     let node = findTab(m);
     if (!node) {
       if (!addTab(m)) {
-        giveUp("add-failed");
+        giveUp("add-failed", { layoutEl, model: m });
         return;
       }
       node = findTab(m);
@@ -1107,7 +1159,7 @@
     if (missing) {
       if (!addedAt) addedAt = Date.now();
       if (Date.now() - addedAt > PANE_TIMEOUT_MS) {
-        giveUp(missing);
+        giveUp(missing, { layoutEl, model: m });
         return;
       }
       setTimeout(schedule, 100);

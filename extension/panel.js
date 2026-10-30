@@ -2183,6 +2183,7 @@
       panel.host.remove();
     };
     setUnread(unread);
+    setNativeReason(nativeReason);
     render();
   }
 
@@ -2233,7 +2234,7 @@
       // a few seconds before the injected tab takes over.
       if (findTabset()) {
         if (!pendingSince) pendingSince = Date.now();
-        else if (Date.now() - pendingSince > BRIDGE_WAIT_MS) useClone();
+        else if (Date.now() - pendingSince > BRIDGE_WAIT_MS) useClone("bridge-no-answer");
       }
       if (layoutMode === "pending") return;
     }
@@ -2311,6 +2312,7 @@
     const runtime = typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.getURL === "function" ? chrome.runtime : null;
     if (!runtime) {
       layoutMode = "clone";
+      setNativeReason("no-extension-runtime");
       return;
     }
     document.addEventListener("lc-tutor:layout-state", (event) => {
@@ -2322,10 +2324,15 @@
       }
       if (!msg || msg.ready) return;
       if (msg.native === false) {
-        useClone();
-      } else if (msg.native === true && layoutMode !== "clone") {
+        useClone(typeof msg.reason === "string" && msg.reason ? msg.reason : "unknown");
+      } else if (msg.native === true) {
+        // Also after a give-up: the bridge tries again once the page's
+        // layout changes (React drew it again, a new Model, a navigation),
+        // and the injected tab steps aside for the real one.
+        if (layoutMode === "clone" && mounted) teardown();
         layoutMode = "native";
         nativeState = msg;
+        setNativeReason(null);
         syncNative();
       }
     });
@@ -2335,6 +2342,7 @@
       script.src = runtime.getURL("layout-bridge.js");
     } catch {
       layoutMode = "clone";
+      setNativeReason("bridge-url-failed");
       return;
     }
     document.addEventListener("lc-tutor:layout-position", (event) => {
@@ -2351,21 +2359,37 @@
     };
     script.onerror = () => {
       script.remove();
-      useClone();
+      useClone("bridge-load-failed");
     };
     (document.head || document.documentElement).appendChild(script);
   }
 
-  // The injected tab from now on: the bridge could not start, or gave up.
-  function useClone() {
+  // The injected tab: the bridge could not start, did not answer in time,
+  // or gave up (its tab is already out of the layout then, and it keeps
+  // watching, so the real tab can come back; see the layout-state handler).
+  function useClone(reason) {
+    setNativeReason(reason);
     if (layoutMode === "clone") return;
     const wasNative = layoutMode === "native";
     layoutMode = "clone";
-    if (wasNative) {
-      sendBridge("stop");
-      if (mounted) teardown();
-    }
+    if (wasNative && mounted) teardown();
     ensureMounted();
+    setNativeReason(reason);
+  }
+
+  // Why the injected tab stands in for the real one, kept where a tester on
+  // the live page can read it (the console, and data-native-reason on
+  // #lc-tutor-panel-host); null once the real tab is back.
+  let nativeReason = null;
+  function setNativeReason(reason) {
+    if (reason && reason !== nativeReason) {
+      console.warn(`LeetCode Capture: the Tutor tab is the injected copy, not a real tab of the page's layout (${reason}).`);
+    }
+    nativeReason = reason || null;
+    const host = mounted && mounted.host;
+    if (!host) return;
+    if (nativeReason && !mounted.native) host.setAttribute("data-native-reason", nativeReason);
+    else host.removeAttribute("data-native-reason");
   }
 
   let nativeState = { present: false, visible: false };
