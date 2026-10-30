@@ -813,29 +813,61 @@
   // ---- the tab's DOM -----------------------------------------------------
 
   // The button's label. The tab's JSON has the name "Tutor", but a page
-  // whose onRenderTab draws labels by component (leetcode.com does) draws
-  // nothing for one it does not know. An empty button gets the text here,
-  // and an observer on it puts the text back after React re-renders it.
+  // whose onRenderTab draws labels by component draws something else for
+  // one it does not know: nothing, or (leetcode.com) its i18n key,
+  // "Tabs.LcTutor". Either way the page's content is hidden and "Tutor"
+  // shown in its place (panel.js draws the icon, from CSS); an observer on
+  // the button re-applies it after React re-renders, before the next paint,
+  // so it never flickers. A real label the page drew stays.
   const LABEL_ATTR = "data-lc-tutor-label";
+  const HIDDEN_ATTR = "data-lc-tutor-hidden";
+  const I18N_KEY = /^[A-Za-z][\w-]*(\.[\w-]+)+$/;
   let labelled = null;
   let labelObserver = null;
+
+  // The page's own label text: the first leaf with text outside what the
+  // bridge added (each label may be drawn twice, a bold and a hidden copy).
+  function pageLabel(button) {
+    const leaves = [...button.querySelectorAll("*")].filter((n) => !n.closest(`[${LABEL_ATTR}]`) && n.children.length === 0 && n.textContent.trim());
+    return leaves.length ? leaves[0].textContent.trim() : "";
+  }
+
+  function isRealLabel(text) {
+    return !!text && text !== "Tabs.LcTutor" && !I18N_KEY.test(text);
+  }
+
+  function setHidden(el, hidden) {
+    if (hidden && !el.hasAttribute(HIDDEN_ATTR)) {
+      el.setAttribute(HIDDEN_ATTR, "");
+      el.style.setProperty("display", "none", "important");
+    } else if (!hidden && el.hasAttribute(HIDDEN_ATTR)) {
+      el.removeAttribute(HIDDEN_ATTR);
+      el.style.removeProperty("display");
+    }
+  }
 
   function applyLabel() {
     const button = labelled;
     if (!button || !button.isConnected) return;
-    const own = button.querySelector(`[${LABEL_ATTR}]`);
-    const others = button.textContent.replace(own ? own.textContent : "", "").trim();
-    if (others) {
+    const content = [...button.children].find((n) => n.classList.contains("flexlayout__tab_button_content") && !n.hasAttribute(LABEL_ATTR)) || null;
+    let text = button.querySelector(`[${LABEL_ATTR}="text"]`);
+    if (isRealLabel(pageLabel(button))) {
       // The page drew a label of its own.
-      if (own) own.remove();
-      return;
+      if (text) text.remove();
+      if (content) setHidden(content, false);
+    } else {
+      if (content) setHidden(content, true);
+      if (!text || text.textContent !== "Tutor") {
+        if (text) text.remove();
+        text = document.createElement("div");
+        text.className = "flexlayout__tab_button_content";
+        text.setAttribute(LABEL_ATTR, "text");
+        text.textContent = "Tutor";
+      }
+      const after = content || button.querySelector(".flexlayout__tab_button_leading") || null;
+      const want = after ? after.nextSibling : button.firstChild;
+      if (text.parentNode !== button || (want !== text && text.previousSibling !== after)) button.insertBefore(text, want);
     }
-    if (own && own.textContent === "Tutor") return;
-    if (own) own.remove();
-    const span = document.createElement("span");
-    span.setAttribute(LABEL_ATTR, "");
-    span.textContent = "Tutor";
-    (button.querySelector(".flexlayout__tab_button_content") || button).appendChild(span);
   }
 
   function labelButton(button) {

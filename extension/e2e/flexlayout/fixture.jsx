@@ -15,8 +15,8 @@
 // `?leetcode` copies what the real page was found to do instead: its tabs
 // have no names (getName() returns the library's "[Unnamed Tab]" and the
 // JSON has no `name`), so a tab is known only by its component; its
-// onRenderTab draws labels and icons by component and nothing at all for a
-// component it does not know; and it runs an older fork with no
+// onRenderTab draws labels and icons by component and, for a component it
+// does not know, its i18n key ("Tabs.LcTutor") with no icon; and it runs an older fork with no
 // addChangeListener on the Model (only a single `_setChangeListener` hook),
 // and whose nodes have no getPath().
 // Like the fork, every tabset in its JSON also carries `foldBeforeWeight`,
@@ -198,16 +198,18 @@ function factory(node) {
 
 function onRenderTab(node, values) {
   if (LEETCODE) {
-    // A switch on the component, as on leetcode.com: nothing for one it
-    // does not know.
-    const label = LABELS[node.getComponent()];
-    values.content = label ? (
+    // A lookup by component, as on leetcode.com: for one it does not know
+    // it draws the i18n key itself ("Tabs.LcTutor" for "lc-tutor") and no
+    // icon.
+    const component = node.getComponent() || '';
+    const label = LABELS[component] || `Tabs.${component.replace(/(^|-)(\w)/g, (_, __, c) => c.toUpperCase())}`;
+    values.content = (
       <div className="label">
         <div>{label}</div>
         <div className="ghost">{label}</div>
       </div>
-    ) : null;
-    if (label) values.leading = <svg width="1em" height="1em" viewBox="0 0 24 24" className="tab-icon"><path fill="currentColor" d="M4 4h16v16H4z" /></svg>;
+    );
+    if (LABELS[component]) values.leading = <svg width="1em" height="1em" viewBox="0 0 24 24" className="tab-icon"><path fill="currentColor" d="M4 4h16v16H4z" /></svg>;
     return;
   }
   const name = node.getName();

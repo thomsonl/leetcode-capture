@@ -147,7 +147,7 @@ const HELPERS = `(() => {
   window.__settle = () => new Promise((r) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(r)), 60));
   window.__seq = 0;
   window.__ev = (obj) => window.__event({ seq: ++window.__seq, epoch: 'e1', ...obj });
-  window.__labelOf = (b) => { const leaf = [...b.querySelectorAll('*')].find((n) => n.children.length === 0 && n.textContent.trim()); return leaf ? leaf.textContent.trim() : b.textContent.trim(); };
+  window.__labelOf = (b) => { const leaf = [...b.querySelectorAll('*')].find((n) => n.children.length === 0 && n.textContent.trim() && !n.closest('[data-lc-tutor-hidden]')); return leaf ? leaf.textContent.trim() : b.textContent.trim(); };
   window.__button = (label) => [...document.querySelectorAll('.flexlayout__tab_button')].find((b) => window.__labelOf(b) === label && !b.closest('.flexlayout__layout_tab_stamps'));
   window.__tutorButtons = () => [...document.querySelectorAll('.flexlayout__tab_button')].filter((b) => !b.closest('.flexlayout__layout_tab_stamps') && (b.hasAttribute('data-lc-tutor-tab') || window.__labelOf(b) === 'Tutor'));
   window.__rect = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; };
@@ -345,23 +345,28 @@ try {
     const w = await invariants('start', { shown: false });
     check(w.tabset === w.descTabset, `Tutor in ${w.tabset}, Description in ${w.descTabset}`);
     check(w.tabsetLabels.indexOf('Tutor') === w.tabsetLabels.indexOf('Description') + 1, `labels ${w.tabsetLabels}`);
+    // What a student sees on the button: "Tutor", never the page's i18n
+    // key (the icon is checked below).
+    const look = await p.eval(`(() => { const b = ${tutorButton}; return [...b.querySelectorAll('*')].filter((n) => n.children.length === 0 && n.textContent.trim() && n.checkVisibility({ visibilityProperty: true })).map((n) => n.textContent.trim()); })()`);
+    check(JSON.stringify(look) === '["Tutor"]', `the Tutor button reads ${JSON.stringify(look)}`);
     const attrs = await p.eval(`(() => { const b = ${tutorButton}; return { draggable: b.getAttribute('draggable'), native: b.hasAttribute('data-lc-tutor-button'), icon: getComputedStyle(b, '::before').content }; })()`);
     check(attrs.draggable === 'true' && attrs.native, JSON.stringify(attrs));
-    check(attrs.icon !== 'none', `no Tutor icon: ${attrs.icon}`);
+    check(attrs.icon !== 'none', `no Tutor icon: ${attrs.icon} ${await p.eval(`${tutorButton}.outerHTML`)}`);
     if (LEETCODE) {
       const fork = await p.eval(`(() => { const m = window.__fx.model(); let named = 0; m.visitNodes((n) => { if (n.getType() === 'tab' && n.getName() !== '[Unnamed Tab]') named += 1; }); return { named, json: m.toJson().layout.children[0].children[0].name === undefined, add: typeof m.addChangeListener, hook: typeof m._setChangeListener }; })()`);
       // Only the Tutor tab carries a name; this script is not the bridge, so it sees addChangeListener.
       check(fork.named === 1 && fork.json && fork.hook === 'function', `not LeetCode-like: ${JSON.stringify(fork)}`);
       // The bridge watched moves by wrapping the instance's doAction.
       check(await p.eval(`Object.prototype.hasOwnProperty.call(window.__fx.model(), 'doAction')`), 'the bridge did not wrap doAction');
-      // The page drew nothing in the button; the bridge's label is there,
-      // and comes back when something wipes the button's content.
+      // The page drew its i18n key in the button; the bridge's label is
+      // shown instead, and comes back when something wipes it.
       await p.eval(`window.__tutorButtons()[0].querySelector('[data-lc-tutor-label]').remove()`);
       await settle();
       check((await p.eval(`window.__labelOf(window.__tutorButtons()[0])`)) === 'Tutor', 'the label did not come back');
       await p.eval('window.__fx.rerender()');
       await settle();
-      check((await p.eval(`window.__tutorButtons()[0].textContent`)) === 'Tutor', 'the label after a re-render');
+      const seen = await p.eval(`[...window.__tutorButtons()[0].querySelectorAll('*')].filter((n) => n.children.length === 0 && n.textContent.trim() && n.checkVisibility()).map((n) => n.textContent.trim())`);
+      check(JSON.stringify(seen) === '["Tutor"]', `the label after a re-render: ${JSON.stringify(seen)}`);
     }
   });
 
