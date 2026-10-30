@@ -149,6 +149,44 @@ test("inline markdown: code, bold, italic, links, and snake_case left alone", ()
   assert.equal(parseInline("2 * 3 * 4")[0].t, "text");
 });
 
+test("raw LaTeX from a small model becomes plain text", () => {
+  const plain = (t) => parseInline(t).map((n) => (n.t === "code" ? `<${n.v}>` : n.v)).join("");
+  // What gpt-oss:20b sent live: \[ \] would otherwise turn into bare brackets.
+  assert.equal(plain("\\[ \\frac{n(n-1)}{2} = O(n^2). \\]"), "n(n-1)/2 = O(n\u00b2).");
+  assert.equal(plain("so \\( a \\cdot b \\le c \\) holds"), "so a \u00b7 b \u2264 c holds");
+  assert.equal(plain("time $O(n \\log n)$ here"), "time O(n log n) here");
+  assert.equal(plain("$$\\frac{a+b}{2} \\times 3$$"), "(a+b)/2 \u00d7 3");
+  assert.equal(plain("\\(i \\ne j\\), \\(x \\ge 0\\)"), "i \u2260 j, x \u2265 0");
+  assert.equal(plain("\\(\\sqrt{n}\\) and \\(\\sqrt{n+1}\\)"), "\u221an and \u221a(n+1)");
+  assert.equal(plain("x^{2}, 2^10, 2^{n-1} and \\(2^n\\)"), "x\u00b2, 2\u00b9\u2070, 2\u207f\u207b\u00b9 and 2\u207f");
+  assert.equal(plain("\\(\\text{steps} = n \\cdot m\\)"), "steps = n \u00b7 m");
+  // Bare commands outside delimiters too.
+  assert.equal(plain("about \\frac{n}{2} pairs"), "about n/2 pairs");
+});
+
+test("plain math leaves code, money, escapes and prose alone", () => {
+  const plain = (t) => parseInline(t).map((n) => (n.t === "code" ? `<${n.v}>` : n.v)).join("");
+  assert.equal(plain("use `\\frac{a}{b}` and `$x$` and `n^2`"), "use <\\frac{a}{b}> and <$x$> and <n^2>");
+  assert.equal(plain("it costs $5 and $10"), "it costs $5 and $10");
+  assert.equal(plain("$HOME and $PATH"), "$HOME and $PATH");
+  assert.equal(plain("\\[not a link\\]"), "[not a link]");
+  assert.equal(plain("a^b is XOR, {a: 1} is a dict"), "a^b is XOR, {a: 1} is a dict");
+  assert.equal(plain("an unmatched \\( stays"), "an unmatched ( stays");
+  assert.equal(plain("\\alpha is unknown"), "\\alpha is unknown");
+  // A fenced block is never parsed inline.
+  const blocks = parseBlocks("```\n\\frac{a}{b} $x$\n```");
+  assert.equal(blocks[0].t, "code");
+  assert.equal(blocks[0].v, "\\frac{a}{b} $x$");
+});
+
+test("plain math stays linear on unmatched delimiters", () => {
+  for (const input of ["\\(".repeat(100_000), "$a ".repeat(100_000), "\\frac{".repeat(50_000), "^{".repeat(100_000)]) {
+    const started = Date.now();
+    parseInline(input);
+    assert.ok(Date.now() - started < 2000, `slow on ${input.slice(0, 8)}`);
+  }
+});
+
 test("links render only for http(s); anything else stays inert text", () => {
   assert.equal(parseInline("[x](https://leetcode.com)")[0].t, "link");
   assert.deepEqual(parseInline("[x](javascript:alert(1))"), [{ t: "text", v: "[x](javascript:alert(1))" }]);

@@ -326,6 +326,221 @@
   const MAX_INLINE_DEPTH = 8;
   const URL_RUN_RE = /[^\s)]*/y;
 
+  // ---- plain math --------------------------------------------------------
+  // Small local models write LaTeX even when told not to ("\[ \frac{n(n-1)}{2}
+  // = O(n^2) \]"), and the escape rule below would turn its \[ and \( into a
+  // bare bracket, leaving the commands raw. The simple forms become plain
+  // text before inline parsing: a/b, the symbols, superscripts and \sqrt,
+  // with \( \), \[ \], $$ $$ and $ $ dropped around content that is clearly
+  // math. Code spans are copied as they are, and fenced blocks never reach
+  // this (they are not parsed inline). Everything stays text: the renderer
+  // only ever makes text nodes from it.
+  const SUPERSCRIPTS = {
+    0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹",
+    "+": "⁺", "-": "⁻", "=": "⁼", "(": "⁽", ")": "⁾", n: "ⁿ", i: "ⁱ", k: "ᵏ", m: "ᵐ", x: "ˣ", y: "ʸ", j: "ʲ",
+  };
+  const MATH_SYMBOLS = {
+    cdot: "·", times: "×", le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠",
+    ldots: "...", cdots: "...", dots: "...", infty: "∞", sum: "Σ", log: "log", ln: "ln", min: "min", max: "max",
+    left: "", right: "", quad: " ", qquad: " ",
+  };
+  const MATH_WRAPPERS = new Set(["text", "textrm", "texttt", "mathrm", "mathit", "mathbf", "operatorname"]);
+  const MAX_MATH_DEPTH = 6;
+
+  // Where each "{" in `s` closes (-1: never), in one pass, so a long run of
+  // unclosed braces is not rescanned for every command.
+  function braceMatches(s) {
+    const close = new Map();
+    const open = [];
+    for (let j = 0; j < s.length; j++) {
+      if (s[j] === "{") open.push(j);
+      else if (s[j] === "}" && open.length) close.set(open.pop(), j);
+    }
+    return close;
+  }
+
+  // A {group} (braces nested) or, failing that, one character, after spaces.
+  function mathGroup(s, from, close) {
+    let i = from;
+    while (s[i] === " ") i += 1;
+    if (i >= s.length || s[i] === "}") return null;
+    if (s[i] !== "{") return { v: s[i], end: i + 1, braced: false };
+    const j = close.get(i);
+    return j === undefined ? null : { v: s.slice(i + 1, j), end: j + 1, braced: true };
+  }
+
+  // Parenthesized unless it is one term (an operator or space outside
+  // parentheses would change what a/b means).
+  function mathAtom(s) {
+    let depth = 0;
+    for (const c of s) {
+      if (c === "(") depth += 1;
+      else if (c === ")") depth -= 1;
+      else if (depth === 0 && /[\s+\-*/·×=<>]/.test(c)) return `(${s})`;
+    }
+    return s;
+  }
+
+  // The commands and superscripts in `s` as plain text. Inside math (inMath)
+  // leftover braces go, thin spaces become spaces and ^n takes a letter;
+  // outside, only ^ with digits or a {group} counts, so prose like a^b (XOR)
+  // and {a: 1} stay as they were. Unknown commands and markdown escapes are
+  // copied untouched.
+  function mathText(s, inMath, depth = 0) {
+    if (depth > MAX_MATH_DEPTH) return s;
+    const close = braceMatches(s);
+    let out = "";
+    let i = 0;
+    while (i < s.length) {
+      const ch = s[i];
+      if (ch === "\\") {
+        const name = (/^[A-Za-z]+/.exec(s.slice(i + 1, i + 16)) || [""])[0];
+        const after = i + 1 + name.length;
+        if (name === "frac" || name === "dfrac" || name === "tfrac") {
+          const a = mathGroup(s, after, close);
+          const b = a && mathGroup(s, a.end, close);
+          if (b) {
+            out += `${mathAtom(mathText(a.v, true, depth + 1))}/${mathAtom(mathText(b.v, true, depth + 1))}`;
+            i = b.end;
+            continue;
+          }
+        } else if (name === "sqrt") {
+          const a = mathGroup(s, after, close);
+          if (a) {
+            out += `√${mathAtom(mathText(a.v, true, depth + 1))}`;
+            i = a.end;
+            continue;
+          }
+        } else if (MATH_WRAPPERS.has(name)) {
+          const a = mathGroup(s, after, close);
+          if (a && a.braced) {
+            out += mathText(a.v, true, depth + 1);
+            i = a.end;
+            continue;
+          }
+        } else if (name && Object.prototype.hasOwnProperty.call(MATH_SYMBOLS, name) && !/[A-Za-z]/.test(s[after] || "")) {
+          const sym = MATH_SYMBOLS[name];
+          // "n\log n" reads "n log n".
+          out += /^[a-z]/.test(sym) && /[A-Za-z0-9]$/.test(out) ? ` ${sym}` : sym;
+          i = after;
+          continue;
+        } else if (!name && inMath && /[,;:! ]/.test(s[i + 1] || "")) {
+          out += s[i + 1] === "!" ? "" : " ";
+          i += 2;
+          continue;
+        }
+        out += s.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === "^" && i > 0 && !/\s/.test(s[i - 1])) {
+        const next = s[i + 1] || "";
+        let g = null;
+        if (next === "{") g = mathGroup(s, i + 1, close);
+        else if (/\d/.test(next)) g = { v: /^\d+/.exec(s.slice(i + 1, i + 12))[0], end: 0 };
+        else if (inMath && /[A-Za-z]/.test(next)) g = { v: next, end: 0 };
+        if (g) {
+          if (!g.end) g.end = i + 1 + g.v.length;
+          const inner = mathText(g.v, true, depth + 1).trim();
+          const sup = [...inner].map((c) => SUPERSCRIPTS[c]);
+          out += inner && sup.every(Boolean) ? sup.join("") : `^${mathAtom(inner)}`;
+          i = g.end;
+          continue;
+        }
+      }
+      if (inMath && ch === "_" && s[i + 1] === "{") {
+        const g = mathGroup(s, i + 1, close);
+        if (g) {
+          out += `_${mathAtom(mathText(g.v, true, depth + 1).trim())}`;
+          i = g.end;
+          continue;
+        }
+      }
+      if (inMath && (ch === "{" || ch === "}")) {
+        i += 1;
+        continue;
+      }
+      out += ch;
+      i += 1;
+    }
+    return out;
+  }
+
+  const MATH_DELIMITERS = [
+    { open: "\\[", close: "\\]" },
+    { open: "\\(", close: "\\)" },
+    { open: "$$", close: "$$" },
+    { open: "$", close: "$" },
+  ];
+  // \( \) and \[ \] around anything with a command, an operator or a digit
+  // ("\[not a link\]" is an escaped bracket); $ $ needs more, since a dollar
+  // is also money: no space inside either end, no digit right after it, and
+  // a command, ^, _, a comparison or a single letter inside.
+  function isMathContent(content, open) {
+    if (!content.trim() || content.length > 400 || content.includes("`")) return false;
+    if (open !== "$") return /\\[A-Za-z]|[\^_=<>+\-*/]|\d/.test(content);
+    return /\\[A-Za-z]|[\^_=<>]|^[A-Za-z]$/.test(content) && !/^\s|\s$/.test(content);
+  }
+
+  function plainMath(text) {
+    if (!/[\\$^]/.test(text)) return text;
+    let out = "";
+    let plainStart = 0;
+    let i = 0;
+    // The next position of each closing delimiter at or after a point, so
+    // a long run of unmatched openers is not rescanned (linear, like
+    // parseInline).
+    const nextClose = new Map();
+    const closeAfter = (close, from) => {
+      const cached = nextClose.get(close);
+      if (cached !== undefined && (cached === -1 || cached >= from)) return cached;
+      const found = text.indexOf(close, from);
+      nextClose.set(close, found);
+      return found;
+    };
+    const flush = (end) => {
+      if (end > plainStart) out += mathText(text.slice(plainStart, end), false);
+    };
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === "\\" && text[i + 1] === "`") {
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        // Same rule as parseInline: a code span runs to the next backtick.
+        const end = text.indexOf("`", i + 1);
+        if (end > i + 1) {
+          flush(i);
+          out += text.slice(i, end + 1);
+          i = end + 1;
+          plainStart = i;
+          continue;
+        }
+      }
+      let matched = false;
+      for (const d of MATH_DELIMITERS) {
+        if (!text.startsWith(d.open, i)) continue;
+        if (d.open === "$" && text[i + 1] === "$") break;
+        const from = i + d.open.length;
+        const end = closeAfter(d.close, from);
+        if (end < 0) break;
+        const content = text.slice(from, end);
+        if (d.open === "$" && /\d/.test(text[end + 1] || "")) break;
+        if (!isMathContent(content, d.open)) break;
+        flush(i);
+        out += mathText(content, true).trim();
+        i = end + d.close.length;
+        plainStart = i;
+        matched = true;
+        break;
+      }
+      if (!matched) i += ch === "\\" ? 2 : 1;
+    }
+    flush(text.length);
+    return out;
+  }
+
   // Linear in the length of `text` (times the nesting cap above): every scan
   // forward is either consumed by a match or cached for the positions after
   // it. The link rule in particular used to re-run a regex on text.slice(i)
@@ -333,6 +548,7 @@
   // and ran again on every streamed chunk.
   function parseInline(text, depth = 0) {
     if (depth > MAX_INLINE_DEPTH) return text ? [{ t: "text", v: text }] : [];
+    if (depth === 0) text = plainMath(text);
     const nodes = [];
     let buf = "";
     let i = 0;
@@ -859,6 +1075,7 @@
       itemsFor,
       firstChangedBlock,
       parseInline,
+      plainMath,
       parseBlocks,
       renderBlocks,
       problemSlugFromPath,

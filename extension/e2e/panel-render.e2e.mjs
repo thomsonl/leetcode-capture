@@ -558,6 +558,37 @@ try {
     check(JSON.stringify(m.text) === JSON.stringify(['AB', 'CD', 'EF', '<img src=x>']) && m.images === 0, JSON.stringify(m));
   });
 
+  await scenario('raw LaTeX in a reply reads as plain math, and code keeps it verbatim', async () => {
+    // What gpt-oss:20b sent live, plus the other delimiters and commands.
+    const markdown = [
+      'The pairs are \\[ \\frac{n(n-1)}{2} = O(n^2). \\]',
+      '',
+      'So \\( a \\cdot b \\le c \\), $O(n \\log n)$ and \\(\\sqrt{n+1}\\) at $5 a call.',
+      '',
+      'Keep `\\frac{a}{b}` as typed:',
+      '',
+      '```',
+      '\\frac{a}{b} $x$',
+      '```',
+    ].join('\n');
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'latex', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'latex', problemSlug: 'two-sum', text: ${JSON.stringify(markdown)} })`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const reply = window.__qa('.tutor').at(-1);
+      return { paras: [...reply.querySelectorAll('p')].map((p) => p.textContent),
+        code: [...reply.querySelectorAll('p code')].map((c) => c.textContent),
+        pre: [...reply.querySelectorAll('pre')].map((p) => p.textContent),
+        elements: [...reply.querySelectorAll('p *')].map((e) => e.tagName.toLowerCase()) };
+    })()`);
+    check(m.paras[0] === 'The pairs are n(n-1)/2 = O(n²).', JSON.stringify(m.paras[0]));
+    check(m.paras[1] === 'So a · b ≤ c, O(n log n) and √(n+1) at $5 a call.', JSON.stringify(m.paras[1]));
+    check(JSON.stringify(m.code) === JSON.stringify(['\\frac{a}{b}']), JSON.stringify(m.code));
+    check(m.pre.length === 1 && m.pre[0].includes('\\frac{a}{b} $x$'), JSON.stringify(m.pre));
+    // Text only: the paragraphs hold no element but the code span.
+    check(m.elements.every((t) => t === 'code'), JSON.stringify(m.elements));
+  });
+
   await scenario('an 8000-character user message collapses and can expand', async () => {
     await page.eval(`window.__ev({ type: 'user', problemSlug: 'two-sum', text: 'x'.repeat(8000) })`);
     await settle();
