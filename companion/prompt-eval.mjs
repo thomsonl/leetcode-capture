@@ -8,7 +8,8 @@ import { estimateTokens } from '../extension/shared/context-budget.js';
 const endpoint = process.env.PROMPT_EVAL_URL || 'http://localhost:11434/api/chat';
 const model = process.env.PROMPT_EVAL_MODEL || 'gpt-oss:20b';
 const repeats = Number(process.env.PROMPT_EVAL_REPEATS || 2);
-const think = process.env.PROMPT_EVAL_THINK === 'true';
+// The default request leaves thinking and temperature to the model, like LocalBackend.requestNative.
+const think = process.env.PROMPT_EVAL_THINK === 'true' ? true : process.env.PROMPT_EVAL_THINK === 'false' ? false : undefined;
 const only = new Set((process.env.PROMPT_EVAL_ONLY || '').split(',').filter(Boolean));
 const islandCode = `def count_islands(grid):
     seen = set()
@@ -85,7 +86,7 @@ const selectedScenarios = only.size ? scenarios.filter((item) => only.has(item.i
 async function chat(messages, { format } = {}) {
   const response = await fetch(endpoint, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, stream: false, think, format, options: { temperature: 0, num_ctx: 8192 }, messages }),
+    body: JSON.stringify({ model, stream: false, ...(think === undefined ? {} : { think }), format, options: { num_ctx: 8192 }, messages }),
     signal: AbortSignal.timeout(120000),
   });
   if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
