@@ -22,6 +22,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionCopy, launch } from './cdp.mjs';
+import { TUTOR_SYSTEM_MESSAGE } from '../shared/tutor-prompt.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(here, '..');
@@ -160,7 +161,7 @@ try {
     check(last.includes('why does this return nothing?'), `message: ${last}`);
     check(last.includes('return []'), `the editor code went with it: ${last}`);
     const system = sent.body.messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
-    check(/patient coding tutor/.test(system), 'the shared tutor prompt is the system message');
+    check(system.includes(TUTOR_SYSTEM_MESSAGE), 'the shared tutor prompt is the system message');
     check(/Given an array of integers/.test(system), 'the problem statement is pinned');
     check(system.includes('2 <= nums.length <= 10^4, -10^9 <= nums[i] <= 10^9'), `exponents survive in the statement: ${system}`);
     await page.screenshot(path.join(shots, 'reply-dark.png'), { width: 1100, height: 760 });

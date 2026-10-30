@@ -247,12 +247,10 @@ test('settings: keys are kept apart, validated, removable, and never in the publ
 // backend sends.
 test('the system message carries the diagram and table formatting rules', () => {
   const m = TUTOR_SYSTEM_MESSAGE;
-  assert.match(m, /trees, graphs, arrays, pointer movement and step-by-step traces/);
-  assert.match(m, /plain ASCII or simple box-drawing characters/);
-  assert.match(m, /fenced code block with no language \(not even "text"\)/);
-  assert.match(m, /within 56 characters/);
-  assert.match(m, /never wrap diagram lines by hand/);
-  assert.match(m, /Markdown table for comparisons: few columns, short cells/);
+  assert.match(m, /ASCII or box drawing in a bare fenced block/);
+  assert.match(m, /within 56 columns/);
+  assert.match(m, /wider lines may scroll/);
+  assert.match(m, /Markdown tables only for comparisons/);
   assert.match(m, /Never use Mermaid, LaTeX, images or HTML/);
-  assert.ok(m.indexOf('Formatting rules') > m.indexOf('Never use emojis'), 'appended after the style rules');
+  assert.ok(m.indexOf('For diagrams') > m.indexOf('Use no em dashes'), 'format follows style');
 });

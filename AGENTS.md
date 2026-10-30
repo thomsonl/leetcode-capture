@@ -99,6 +99,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   'claude_code' }` form preserves the default. That's intentional here (no tools, not acting as a
   coding agent over this repo), but is the first thing to check if Claude-backend responses ever
   seem to be missing Claude Code's usual framing.
+- The tutor's disclosure policy is in `extension/shared/tutor-prompt.js` and is checked by `extension/shared.test.js` and the manual `companion/prompt-eval.mjs` model evaluation.
+  It answers only the requested question using the student's approach, gives graded hints when asked, gives a full answer on request, and reviews a Submit without unsolicited methods or a guessed LeetCode verdict.
+  `problemTags` stay in local vault metadata and do not enter the model context, including when vault auto-summary is enabled.
 - `companion.js` owns the relay server's lifecycle: it health-checks (`OPTIONS /capture`) on
   startup, spawns `node server.js` detached only if nothing answers, and stops only the instance it
   spawned (tracked in `relayServerChild`) via a `process.on('exit', ...)` handler, so a server it
@@ -116,9 +119,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   second LLM call - a Submit's addendum (`buildVaultAddendum`) asks the model to tack a
   machine-readable `<<<VAULT_JSON>>>...<<<END_VAULT_JSON>>>` block onto the end of the *same* reply
   already being generated; `extractVaultBlock` peels it back off before the reply is printed, so the
-  terminal chat is unchanged. Both the per-problem star rating and per-topic proficiency score are
-  LLM judgment calls, not verified facts (LeetCode exposes neither "optimal complexity" nor "this
-  code's complexity" directly) - this limitation is stated in the note itself, not just here.
+  terminal chat is unchanged.
+  The per-problem star rating is an LLM judgment, not a verified fact.
+  The model receives no LeetCode topic tags, so new topic-index entries keep their existing proficiency line rather than asking the model to score a named topic.
   Verified end-to-end in the PR that introduced this: a real subprocess run of `companion.js`
   against a stub OpenAI-compatible backend, asserting the JSON block never reaches stdout and both
   the per-problem and topic-index vault files come out with the expected content.

@@ -26,7 +26,7 @@ function writeTopicNote(vaultPath, name, body) {
   return p;
 }
 
-test('prepareVaultContext only matches tags that already have a topic note, and reads prior AI Notes', () => {
+test('prepareVaultContext keeps tags local and only matches existing topic notes', () => {
   const vaultPath = makeTempVault();
   writeTopicNote(vaultPath, 'Dynamic Programming', '---\ntags:\n  - study/algorithms\n---\n\nDP notes.\n');
   // "Array" deliberately has no note - matches Two Sum's real LeetCode tags.
@@ -42,9 +42,12 @@ test('prepareVaultContext only matches tags that already have a topic note, and 
   assert.deepEqual(ctx.matchedTopics, ['Dynamic Programming']);
   assert.equal(ctx.tags.length, 2);
   assert.match(ctx.addendum, /VAULT_JSON/);
-  assert.match(ctx.addendum, /Dynamic Programming/);
+  assert.doesNotMatch(ctx.addendum, /Dynamic Programming|Array/);
   assert.ok(fs.existsSync(ctx.problemNotePath));
   assert.match(fs.readFileSync(ctx.problemNotePath, 'utf8'), /198\. House Robber/);
+  fs.appendFileSync(ctx.problemNotePath, '\n## AI Notes\n**Topics:** Array, Dynamic Programming\n');
+  const repeated = prepareVaultContext({ capture, vaultPath });
+  assert.doesNotMatch(repeated.addendum, /Dynamic Programming|Array/);
 });
 
 test('prepareVaultContext returns null when the capture lacks a slug or title', () => {
@@ -53,9 +56,10 @@ test('prepareVaultContext returns null when the capture lacks a slug or title', 
   assert.equal(prepareVaultContext({ capture: { problemSlug: 'x' }, vaultPath }), null);
 });
 
-test('buildVaultAddendum omits topicProficiency guidance when no tag matched a topic note', () => {
-  const addendum = buildVaultAddendum({ tags: ['Array'], matchedTopics: [], priorAiNotes: null, priorTopicIndexes: {} });
-  assert.match(addendum, /omit topicProficiency entirely/);
+test('buildVaultAddendum never includes topic tags or prior notes', () => {
+  const addendum = buildVaultAddendum({ tags: ['SECRET_TOPIC'], priorAiNotes: 'SECRET_TOPIC' });
+  assert.doesNotMatch(addendum, /SECRET_TOPIC/);
+  assert.match(addendum, /"topicProficiency": an empty object/);
 });
 
 test('extractVaultBlock strips the JSON block from the display text and parses it', () => {

@@ -233,4 +233,4 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
   Logs your attempts as notes into an Obsidian vault.
   Run `vault-tool/log-session.js` to manually log the current problem's session (the capture log is cleared once you move on), or turn on the vault auto-summary on the settings page (or set `VAULT_AUTO_SUMMARY=1`) to have the companion turn every Submit into a vault note automatically as you go.
   Point either at your own vault via `vault.config.json` (copy `vault.config.example.json`) or the `VAULT_PATH`/`VAULT_ALGORITHMS_SUBFOLDER` env vars.
-  These features are experimental: the star ratings and proficiency scores they write are LLM assumptions.
+  These features are experimental: star ratings are LLM estimates, and existing topic proficiency scores are kept without sending LeetCode topic tags to the model.
