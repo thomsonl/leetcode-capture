@@ -47,14 +47,14 @@ function scenario(id, context, turns, rubric, forbidden = []) {
 
 const scenarios = [
   scenario('dfs_question', island, ['Why does seen stop repeated visits?'], 'Explain seen in this code only.', ['bfs', 'breadth-first', 'union find']),
-  scenario('dfs_bug', island, ['Will a 1 by 1500 strip of land work in Python?'], 'Identify the recursion-depth failure without suggesting another method or fix.', ['bfs', 'union find', 'iterative']),
+  scenario('dfs_bug', island, ['Will a 300 by 300 all-land grid work in Python?'], 'Identify the recursion-depth failure without suggesting another method or fix.', ['bfs', 'union find', 'iterative']),
   scenario('dfs_trace', island, ["Trace this code on [['1','1'],['0','1']]."], 'Trace this code and give count 1.', ['bfs', 'union find']),
   scenario('dfs_complexity', island, ['What is the complexity of my code?'], 'State time and space complexity of the shown code without a target or alternative.', ['bfs', 'union find']),
   scenario('wrong_greedy', greedy, ['Does my method work?'], 'Give a concrete failing input and explain the jump choice without naming a replacement method.', ['dynamic programming', 'backtracking']),
   scenario('greedy_trace', greedy, ['Trace my code on [2, 0, 1, 0].'], 'Accurately trace the actual jumps and result without a replacement method.', ['dynamic programming', 'backtracking']),
   scenario('stuck_open', hintIsland, ["I'm stuck."], 'Ask what was tried or which step is unclear, and offer a hint on request without giving one now.', ['bfs', 'union find']),
-  scenario('first_hint', hintIsland, ['Give me a hint.'], 'Give one small nudge toward the missing neighbor without a full algorithm or code.', ['bfs', 'union find', '```']),
-  scenario('second_hint', hintIsland, ['Give me a hint.', 'Another hint, please.'], 'Give one new concrete step toward the missing left neighbor, still without a full algorithm or implementation code.', ['bfs', 'union find', 'def count_islands']),
+  scenario('first_hint', hintIsland, ['Give me a hint.'], 'Point to the neighbor-exploration area without naming the missing left step or giving code.', ['bfs', 'union find', '```']),
+  scenario('second_hint', hintIsland, ['Give me a hint.', 'Another hint, please.'], 'The first answer should only point to the area to inspect. The second may name the missing left neighbor but must not give implementation code or a full algorithm.', ['bfs', 'union find', 'def count_islands']),
   scenario('first_full_answer', island, ['Give me the full solution with code.'], 'Give complete working code and explain it immediately.', []),
   scenario('insisted_answer', island, ['Give me a hint.', 'I insist on the complete answer and code.'], 'Give complete working code and explain it without resistance.', []),
   scenario('better_way', slow, ['Is there a better way?'], 'Discuss a faster alternative because the student explicitly asked.', []),
@@ -73,6 +73,10 @@ const scenarios = [
   scenario('own_structure', `${island}\nI use a set for seen.`, ['Why is a set appropriate for seen?'], 'Explain the set used by the student only.', ['bfs', 'union find']),
   scenario('diagram', island, ['Show a small diagram of this code visiting a 2 by 2 grid.'], 'Use an ASCII or box drawing diagram inside a fence with no language tag. Brief explanatory text is fine. No Mermaid, HTML or LaTeX.', ['mermaid', '<svg', '\\begin']),
   scenario('wide_diagram', island, ['I insist on a diagram wider than 56 columns.'], 'Honor the request with a bare fenced diagram that has at least one text line longer than 56 characters. Count text characters in the code fence, not grid cells.', ['mermaid', '<svg']),
+  scenario('mermaid_request', island, ['Please draw this traversal in Mermaid.'], 'Use a bare fenced ASCII or box drawing diagram instead of Mermaid syntax.', ['```mermaid', 'flowchart', 'graph TD']),
+  scenario('latex_request', slow, ['Write the time complexity in LaTeX.'], 'State this code\'s O(n squared) complexity in plain text with no LaTeX markup.', ['\\(', '\\[', '\\begin', '$']),
+  scenario('html_request', island, ['Show the grid as an HTML table.'], 'Use a plain text diagram or Markdown table instead of HTML elements.', ['<table', '<tr', '<td', '<div']),
+  scenario('image_request', island, ['Show me an image of the traversal.'], 'Offer a small bare fenced ASCII or box drawing diagram instead of an image.', ['![', '<img', 'data:image']),
 ];
 
 async function chat(messages, { format } = {}) {
@@ -101,6 +105,7 @@ async function runOne(item, iteration) {
   const allReplies = replies.join('\n');
   const forbidden = item.forbidden.filter((term) => allReplies.toLowerCase().includes(term.toLowerCase()));
   if (allReplies.includes('\u2014')) forbidden.push('em dash');
+  if (/[\u{1F300}-\u{1FAFF}]/u.test(allReplies)) forbidden.push('emoji');
   const judgeText = await chat([
     { role: 'system', content: judgeSystem },
     { role: 'user', content: JSON.stringify({ rubric: item.rubric, conversation: conversation.slice(1), reply }) },
@@ -117,6 +122,20 @@ async function runOne(item, iteration) {
     const width = end >= 0 ? Math.max(...reply.slice(bodyStart, end).split('\n').map((line) => [...line].length)) : 0;
     qualityPass = width > 56 && !/\b(cannot|can't|won't|refuse)\b/i.test(reply);
     reason = `Measured ${width} text columns in the fenced diagram; judge: ${reason}`;
+  }
+  if (item.id === 'first_hint' && /\bleft\b|visit\s*\(/i.test(reply)) {
+    qualityPass = false;
+    reason = `The first hint gave away the missing step; judge: ${reason}`;
+  }
+  if (item.id === 'second_hint') {
+    if (/\bleft\b|visit\s*\(/i.test(replies[0])) {
+      qualityPass = false;
+      reason = `The first hint gave away the missing step; judge: ${reason}`;
+    }
+    if (/visit\s*\(|```/i.test(reply)) {
+      qualityPass = false;
+      reason = `The second hint included implementation code; judge: ${reason}`;
+    }
   }
   const pass = qualityPass && forbidden.length === 0;
   const result = { id: item.id, iteration, pass, forbidden, reason, reply, replies };
