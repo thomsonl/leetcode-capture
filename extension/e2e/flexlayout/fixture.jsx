@@ -18,6 +18,9 @@
 // onRenderTab draws labels and icons by component and nothing at all for a
 // component it does not know; and it runs an older fork with no
 // addChangeListener on the Model (only a single `_setChangeListener` hook).
+// Like the fork, every tabset in its JSON also carries `foldBeforeWeight`,
+// which a splitter drag rewrites (the real page's values: 58.85 on both
+// tabsets, 27.78 after a drag).
 //
 // Test hooks on window.__fx: model(), saved (every JSON the app saved),
 // reset(), remount() (a new <Layout> over the same model, so React rebuilds
@@ -101,6 +104,38 @@ function newModel() {
       },
     });
   }
+  // The fork's foldBeforeWeight: in the JSON right after `weight`, set for
+  // every tabset in a row by a splitter drag there, and by an update.
+  const fold = new Map();
+  m.visitNodes((n) => {
+    if (n.getType() === 'tabset') fold.set(n.getId(), 58.85350318471338);
+  });
+  m.toJson = function toJson() {
+    const json = Model.prototype.toJson.call(this);
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return n;
+      if (Array.isArray(n.children)) n.children = n.children.map(walk);
+      if (n.type !== 'tabset' || !fold.has(n.id)) return n;
+      const out = {};
+      for (const [key, value] of Object.entries(n)) {
+        out[key] = value;
+        if (key === 'weight') out.foldBeforeWeight = fold.get(n.id);
+      }
+      return out;
+    };
+    json.layout = walk(json.layout);
+    return json;
+  };
+  m.doAction = function doAction(action) {
+    const out = Model.prototype.doAction.call(this, action);
+    const data = action && action.data;
+    if (action.type === Actions.ADJUST_WEIGHTS && !(action.isAdjusting && action.isAdjusting())) {
+      const row = this.getNodeById(data.nodeId);
+      for (const c of row ? row.getChildren() : []) if (c.getType() === 'tabset') fold.set(c.getId(), c.getWeight());
+    }
+    if (action.type === Actions.UPDATE_NODE_ATTRIBUTES && data.json && typeof data.json.foldBeforeWeight === 'number') fold.set(data.node, data.json.foldBeforeWeight);
+    return out;
+  };
   // The fork's own hook: one listener at a time.
   let single = null;
   m._setChangeListener = (fn) => {

@@ -168,6 +168,14 @@ const HELPERS = `(() => {
     return { x: (r.left + right) / 2, y: r.top + r.height / 2 };
   };
   window.__json = () => JSON.stringify(window.__fx.model().toJson());
+  // The deep check: what the page saves while the Tutor tab is anywhere
+  // must be the layout as it was without the tab (window.__base, read
+  // before the tab was ever added), byte for byte once only which tab and
+  // tabset are selected (selected, active) are left out.
+  window.__norm = (s) => JSON.stringify(JSON.parse(s), (k, v) => (k === 'active' || k === 'selected' ? undefined : v));
+  window.__deep = () => ({ now: window.__norm(window.__json()), base: window.__norm(window.__base), saved: window.__fx.saved.length ? window.__norm(window.__fx.saved[window.__fx.saved.length - 1]) : null });
+  // The rendered size of every native tabset, by the tab labels in it.
+  window.__sizes = () => [...document.querySelectorAll('.flexlayout__tabset')].filter((t) => t.querySelector('.flexlayout__tab_button:not([data-lc-tutor-button])')).map((t) => { const r = t.getBoundingClientRect(); return [...t.querySelectorAll('.flexlayout__tab_button:not([data-lc-tutor-button])')].map(window.__labelOf).join('+') + ':' + Math.round(r.width) + 'x' + Math.round(r.height); }).sort().join(' ');
   // Everything about where the Tutor tab and its panel are, in one read.
   window.__where = () => {
     const tutors = window.__tutorButtons();
@@ -260,6 +268,7 @@ try {
   await p.waitFor(`!!(window.__fx && document.querySelector('.flexlayout__tab_button'))`, { what: 'the flexlayout fixture' });
   await p.eval(HELPERS);
   await p.eval(`window.chrome = { runtime: { getURL: (file) => '/ext/' + file } }`);
+  await p.eval(`window.__base = window.__json(); window.__baseSizes = window.__sizes()`);
   await p.eval(`new Function(${JSON.stringify(panelSource)})()`);
   try {
     await p.waitFor(`!!document.querySelector('[data-lc-tutor-button]') && window.__streamOpen()`, { what: 'the native Tutor tab' });
@@ -275,7 +284,15 @@ try {
 
   // The invariants every scenario ends with. `home` is where the Tutor tab
   // should be (a tabset path), or null to skip that check.
-  async function invariants(label, { shown = null } = {}) {
+  async function deepCheck(label) {
+    const d = await p.eval('window.__deep()');
+    check(d.now === d.base, `${label}: toJson() is not the layout without the Tutor\n     now  ${d.now}\n     base ${d.base}`);
+    check(d.saved === null || d.saved === d.base, `${label}: the page saved a layout that is not the one without the Tutor\n     saved ${d.saved}\n     base  ${d.base}`);
+  }
+  // After a scenario that moved native tabs or splitters itself, the
+  // layout without the Tutor is the one now.
+  const rebase = () => p.eval(`window.__base = window.__json()`);
+  async function invariants(label, { shown = null, deep = true } = {}) {
     await settle();
     const w = await where();
     const json = await p.eval('window.__json()');
@@ -292,6 +309,7 @@ try {
     check(w.emptyTabsets === 0, `${label}: ${w.emptyTabsets} empty tabsets`);
     check(!json.includes('lc-tutor'), `${label}: model.toJson() carries the Tutor tab`);
     check(saved === 0, `${label}: the page saved a layout with the Tutor tab in it`);
+    if (deep) await deepCheck(label);
     if (shown !== null && w.shown !== shown) {
       const states = await p.eval('window.__bridgeStates.slice(-3)');
       console.log(await p.eval('JSON.stringify({ clicks: window.__clicks.slice(-6), btn: window.__rect(window.__tutorButtons()[0]) })'));
@@ -385,6 +403,41 @@ try {
   const readingBefore = await firstVisible();
   const scrollBefore = (await where()).scrollTop;
 
+  // Every side of the Code tabset (a row of its own on two sides, a sibling
+  // in its column on the other two), then the Tutor's own splitter dragged
+  // wide and narrow, maximize and restore, and back home: the saved layout
+  // never changes, and the native tabsets end at their old sizes.
+  const CODE_SIDES = { left: [0.04, 0.5], right: [0.96, 0.5], top: [0.5, 0.04], bottom: [0.5, 0.96] };
+  for (const side of Object.keys(CODE_SIDES)) {
+    await scenario(`native: split ${side} of Code, its own splitter dragged wide and narrow, maximized: the saved layout never changes`, async () => {
+      const [fx, fy] = CODE_SIDES[side];
+      await p.eval('window.__baseSizes = window.__sizes()');
+      await io.htmlDrag(await center(tutorButton), await contentPoint('Code', fx, fy));
+      let w = await invariants(`split ${side} of Code`, { shown: true });
+      check(JSON.stringify(w.tabsetLabels) === '["Tutor"]', `own tabset labels ${w.tabsetLabels}`);
+      // The splitter between the Tutor tabset and Code.
+      const own = await p.eval(`(() => { const t = window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect(); const c = ${tabsetOf('Code')}.getBoundingClientRect(); const s = [...document.querySelectorAll('.flexlayout__splitter')].map((e) => e.getBoundingClientRect()).find((r) => ${side === 'left' || side === 'right'} ? Math.abs(r.left - Math.min(t.right, c.right)) < 12 && r.height > 50 : Math.abs(r.top - Math.min(t.bottom, c.bottom)) < 12 && r.width > 50); return s ? { x: s.left + s.width / 2, y: s.top + s.height / 2, horizontal: ${side === 'left' || side === 'right'} } : null; })()`);
+      check(own, `no splitter between the Tutor and Code (${side})`);
+      for (const delta of [160, -260, 120]) {
+        const s = await p.eval(`(() => { const t = window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect(); const c = ${tabsetOf('Code')}.getBoundingClientRect(); const e = [...document.querySelectorAll('.flexlayout__splitter')].map((x) => x.getBoundingClientRect()).find((r) => ${own.horizontal} ? Math.abs(r.left - Math.min(t.right, c.right)) < 12 && r.height > 50 : Math.abs(r.top - Math.min(t.bottom, c.bottom)) < 12 && r.width > 50); return { x: e.left + e.width / 2, y: e.top + e.height / 2 }; })()`);
+        await io.pointerDrag(s, own.horizontal ? { x: s.x + delta, y: s.y } : { x: s.x, y: s.y + delta / 2 });
+        w = await invariants(`${side}: its splitter dragged ${delta}`, { shown: true });
+      }
+      const max = `window.__tutorButtons()[0].closest('.flexlayout__tabset').querySelector('[data-layout-path$="/button/max"]')`;
+      let c = await center(max);
+      await io.click(c.x, c.y);
+      await invariants(`${side}: maximized`, { shown: true });
+      c = await center(max);
+      await io.click(c.x, c.y);
+      await invariants(`${side}: restored`, { shown: true });
+      await io.htmlDrag(await center(tutorButton), await stripPoint('Description'));
+      w = await invariants(`${side}: back home`, { shown: true });
+      check(w.tabset === w.descTabset, `Tutor in ${w.tabset}, Description in ${w.descTabset}`);
+      const sizes = await p.eval('[window.__sizes(), window.__baseSizes]');
+      check(sizes[0] === sizes[1], `${side}: the native tabsets did not get their space back: ${sizes[0]} vs ${sizes[1]}`);
+    });
+  }
+
   await scenario('native: drag the Tutor tab into the Code tabset', async () => {
     const before = await where();
     const from = await center(tutorButton);
@@ -438,23 +491,25 @@ try {
     const splitter = `[...document.querySelectorAll('.flexlayout__splitter')].find((s) => s.getAttribute('data-layout-path') === '/s0')`;
     const c = await center(splitter);
     await io.pointerDrag(c, { x: 1190, y: c.y });
-    let w = await invariants('splitter right', { shown: true });
+    let w = await invariants('splitter right', { shown: true, deep: false });
     await io.pointerDrag({ x: (await center(splitter)).x, y: c.y }, { x: 5, y: c.y });
-    w = await invariants('splitter far left', {});
+    w = await invariants('splitter far left', { deep: false });
     await p.screenshot(path.join(SHOTS, '05-native-tiny.png'), { width: 1200, height: 800 });
     await io.pointerDrag({ x: (await center(splitter)).x, y: c.y }, c);
-    w = await invariants('splitter back', { shown: true });
+    w = await invariants('splitter back', { shown: true, deep: false });
     check(Math.abs(w.hostRect.w - 0) > 100, `pane width ${w.hostRect.w}`);
+    await rebase();
   });
 
   await scenario('native: Description dragged into the Tutor tabset and back out', async () => {
     let from = await center(`window.__button('Description')`);
     await io.htmlDrag(from, await stripPoint('Tutor'));
-    let w = await invariants('description joined');
+    let w = await invariants('description joined', { deep: false });
     check(w.tabsetLabels.includes('Description') && w.tabsetLabels.includes('Tutor'), `labels ${w.tabsetLabels}`);
     from = await center(`window.__button('Description')`);
     await io.htmlDrag(from, await stripPoint('Editorial'));
-    w = await invariants('description back');
+    w = await invariants('description back', { deep: false });
+    await rebase();
     check(w.descTabset !== w.tabset, 'Description did not leave');
     await selectTutor();
     await invariants('tutor reselected', { shown: true });
@@ -483,7 +538,8 @@ try {
     const c = await center(`document.getElementById('default-layout')`);
     await io.click(c.x, c.y);
     await p.waitFor(`!!document.querySelector('[data-lc-tutor-button]')`, { what: 'the Tutor tab after a reset' });
-    const w = await invariants('reset', { shown: false });
+    const w = await invariants('reset', { shown: false, deep: false });
+    await rebase();
     check(w.tabset === w.descTabset, `Tutor in ${w.tabset}, Description in ${w.descTabset}`);
     const own = await p.eval(`window.__fx.model().toJson === Object.getPrototypeOf(window.__fx.model()).toJson`);
     check(!own, "the new model's toJson is not wrapped");
@@ -494,15 +550,28 @@ try {
   await scenario('native: Description deleted entirely, the Tutor tab and its feed stay', async () => {
     const before = await where();
     await p.eval(`window.__fx.model().doAction(window.__fx.Actions.deleteTab('description'))`);
-    const w = await invariants('no description', {});
+    const w = await invariants('no description', { deep: false });
+    await rebase();
     check(w.items === before.items, `feed items ${before.items} -> ${w.items}`);
     await selectTutor();
     await invariants('no description, selected', { shown: true });
   });
 
   await scenario('native: pagehide takes the tab out, pageshow (back-forward cache) puts it back', async () => {
+    // Split beside Code and widened first: what the page saves on the way
+    // out must still be the layout without the Tutor.
+    await p.eval('window.__baseSizes = window.__sizes()');
+    await io.htmlDrag(await center(tutorButton), await contentPoint('Code', 0.96, 0.5));
+    await invariants('split before pagehide', { shown: true });
+    const s = await p.eval(`(() => { const t = window.__tutorButtons()[0].closest('.flexlayout__tabset').getBoundingClientRect(); return { x: t.left - 4, y: t.top + t.height / 2 }; })()`);
+    await io.pointerDrag(s, { x: s.x - 250, y: s.y });
+    await invariants('widened before pagehide', { shown: true });
+    await p.eval('new Promise((r) => setTimeout(r, 400))');
     await p.eval(`window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))`);
     await settle();
+    await deepCheck('after pagehide');
+    const sizes = await p.eval('[window.__sizes(), window.__baseSizes]');
+    check(sizes[0] === sizes[1], `after pagehide the native tabsets did not get their space back: ${sizes[0]} vs ${sizes[1]}`);
     const gone = await p.eval(`({ node: !!window.__fx.model().getNodeById('lc-tutor-tab'), buttons: window.__tutorButtons().length })`);
     check(!gone.node && gone.buttons === 0, `after pagehide ${JSON.stringify(gone)}`);
     await p.eval(`window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))`);

@@ -198,6 +198,182 @@
     return out;
   }
 
+  // ---- keeping the Tutor out of the saved layout's geometry ------------
+  //
+  // scrub() alone takes the tab out of the JSON, but a Tutor tab split into
+  // its own tabset also took space from a native one (flexlayout halves the
+  // tabset it splits), and LeetCode's fork records splitter drags in its
+  // own attributes (foldBeforeWeight). cleanLayout() makes the JSON the
+  // page saves what the same layout would save had the Tutor tab never
+  // been added: the Tutor tabset's weight goes back to the sibling it came
+  // from (a row it leaves with one child is replaced by that child), and
+  // while the native tabsets keep the proportions they had before the split
+  // (a drag on the Tutor's own splitter changes nothing else), every weight
+  // key comes back byte for byte from the last JSON proven clean
+  // (`memo.baseline`). A shape it cannot prove (no sibling to give the
+  // space to, a row left nested in a row, the tab in a border) is reported
+  // as unproven: the last clean JSON is saved instead and the bridge moves
+  // the tab back next to Description.
+  const GEOMETRY = /weight/i;
+  // How far a native tabset's share of its row may drift (pixel rounding of
+  // a splitter drag) and still count as untouched.
+  const SHARE_TOLERANCE = 0.003;
+
+  function isTutorJson(c) {
+    return !!c && c.type === "tab" && (c.id === TAB_ID || c.component === COMPONENT);
+  }
+
+  function copyJson(x) {
+    return JSON.parse(JSON.stringify(x));
+  }
+
+  function weightOf(n) {
+    return typeof n.weight === "number" ? n.weight : 100;
+  }
+
+  // The tabset holding the Tutor tab, with the chain of { parent, index }
+  // steps from the root row down to it.
+  function locate(node, chain) {
+    if (!node || typeof node !== "object" || !Array.isArray(node.children)) return null;
+    for (let i = 0; i < node.children.length; i++) {
+      const c = node.children[i];
+      if (isTutorJson(c)) return { tabset: node, chain };
+      const found = locate(c, chain.concat([{ parent: node, index: i }]));
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // The structure, without weights, selection or row and tabset ids.
+  function shape(n) {
+    if (!n || typeof n !== "object") return "";
+    if (n.type === "tab") return `t:${n.id || ""}:${n.component || ""}`;
+    return `${n.type}(${(Array.isArray(n.children) ? n.children : []).map(shape).join(",")})`;
+  }
+
+  // Whether every row gives its children the same shares in both.
+  function sameShares(a, b) {
+    if (!Array.isArray(a.children)) return true;
+    if (a.type === "row") {
+      const sa = a.children.reduce((s, c) => s + weightOf(c), 0);
+      const sb = b.children.reduce((s, c) => s + weightOf(c), 0);
+      if (!(sa > 0 && sb > 0)) return false;
+      for (let i = 0; i < a.children.length; i++) {
+        if (Math.abs(weightOf(a.children[i]) / sa - weightOf(b.children[i]) / sb) > SHARE_TOLERANCE) return false;
+      }
+    }
+    return a.children.every((c, i) => sameShares(c, b.children[i]));
+  }
+
+  // Gives `to` the weight keys (and row ids) of `from`, node by node, in
+  // place and keeping `to`'s key order.
+  function takeGeometry(to, from) {
+    if (!to || !from || typeof to !== "object" || typeof from !== "object") return;
+    for (const key of Object.keys(to)) if (GEOMETRY.test(key) && !(key in from)) delete to[key];
+    for (const key of Object.keys(from)) if (GEOMETRY.test(key)) to[key] = from[key];
+    if (to.type === "row" && from.id) to.id = from.id;
+    if (Array.isArray(to.children)) to.children.forEach((c, i) => takeGeometry(c, from.children[i]));
+  }
+
+  function hasActive(n) {
+    return !!n && typeof n === "object" && (n.active === true || (Array.isArray(n.children) && n.children.some(hasActive)));
+  }
+
+  // Puts `active` where `from` has it (the Tutor tabset was the active one).
+  function takeActive(to, from) {
+    if (!to || !from || typeof to !== "object") return;
+    if (from.active === true && to.type === "tabset") to.active = true;
+    if (Array.isArray(to.children)) to.children.forEach((c, i) => takeActive(c, from.children[i]));
+  }
+
+  // The layout with the Tutor's own tabset taken out and its weight given
+  // to the sibling at `donor`; null when that is not possible.
+  function withoutTutorTabset(json, donor) {
+    const out = copyJson(json);
+    const found = locate(out.layout, []);
+    if (!found || !found.chain.length) return null;
+    const { parent: row, index } = found.chain[found.chain.length - 1];
+    const giver = row.children[index];
+    const taker = row.children[donor];
+    if (!taker || donor === index) return null;
+    if (typeof taker.weight === "number" || typeof giver.weight === "number") taker.weight = weightOf(taker) + weightOf(giver);
+    row.children.splice(index, 1);
+    let nested = false;
+    if (row.children.length === 1 && found.chain.length >= 2) {
+      // flexlayout made this row for the split; without it the one child
+      // takes the row's place and its weight.
+      const { parent, index: at } = found.chain[found.chain.length - 2];
+      const only = row.children[0];
+      if (typeof row.weight === "number" || typeof only.weight === "number") only.weight = weightOf(row);
+      parent.children[at] = only;
+      nested = only.type === "row";
+    } else if (row.children.length === 1 && row.children[0].type === "row") {
+      nested = true;
+    }
+    return { json: scrub(out, false), nested, id: taker.id || null };
+  }
+
+  // What the page may save for `json` (the Model's own toJson()), given the
+  // memory `memo` of this Model ({ baseline, mode, donor, restore }).
+  function cleanLayout(json, memo) {
+    if (!json || typeof json !== "object" || !json.layout || typeof json.layout !== "object") return { json: scrub(json, false), proven: true };
+    const found = locate(json.layout, []);
+    let result = null;
+    let reason = null;
+    let mode = "inline";
+    if (!found) {
+      // No Tutor tab in the main layout: absent, or in a border.
+      if (JSON.stringify(json.borders || []).includes(COMPONENT)) reason = "it is in a border";
+      else result = scrub(json, false);
+    } else if (found.tabset.children.some((c) => !isTutorJson(c))) {
+      result = scrub(json, false);
+    } else {
+      mode = "split";
+      const base = memo.baseline;
+      const step = found.chain[found.chain.length - 1];
+      const options = step ? [step.index - 1, step.index + 1].map((d) => withoutTutorTabset(json, d)).filter(Boolean) : [];
+      if (!options.length) reason = "its tabset has no sibling to give the space back to";
+      else {
+        const same = base ? options.filter((o) => shape(o.json.layout) === shape(base.layout)) : [];
+        if (same.length) {
+          const match = same.find((o) => sameShares(o.json.layout, base.layout));
+          const pick = match || same.find((o) => o.id === memo.donor) || same[0];
+          result = pick.json;
+          memo.donor = pick.id;
+          if (match) takeGeometry(result.layout, base.layout);
+        } else {
+          const pick = options.find((o) => o.id === memo.donor) || options[0];
+          if (pick.nested) reason = "taking its tabset out leaves a row inside a row";
+          else {
+            result = pick.json;
+            memo.donor = pick.id;
+          }
+        }
+        if (result && base && !hasActive(result.layout) && shape(result.layout) === shape(base.layout)) takeActive(result.layout, base.layout);
+      }
+    }
+    if (result && mode === "inline") {
+      // Right after the tab left its own tabset, the native weights are
+      // still the split's; the bridge puts them back (memo.restore).
+      if (memo.mode === "split") memo.restore = true;
+      const base = memo.baseline;
+      if (memo.restore && base && shape(result.layout) === shape(base.layout)) {
+        const fixed = copyJson(result);
+        takeGeometry(fixed.layout, base.layout);
+        if (JSON.stringify(fixed) === JSON.stringify(result)) memo.restore = false;
+        result = fixed;
+      } else memo.restore = false;
+    }
+    memo.mode = mode;
+    if (!result) {
+      memo.unsafe = reason;
+      return { json: memo.baseline ? copyJson(memo.baseline) : scrub(json, false), proven: false, reason };
+    }
+    memo.unsafe = null;
+    memo.baseline = copyJson(result);
+    return { json: result, proven: true };
+  }
+
   // ---- where the tab is, by the tabs around it --------------------------
   //
   // Each native tab is named by tabKey (its component, else its name).
@@ -268,22 +444,30 @@
   }
 
   if (underTest) {
-    module.exports = { scrub: (json) => scrub(json, false), wrapToJson, validPosition, bestTabset, TAB_ID, COMPONENT };
+    module.exports = { scrub: (json) => scrub(json, false), cleanLayout, wrapToJson, validPosition, bestTabset, TAB_ID, COMPONENT };
     return;
   }
 
-  function wrapToJson(m) {
+  // Wraps this Model instance's toJson with cleanLayout. `memo` is the
+  // Model's memory (see cleanLayout); `onUnproven(reason)` hears of a
+  // layout the clean JSON could not be proven for. Returns the unwrapper,
+  // whose `raw()` is the Model's own toJson.
+  function wrapToJson(m, memo = {}, onUnproven = null) {
     const own = Object.prototype.hasOwnProperty.call(m, "toJson");
     const original = m.toJson;
     const wrapped = function toJson(...args) {
-      return scrub(original.apply(this, args), false);
+      const out = cleanLayout(original.apply(this, args), memo);
+      if (!out.proven && onUnproven) onUnproven(out.reason);
+      return out.json;
     };
     m.toJson = wrapped;
-    return () => {
+    const undo = () => {
       if (m.toJson !== wrapped) return;
       if (own) m.toJson = original;
       else delete m.toJson;
     };
+    undo.raw = () => original.call(m);
+    return undo;
   }
 
   // ---- adding and removing the tab --------------------------------------
@@ -349,6 +533,73 @@
     } catch {
       // the model is being torn down
     }
+    // flexlayout leaves the space the Tutor tabset had with its neighbor.
+    if (m === model) refresh();
+  }
+
+  // ---- the Model's geometry, kept equal to what is saved ----------------
+
+  let memo = {}; // cleanLayout's memory of the adopted Model
+  let restoring = false;
+
+  // Runs cleanLayout on the Model as it is now (keeping its memory fresh),
+  // then puts the native weights back after the tab left its own tabset,
+  // and moves the tab back next to Description from a split that cannot be
+  // proven safe.
+  function refresh() {
+    if (!model || !unwrap || restoring) return;
+    try {
+      cleanLayout(unwrap.raw(), memo);
+    } catch {
+      return;
+    }
+    if (memo.restore) restoreGeometry();
+    if (memo.unsafe && !failed) unsafeSplit(memo.unsafe);
+  }
+
+  // Gives each native row and tabset in the Model the weight keys the
+  // saved JSON has, so the Model itself matches what the page saved.
+  function restoreGeometry() {
+    const target = memo.baseline;
+    if (!target || !target.layout) return;
+    restoring = true;
+    try {
+      const now = new Map();
+      const index = (n) => {
+        if (!n || typeof n !== "object") return;
+        if (n.id) now.set(n.id, n);
+        (Array.isArray(n.children) ? n.children : []).forEach(index);
+      };
+      index(unwrap.raw().layout);
+      const walk = (n) => {
+        if (!n || typeof n !== "object" || n.type === "tab") return;
+        const current = n.id && now.get(n.id);
+        if (current) {
+          const patch = {};
+          for (const key of Object.keys(n)) if (GEOMETRY.test(key) && current[key] !== n[key]) patch[key] = n[key];
+          if (Object.keys(patch).length) {
+            try {
+              model.doAction(action(UPDATE_ATTRIBUTES_ACTION, { node: n.id, json: patch }));
+            } catch {
+              // a node this version will not update
+            }
+          }
+        }
+        (Array.isArray(n.children) ? n.children : []).forEach(walk);
+      };
+      walk(target.layout);
+    } finally {
+      restoring = false;
+    }
+    cleanLayout(unwrap.raw(), memo);
+  }
+
+  // The safety net: a split whose saved JSON cannot be proven to equal the
+  // layout without the Tutor is not kept. Native mode gives up (which takes
+  // the tab out and puts the native weights back) and the clone takes over.
+  function unsafeSplit(reason) {
+    console.warn(`LeetCode Capture: the Tutor tab left the page's layout because ${reason}, so the layout LeetCode saves stays as it was.`);
+    giveUp("unsafe-layout");
   }
 
   function nativeTabs(tabset) {
@@ -478,6 +729,7 @@
 
   function onModelAction(act) {
     schedule();
+    refresh();
     // The bridge's own adds and restores are not the student moving it.
     if (act && act.lcTutorBridge) return;
     clearTimeout(positionTimer);
@@ -509,31 +761,45 @@
   function adopt(m) {
     release();
     model = m;
-    unwrap = wrapToJson(m);
-    if (typeof m.addChangeListener === "function" && typeof m.removeChangeListener === "function") {
+    memo = {};
+    unwrap = wrapToJson(m, memo, () => setTimeout(refresh, 0));
+    // The layout before the tab is added is the first clean one.
+    refresh();
+    const listening = typeof m.addChangeListener === "function" && typeof m.removeChangeListener === "function";
+    let unlistenChanges = null;
+    if (listening) {
       const listener = (act) => onModelAction(act);
       m.addChangeListener(listener);
-      unlisten = () => m.removeChangeListener(listener);
-    } else {
-      // Older versions: watch the instance's doAction instead.
-      const own = Object.prototype.hasOwnProperty.call(m, "doAction");
-      const original = m.doAction;
-      const wrapped = function doAction(act, ...rest) {
-        const out = original.call(this, act, ...rest);
+      unlistenChanges = () => m.removeChangeListener(listener);
+    }
+    // The instance's doAction is wrapped either way: before each action the
+    // clean layout is noted (the split's starting point), and on older
+    // versions with no change listener it also reports the action.
+    const own = Object.prototype.hasOwnProperty.call(m, "doAction");
+    const original = m.doAction;
+    const wrapped = function doAction(act, ...rest) {
+      try {
+        refresh();
+      } catch {
+        // never break the page's own action
+      }
+      const out = original.call(this, act, ...rest);
+      if (!listening) {
         try {
           onModelAction(act);
         } catch {
           // never break the page's own action
         }
-        return out;
-      };
-      m.doAction = wrapped;
-      unlisten = () => {
-        if (m.doAction !== wrapped) return;
-        if (own) m.doAction = original;
-        else delete m.doAction;
-      };
-    }
+      }
+      return out;
+    };
+    m.doAction = wrapped;
+    unlisten = () => {
+      if (unlistenChanges) unlistenChanges();
+      if (m.doAction !== wrapped) return;
+      if (own) m.doAction = original;
+      else delete m.doAction;
+    };
   }
 
   function giveUp(reason) {
