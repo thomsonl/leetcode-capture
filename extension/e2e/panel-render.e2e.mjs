@@ -730,12 +730,13 @@ try {
     await settle();
     const m = await page.eval(`({ length: window.__q('textarea').value.length,
       disabled: window.__q('button[aria-label="Send"]').disabled,
-      counter: window.__q('.counter')?.textContent || '' })`);
-    check(m.length === 8101 && m.disabled && /8101 \/ 8000/.test(m.counter), JSON.stringify(m));
-    await page.eval(`(() => { const t = window.__q('textarea'); t.value = t.value.slice(0, 7000); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      counter: window.__q('.counter')?.textContent || '',
+      visible: !window.__q('.counter').hidden, over: window.__q('.counter').classList.contains('over') })`);
+    check(m.length === 8101 && m.disabled && m.visible && m.over && /8101 \/ 8000/.test(m.counter), JSON.stringify(m));
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = t.value.slice(0, 6400); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     const under = await page.eval(`({ disabled: window.__q('button[aria-label="Send"]').disabled,
-      counter: window.__q('.counter')?.textContent || '' })`);
-    check(!under.disabled && /7000 \/ 8000/.test(under.counter), JSON.stringify(under));
+      counter: window.__q('.counter')?.textContent || '', visible: !window.__q('.counter').hidden })`);
+    check(!under.disabled && under.visible && /6400 \/ 8000/.test(under.counter), JSON.stringify(under));
     await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   });
 
