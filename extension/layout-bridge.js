@@ -13,11 +13,12 @@
 //   - adds a tab { component: "lc-tutor", id: "lc-tutor-tab" } to the tabset
 //     holding Description with a plain action object (the action's name
 //     changed between library versions, so both are tried);
-//   - wraps that Model instance's toJson so the tab never reaches anything
-//     the page saves: LeetCode stores the layout in the account and loads it
-//     on devices where this extension may not be installed. An emptied
-//     tabset the tab leaves behind is dropped and selection indexes are kept
-//     right;
+//   - wraps that Model instance's toJson (cleanLayout) so the tab never
+//     changes anything the page saves: LeetCode stores the layout in the
+//     account and loads it on devices where this extension may not be
+//     installed. An emptied tabset the tab leaves behind is dropped, its
+//     weight given back and selection indexes kept right, so the JSON is
+//     the layout as it would be without the tab;
 //   - marks the tab's pane and button with data-lc-tutor-pane and
 //     data-lc-tutor-button so panel.js (isolated world) can mount into the
 //     pane, and reports state over a CustomEvent;
