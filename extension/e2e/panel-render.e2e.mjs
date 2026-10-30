@@ -1476,6 +1476,26 @@ try {
     check(await page.eval(`window.__q('.provider').textContent`) === 'Local model · new-model', 'the header did not update after the reply');
   });
 
+  // Last, since a switch drops every transcript the panel holds.
+  await scenario('over the relay, a problem switch empties a panel on the old problem at once, and a switch back starts with the notice', async () => {
+    const feed = () => page.eval(`window.__qa('.feed > *').map((n) => n.className.split(' ')[0] + ': ' + n.textContent)`);
+    const QUIET = 'empty: Another problem is active now. Send a message or Run here to switch to this one.';
+    const NOTICE = 'notice: New problem detected. Started a fresh tutor session.';
+    check((await feed()).length > 3, `the two-sum chat is on screen first: ${JSON.stringify(await feed())}`);
+    await page.eval(`window.__ev({ type: 'notice', problemSlug: 'valid-parentheses', text: 'New problem detected. Started a fresh tutor session.', switch: true })`);
+    await page.eval(`window.__ev({ type: 'user', problemSlug: 'valid-parentheses', text: 'SECRET-OTHER-PROBLEM' })`);
+    await settle();
+    check(JSON.stringify(await feed()) === JSON.stringify([QUIET]), `two-sum after the switch: ${JSON.stringify(await feed())}`);
+    await page.screenshot(path.join(SHOTS, 'another-problem-active-dark.png'), { width: 1100, height: 760 });
+    // Back on two-sum: the notice, then the message, nothing older.
+    await page.eval(`window.__ev({ type: 'notice', problemSlug: 'two-sum', text: 'New problem detected. Started a fresh tutor session.', switch: true })`);
+    await settle();
+    check((await feed())[0].startsWith('empty: Submit your code'), `a dangling notice before anything follows it: ${JSON.stringify(await feed())}`);
+    await page.eval(`window.__ev({ type: 'user', problemSlug: 'two-sum', text: 'back again' })`);
+    await settle();
+    check(JSON.stringify(await feed()) === JSON.stringify([NOTICE, 'user: back again']), `two-sum after switching back: ${JSON.stringify(await feed())}`);
+  });
+
   await scenario('no exceptions in the page', async () => {
     check(exceptions.length === 0, exceptions.join('\n'));
   });

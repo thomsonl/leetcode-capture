@@ -228,6 +228,7 @@ try {
   const other = await openProblem('valid-parentheses');
   const NOTICE = 'notice: New problem detected. Started a fresh tutor session.';
   const settle = () => new Promise((r) => setTimeout(r, 1000));
+  const QUIET = 'empty: Another problem is active now. Send a message or Run here to switch to this one.';
 
   await scenario("switching problems drops the old problem's chat from the panel, not only from the worker", async () => {
     await front(other);
@@ -236,7 +237,16 @@ try {
     await other.waitFor(`window.__feed().at(-1).startsWith('tutor: Reply') && window.__feed().at(-1).endsWith('part three.')`, { what: 'the reply in the second tab', timeout: 10000 });
     const first = await other.eval('window.__feed()');
     check(first.length === 3 && first[0] === NOTICE && first[1] === 'user: what about brackets?', `the second tab: ${JSON.stringify(first)}`);
-    // Back in the first tab, whose two-sum chat is still on screen.
+  });
+
+  await scenario('a panel on a problem that is no longer active empties at once and says so, without sending anything', async () => {
+    await front(page);
+    const quiet = await page.eval('window.__feed()');
+    check(JSON.stringify(quiet) === JSON.stringify([QUIET]), `the first tab: ${JSON.stringify(quiet)}`);
+    await page.screenshot(path.join(shots, 'another-problem-active-dark.png'), { width: 1100, height: 760 });
+  });
+
+  await scenario('a message from the old tab switches back: its notice comes first, and the other tab empties', async () => {
     await front(page);
     await page.eval(`window.__send('back to two sum')`);
     await page.waitFor(`window.__feed().at(-1).endsWith('part three.') && window.__feed().includes('user: back to two sum')`, { what: 'the reply back on two-sum', timeout: 10000 });
@@ -251,6 +261,9 @@ try {
     await page.waitFor(`window.__replies().length === 1`, { what: 'the replayed reply' });
     const replayed = await page.eval('window.__feed()');
     check(JSON.stringify(replayed) === JSON.stringify(back), `the reload replays something else: ${JSON.stringify(replayed)}`);
+    await front(other);
+    const emptied = await other.eval('window.__feed()');
+    check(JSON.stringify(emptied) === JSON.stringify([QUIET]), `the second tab: ${JSON.stringify(emptied)}`);
   });
 
   await scenario('a Run that switches problems leaves no dangling notice, and one on the active problem none at all', async () => {
@@ -260,8 +273,12 @@ try {
     await settle();
     await front(other);
     const afterRun = await other.eval('window.__feed()');
-    check(!afterRun.includes(NOTICE) && !afterRun.some((t) => t.startsWith('user:')), `a dangling notice or the old chat: ${JSON.stringify(afterRun)}`);
+    check(afterRun.length === 1 && afterRun[0].startsWith('empty: Submit your code'), `a dangling notice, or not the usual empty state: ${JSON.stringify(afterRun)}`);
+    await front(page);
+    const firstTab = await page.eval('window.__feed()');
+    check(JSON.stringify(firstTab) === JSON.stringify([QUIET]), `the first tab after the Run: ${JSON.stringify(firstTab)}`);
     // The next message shows the notice right before it.
+    await front(other);
     await other.eval(`window.__send('one more')`);
     await other.waitFor(`window.__feed().at(-1).endsWith('part three.') && window.__feed().includes('user: one more')`, { what: 'the reply after the Run', timeout: 10000 });
     const afterMessage = await other.eval('window.__feed()');

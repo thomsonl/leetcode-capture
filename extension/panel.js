@@ -85,6 +85,9 @@
       config: null,
       displayConfig: null,
       byProblem: new Map(), // slug -> items[]
+      // The problem the tutor is on, once a switch notice said so (or null).
+      // A panel on any other problem shows only that another one is active.
+      activeProblem: null,
       turnProblem: new Map(), // turnId -> slug, so a chunk (which has no slug) finds its turn
     };
   }
@@ -272,6 +275,11 @@
       state.lastSeq = event.seq;
     }
     const slug = event.problemSlug || "";
+    // Chat on another problem with no switch (auto-clear turned off) means
+    // the tutor is there now.
+    if (state.activeProblem && slug && slug !== state.activeProblem && (event.type === "user" || event.type === "capture" || event.type === "turn-start")) {
+      state.activeProblem = slug;
+    }
     switch (event.type) {
       case "user":
         pushItem(state, slug, { kind: "user", text: event.text || "" });
@@ -290,9 +298,11 @@
       case "notice":
         if (event.switch === true) {
           startFreshSession(state);
+          state.activeProblem = slug || null;
           // Only shown once something follows it, see visibleItems.
           pushItem(state, slug, { kind: "notice", text: event.text || "", switchNotice: true });
-          return slug;
+          // Every open panel redraws: the one on the old problem empties.
+          return RESTARTED;
         }
         pushItem(state, slug, { kind: "notice", text: event.text || "" });
         return slug;
@@ -921,6 +931,7 @@
   // model goes without code (a Run or Submit is not captured at all); see
   // content.js. Nothing stands in for it.
   const EDITOR_READ_FAILED = "Couldn't read your editor, so the tutor has not seen this code.";
+  const ANOTHER_PROBLEM_ACTIVE = "Another problem is active now. Send a message or Run here to switch to this one.";
   const CODE_TOO_LONG = "Your code is too long to send with a message, so the tutor has not seen this code.";
 
   const state = createState();
@@ -1632,11 +1643,16 @@
     });
   }
 
-  function emptyStateText(conn) {
+  function emptyStateText(conn, slug) {
     if (sourceReachable === false || state.companionOnline === false) {
       // The composer is disabled and the banner above says how to start the
       // companion; don't invite a question that can't be asked.
       return "Once the companion is running, your Run and Submit attempts and the tutor's replies show up here.";
+    }
+    // The tutor moved to another problem and forgot this one. Which problem
+    // is never shown here, nor anything of its chat.
+    if (state.activeProblem && slug && slug !== state.activeProblem) {
+      return ANOTHER_PROBLEM_ACTIVE;
     }
     // A Run is only recorded (the tutor sees it with the next message), so
     // only a Submit is promised a review.
@@ -1774,7 +1790,7 @@
     renderHeader(p, conn, slug);
 
     if (!active) return;
-    const emptyText = emptyStateText(conn);
+    const emptyText = emptyStateText(conn, slug);
     if (emptyNode && emptyNode.firstChild.textContent !== emptyText) emptyNode.firstChild.textContent = emptyText;
     if (slug !== renderedSlug) feedDirty = true;
     // Status changes and events for other problems end here: nothing in the
