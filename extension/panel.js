@@ -89,6 +89,14 @@
     };
   }
 
+  // What the feed shows of a transcript: a switch notice with nothing after
+  // it yet (a Run on another problem resets the tutor but shows nothing) is
+  // held back until the next message or reply, so it never dangles at the
+  // end.
+  function visibleItems(items) {
+    return items.length && items[items.length - 1].switchNotice ? items.slice(0, -1) : items;
+  }
+
   function itemsFor(state, slug) {
     const key = slug || "";
     let items = state.byProblem.get(key);
@@ -270,7 +278,9 @@
         });
         return slug;
       case "notice":
-        pushItem(state, slug, { kind: "notice", text: event.text || "" });
+        // A switch notice (the tutor started a fresh session for this
+        // problem) is only shown once something follows it, see visibleItems.
+        pushItem(state, slug, { kind: "notice", text: event.text || "", switchNotice: event.switch === true });
         return slug;
       case "turn-start":
         if (state.turnProblem.has(event.turnId)) return null;
@@ -857,6 +867,7 @@
       streamLost,
       RESTARTED,
       itemsFor,
+      visibleItems,
       firstChangedBlock,
       parseInline,
       parseBlocks,
@@ -1759,7 +1770,7 @@
     renderedSlug = slug;
 
     const stick = p.view.follow;
-    const items = (slug && state.byProblem.get(slug)) || [];
+    const items = visibleItems((slug && state.byProblem.get(slug)) || []);
     let nodes;
     if (items.length === 0) {
       if (!emptyNode) {

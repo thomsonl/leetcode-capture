@@ -16,6 +16,7 @@ const {
   streamLost,
   RESTARTED,
   itemsFor,
+  visibleItems,
   firstChangedBlock,
   parseInline,
   parseBlocks,
@@ -101,6 +102,19 @@ test("captures and notices become transcript items; status only updates the flag
     ["capture", "notice"]
   );
   assert.equal(state.companionBusy, false);
+});
+
+test("a switch notice is held back until something follows it, so it never dangles at the end", () => {
+  const state = createState();
+  applyEvent(state, { type: "user", problemSlug: "a", text: "hi", seq: 1 });
+  // A Run on another problem resets the tutor and shows nothing else.
+  applyEvent(state, { type: "notice", problemSlug: "a", text: "fresh session", switch: true, seq: 2 });
+  assert.deepEqual(visibleItems(itemsFor(state, "a")).map((i) => i.kind), ["user"]);
+  applyEvent(state, { type: "user", problemSlug: "a", text: "next", seq: 3 });
+  assert.deepEqual(visibleItems(itemsFor(state, "a")).map((i) => i.kind), ["user", "notice", "user"]);
+  // Any other notice shows at once.
+  applyEvent(state, { type: "notice", problemSlug: "a", text: "plain", seq: 4 });
+  assert.equal(visibleItems(itemsFor(state, "a")).at(-1).text, "plain");
 });
 
 test("a Run shows no chip, even one an older companion still publishes", () => {

@@ -134,7 +134,9 @@ export function createTutorEngine({ hub, log = () => {} }) {
       hub.dropProblem(result.dropped.slug);
       attempts.delete(result.dropped.slug);
     }
-    publish({ type: 'notice', problemSlug: slug || null, text: NEW_PROBLEM_NOTICE });
+    // `switch` tells the panels this notice opens a fresh session (see
+    // panel.js's applyEventInEpoch), unlike any other notice.
+    publish({ type: 'notice', problemSlug: slug || null, text: NEW_PROBLEM_NOTICE, switch: true });
     return result;
   }
 

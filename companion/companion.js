@@ -648,7 +648,7 @@ function activateProblem(problemId, slug) {
   printAboveInput(
     consumeTurnBoundary() + dim(`companion: new problem detected (${oneLine(problemId) || 'unknown'}) - clearing tutor context`)
   );
-  panelPublish({ type: 'notice', problemSlug: slug || null, text: 'New problem detected. Started a fresh tutor session.' });
+  panelPublish({ type: 'notice', problemSlug: slug || null, text: 'New problem detected. Started a fresh tutor session.', switch: true });
   return result;
 }
 
