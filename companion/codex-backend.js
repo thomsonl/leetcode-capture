@@ -28,6 +28,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { buildMessages } from '../extension/shared/context-budget.js';
 import { formatPinnedCode } from '../extension/shared/code-ledger.js';
+import { flattenMessages, normalizeConversation } from '../extension/shared/conversation.js';
 import { SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_MS, condense, condenseCount, summaryBodyChars } from '../extension/shared/context-summary.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -96,11 +97,13 @@ export class CodexBackend {
     this.timeoutMs = timeoutMs;
     this.summaryTimeoutMs = summaryTimeoutMs;
     this.env = env;
-    this.history = []; // [{ role: 'student' | 'tutor', text, compactText? }]
+    // Whole exchanges, oldest first, in conversation.js's shape:
+    // [{ role: 'user' | 'assistant', content, compactContent? }].
+    this.history = [];
     this.pinnedProblemContext = null;
-    // The code the tutor holds (see code-ledger.js), pinned like the problem
-    // statement so dropping the old turn that carried the full code never
-    // loses it; later turns only carry diffs against it. `{ text }` or null.
+    // The student's current full code (see code-ledger.js's
+    // formatPinnedCode), pinned like the problem statement on every request.
+    // `{ text }` or null.
     this.pinnedCode = null;
     // The "earlier in this session" summary of condensed exchanges, or null.
     this.summary = null;
@@ -114,16 +117,12 @@ export class CodexBackend {
   }
 
   // The same pinning rules as LocalBackend (context-budget.js's
-  // buildMessages): the statement and the held code come first, and an older
-  // student turn whose code is now pinned is sent as its compact form.
+  // buildMessages): the statement and the current code come first, and an
+  // older student turn with a compact form is sent as that.
   buildPrompt(text, { compactText } = {}) {
     const history = [
       { role: 'system', content: this.systemPrompt },
-      ...this.history.map((h) => ({
-        role: h.role === 'student' ? 'user' : 'assistant',
-        content: h.text,
-        ...(typeof h.compactText === 'string' ? { compactContent: h.compactText } : {}),
-      })),
+      ...this.history,
       { role: 'user', content: text, ...(typeof compactText === 'string' ? { compactContent: compactText } : {}) },
     ];
     const messages = buildMessages({
@@ -132,37 +131,43 @@ export class CodexBackend {
       pinnedCode: this.pinnedCode,
       summary: this.summary,
     });
-    const system = messages.filter((m) => m.role === 'system').map((m) => m.content);
-    const turns = messages.filter((m) => m.role !== 'system');
-    const current = turns.pop();
-    const parts = [...system];
-    if (turns.length) {
-      parts.push(
-        `Conversation so far:\n\n${turns.map((m) => `${m.role === 'user' ? 'Student' : 'Tutor'}: ${m.content}`).join('\n\n')}`
-      );
-    }
-    parts.push(`Student: ${current.content}\n\nReply now as the tutor, following the rules above. Do not run commands or read files.`);
-    return parts.join('\n\n---\n\n');
+    const { system, prompt } = flattenMessages(messages, {
+      closing: 'Reply now as the tutor, following the rules above. Do not run commands or read files.',
+    });
+    return `${system}\n\n---\n\n${prompt}`;
   }
 
-  // `heldCode` is the code the tutor held before this turn and `compactText`
-  // what this turn becomes once its code is pinned instead (see
+  // `currentCode` is the student's current full code for this request and
+  // `compactText` what this turn becomes once it is older (see
   // LocalBackend.sendMessage, which takes the same options).
-  async sendMessage(text, { problemContext, heldCode, compactText } = {}) {
+  async sendMessage(text, { problemContext, currentCode, compactText } = {}) {
     if (problemContext?.description && (!this.pinnedProblemContext || problemContext.problemId !== this.pinnedProblemContext.problemId)) {
       this.pinnedProblemContext = problemContext;
     }
-    const pinnedText = formatPinnedCode(heldCode);
+    const pinnedText = formatPinnedCode(currentCode);
     this.pinnedCode = pinnedText ? { text: pinnedText } : null;
     fs.mkdirSync(this.cwd, { recursive: true });
     await this.condenseIfNeeded();
     const prompt = this.buildPrompt(text, { compactText });
     const reply = await this.runCodex(prompt);
     this.history.push(
-      { role: 'student', text, ...(typeof compactText === 'string' && compactText !== text ? { compactText } : {}) },
-      { role: 'tutor', text: reply }
+      { role: 'user', content: text, ...(typeof compactText === 'string' && compactText !== text ? { compactContent: compactText } : {}) },
+      { role: 'assistant', content: reply }
     );
     return reply;
+  }
+
+  // The conversation in the shape every backend shares (conversation.js).
+  exportConversation() {
+    return normalizeConversation({ turns: this.history, summary: this.summary, problem: this.pinnedProblemContext });
+  }
+
+  importConversation(state) {
+    const { turns, summary, problem } = normalizeConversation(state);
+    this.resetContext();
+    this.history = turns;
+    this.summary = summary;
+    this.pinnedProblemContext = problem;
   }
 
   // Past maxHistoryTurns exchanges, condenses the older ones (at least the
@@ -176,8 +181,8 @@ export class CodexBackend {
     for (let i = 0; i < k; i += 1) {
       const student = this.history[2 * i];
       const tutor = this.history[2 * i + 1];
-      const compact = Boolean(this.pinnedCode) && typeof student.compactText === 'string';
-      dropped.push({ student: compact ? student.compactText : student.text, tutor: tutor.text });
+      const compact = Boolean(this.pinnedCode) && typeof student.compactContent === 'string';
+      dropped.push({ student: compact ? student.compactContent : student.content, tutor: tutor.content });
     }
     const { summary } = await condense({
       existing: this.summary,

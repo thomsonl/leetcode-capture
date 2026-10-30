@@ -12,6 +12,7 @@ import { buildMessages as buildLocalMessages, resolveContextWindow } from './con
 import { fitWithSummary } from './context-summary.js';
 import { probeServer, serverRoot } from './local-server.js';
 import { formatPinnedCode } from './code-ledger.js';
+import { normalizeConversation } from './conversation.js';
 import { TUTOR_SYSTEM_MESSAGE } from './tutor-prompt.js';
 
 // How many tokens of the window are held back for the model's own thinking
@@ -210,10 +211,11 @@ export class LocalBackend {
     // reconstructed fresh into every outgoing request (buildMessages), so a
     // long session can never lose it to trimming.
     this.pinnedProblemContext = null;
-    // The code the tutor holds (see code-ledger.js), pinned as a system
-    // message like the description, so trimming the turn that carried the
-    // full code never loses it: later turns only carry diffs against it.
-    // `{ text }` or null.
+    // The student's current full code (see code-ledger.js's
+    // formatPinnedCode), pinned as a system message like the description on
+    // every request, so the tutor always sees the exact code and condensing
+    // can never lose it; a turn's message only says what changed. `{ text }`
+    // or null.
     this.pinnedCode = null;
     // The "earlier in this session" summary standing in for condensed older
     // exchanges (context-summary.js), or null. Memory only, cleared by
@@ -264,11 +266,11 @@ export class LocalBackend {
   }
 
   // `problemContext` (see companion.js's captureProblemContext) is supplied
-  // whenever a problem is known. `heldCode` is the code the tutor held
-  // before this turn (what this turn's diff, if any, applies to), and
-  // `compactText` what this turn becomes once it is older and its code is
-  // pinned instead (see context-budget.js's buildMessages).
-  async sendMessage(text, { onChunk, problemContext, heldCode, compactText } = {}) {
+  // whenever a problem is known. `currentCode` is the student's current full
+  // code for this request (code-ledger.js's currentCodeFor: `{ code,
+  // language, stale }` or null), and `compactText` what this turn becomes
+  // once it is older (see context-budget.js's buildMessages).
+  async sendMessage(text, { onChunk, problemContext, currentCode, compactText } = {}) {
     await this.ready;
     // Pin the description the first time we see one for whichever problem
     // is now current - ignored on every later turn for the same problem,
@@ -278,7 +280,7 @@ export class LocalBackend {
     if (problemContext?.description && problemContext.problemId !== this.pinnedProblemContext?.problemId) {
       this.pinnedProblemContext = problemContext;
     }
-    const pinnedText = formatPinnedCode(heldCode);
+    const pinnedText = formatPinnedCode(currentCode);
     this.pinnedCode = pinnedText ? { text: pinnedText } : null;
     this.history.push({
       role: 'user',
@@ -626,5 +628,23 @@ export class LocalBackend {
     this.pinnedCode = null;
     this.summary = null;
     this.forceCondense = 0;
+  }
+
+  // The conversation in the shape every backend shares (conversation.js), so
+  // a swapped-in backend carries on from it.
+  exportConversation() {
+    return normalizeConversation({
+      turns: this.history.slice(1),
+      summary: this.summary,
+      problem: this.pinnedProblemContext,
+    });
+  }
+
+  importConversation(state) {
+    const { turns, summary, problem } = normalizeConversation(state);
+    this.resetContext();
+    this.history = [this.systemMessage, ...turns];
+    this.summary = summary;
+    this.pinnedProblemContext = problem;
   }
 }

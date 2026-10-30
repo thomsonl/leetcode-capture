@@ -251,15 +251,15 @@ test('Runs are only recorded; a Submit goes only when changed; messages carry di
   c.type('why does this work?');
   await until(() => c.requests.length === 2, 10000, 'the terminal message request');
   let last = c.lastUser();
-  assert.match(last, /^Changes to the student's code since the version you last saw \(Python3, \+1\/-1 lines\):/);
+  assert.match(last, /^Changes to the student's code since the version you last saw \(Python3, \+1\/-1 lines; the line numbers are those of the current code\):/);
   assert.match(last, /^- +\| {9}seen\[val\] = i {2}# first submit$/m);
   assert.match(last, /^\+ +7 \| {9}seen\[val\] = i {2}# run four$/m);
   assert.ok(!/run two|run three/.test(c.lastPrompt()), 'intermediate Runs are not sent');
   assert.ok(!last.includes('in full'), 'no full code once the tutor holds it');
   assert.match(last, /The student's message:\nwhy does this work\?$/);
-  // LocalBackend pins what the tutor held before this turn.
-  const pinned = c.requests[1].find((m) => m.role === 'system' && /exactly as you last saw it/.test(m.content));
-  assert.ok(pinned && pinned.content.includes('# first submit'), 'the held code is pinned');
+  // LocalBackend pins the current full code, this turn's diff applied.
+  const pinned = c.requests[1].find((m) => m.role === 'system' && /^The student's current code/.test(m.content));
+  assert.ok(pinned && pinned.content.includes('# run four') && !pinned.content.includes('# first submit'), 'the current code is pinned');
   // The older turn's full code is not resent next to the pinned copy.
   assert.equal((c.lastPrompt().match(/a note about the approach, line 29/g) || []).length, 1);
   await until(() => c.out().includes('Reply 2'), 10000, 'the reply');

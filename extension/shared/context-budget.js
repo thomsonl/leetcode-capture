@@ -150,20 +150,19 @@ export function formatDiffSummary(oldCode, newCode) {
   return `Code changed from the previous attempt (+${added}/-${removed} lines):\n${body}`;
 }
 
-// Builds the actual outgoing messages array for a LocalBackend request: the
-// leading system message, the pinned problem description right after it (if
-// one is known), then the pinned code (the latest version of the student's
-// code the tutor has been shown, which any code change in the current turn
-// applies to), then the summary of condensed older exchanges if there is one
-// (context-summary.js), then the rest of history. An older user turn that carried the
-// full code is sent as its `compactContent` instead, since that code (or a
-// newer version of it) is already pinned (only while code is pinned, so the
-// compact note never points at nothing); the turn just pushed for this
+// Builds the actual outgoing messages array for a stateless request: the
+// leading system message, the pinned problem statement right after it (if
+// one is known), then the pinned code (the student's current full code, with
+// this turn's change already applied), then the summary of condensed older
+// exchanges if there is one (context-summary.js), then the rest of history.
+// Most stable first, so a server's prefix cache keeps as much as it can. An
+// older user turn with a `compactContent` (a Submit's answer instructions)
+// is sent as that while code is pinned; the turn just pushed for this
 // request is always last and always sent in full.
 //
 // Pinning is what lets condensing or dropping old exchanges
-// (context-summary.js) remove the turn that originally carried the full code without the tutor losing it:
-// later turns only carry diffs against it. Pure function of its inputs -
+// (context-summary.js) never lose the statement or the code: every request
+// carries both whole. Pure function of its inputs -
 // LocalBackend.buildMessages (companion.js) is a thin wrapper passing its
 // own fields through - so it can be unit-tested without a real backend.
 // `history` is never mutated.

@@ -5,11 +5,14 @@
 // conversation into an event hub (event-hub.js) that the panels follow.
 //
 // The rules are the companion's, built on the same shared modules:
-//   - code-ledger.js decides what the tutor holds and is sent: a Run is only
-//     recorded, never sent; a Submit is sent only when its code differs from
-//     what the tutor holds; a message leads with a diff against the held code
-//     (the full code when nothing is held); the held code advances only once
-//     the backend answered.
+//   - code-ledger.js decides what the tutor is sent: a Run is only recorded,
+//     never sent; a Submit is sent only when its code differs from what the
+//     tutor last saw; every request carries the current full code (pinned by
+//     the backend) and a message leads with a numbered diff of what changed;
+//     what the tutor saw advances only once the backend answered.
+//   - Every backend is stateless or rebuilds from its own record, and a
+//     backend swap moves the conversation to the new one
+//     (conversation.js), so a model switch keeps the chat and the code.
 //   - The active problem is whichever one the student last sent a message,
 //     Run or Submit from. Activity on another problem (with autoClearContext
 //     on, the default) resets the backend's context, drops the old problem
@@ -28,10 +31,12 @@
 import {
   createCodeLedger,
   sendsToTutor,
-  buildSubmitMessage,
-  buildChatMessage,
+  chatPreamble,
+  prepareChatTurn,
+  prepareSubmitTurn,
   DEFAULT_MAX_PROBLEMS,
 } from './code-ledger.js';
+import { transferConversation } from './conversation.js';
 import { sanitizeCapture, stripControlChars, oneLine } from './sanitize.js';
 import { SUBMIT_ADDENDUM, captureHeaderLine, captureProblemId, captureProblemContext } from './tutor-prompt.js';
 
@@ -72,6 +77,8 @@ export function createTutorEngine({ hub, log = () => {} }) {
   const ledger = createCodeLedger({ maxProblems: DEFAULT_MAX_PROBLEMS });
   let backend = null;
   let backendKey = null;
+  // A backend set aside while none is configured (see installBackend).
+  let parked = null;
   let label = 'tutor';
   let configError = 'The tutor is not set up yet. Open the extension options to choose a model.';
   let options = { autoClearContext: true };
@@ -130,6 +137,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
     const result = ledger.activate(problemId, { slug, resetOnSwitch: options.autoClearContext });
     if (!result.reset) return result;
     if (backend) backend.resetContext();
+    parked = null;
     if (result.dropped && result.dropped.slug) {
       hub.dropProblem(result.dropped.slug);
       attempts.delete(result.dropped.slug);
@@ -144,7 +152,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
   // Publishes turn-start, each chunk, then turn-end with the whole text or
   // the error. Resolves true only for a real reply, so the caller commits the
   // code as held only then.
-  async function sendTurn(text, { problemContext, heldCode, compactText, problemSlug }) {
+  async function sendTurn(text, { problemContext, currentCode, compactText, problemSlug }) {
     const turnId = newTurnId();
     publish({ type: 'turn-start', turnId, problemSlug });
     const end = (fields) => publish({ type: 'turn-end', turnId, problemSlug, ...fields });
@@ -159,7 +167,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
           if (problemSlug) hub.publish({ type: 'chunk', turnId, text: chunk });
         },
         problemContext,
-        heldCode,
+        currentCode,
         compactText,
       });
     } catch (err) {
@@ -177,23 +185,42 @@ export function createTutorEngine({ hub, log = () => {} }) {
   }
 
   async function sendChatTurn({ text, problemId, problemSlug, preamble = null, codeUnavailable = false }) {
-    const plan = problemId && !codeUnavailable ? ledger.planUpdate(problemId) : { kind: 'none' };
-    const message = buildChatMessage({ text, plan, preamble: typeof preamble === 'function' ? preamble(plan) : preamble });
-    const ok = await sendTurn(message.text, {
-      problemContext: (problemId && ledger.context(problemId)) || undefined,
-      heldCode: problemId ? ledger.held(problemId) : null,
-      compactText: message.compactText,
+    const turn = prepareChatTurn(ledger, { text, problemId, preamble, codeUnavailable });
+    const ok = await sendTurn(turn.message.text, {
+      problemContext: turn.problemContext,
+      currentCode: turn.currentCode,
+      compactText: turn.message.compactText,
       problemSlug,
     });
-    if (ok && (plan.kind === 'full' || plan.kind === 'diff')) ledger.commit(problemId, plan);
+    if (ok && (turn.plan.kind === 'full' || turn.plan.kind === 'diff')) ledger.commit(problemId, turn.plan);
+  }
+
+  // Puts `next` in place of the running backend, moving the conversation
+  // over (conversation.js) so the new model sees the same chat, statement
+  // and code. Only when that is impossible (nothing to move from, or a
+  // backend that cannot export) does the ledger forget what the tutor saw,
+  // so the next message describes the code from scratch. Setting no backend
+  // parks the old one, whose conversation the next backend then takes over.
+  function installBackend(next, key) {
+    if (!next) {
+      if (backend) parked = backend;
+      backend = null;
+      backendKey = null;
+      return;
+    }
+    const moved = transferConversation(backend || parked, next);
+    parked = null;
+    backend = next;
+    backendKey = key;
+    if (!moved) ledger.forgetHeld();
   }
 
   return {
     // Swaps in the backend built from saved settings, between turns. A
     // configuration whose `key` is unchanged (only an option changed) keeps
-    // the running backend and its conversation; a new backend holds nothing,
-    // so the next message carries the full code. `error` (no backend) is what
-    // every turn says until a working configuration arrives.
+    // the running backend; a new backend takes over the conversation (see
+    // installBackend). `error` (no backend) is what every turn says until a
+    // working configuration arrives.
     configure({ backend: nextBackend = null, key = null, label: nextLabel, options: nextOptions, config = null, error = null, explainError = null, keep = false }) {
       return queueTurn(async () => {
         explain = explainError || ((message) => message);
@@ -201,18 +228,26 @@ export function createTutorEngine({ hub, log = () => {} }) {
         if (nextLabel) label = nextLabel;
         configError = error || configError;
         if (keep && backend) {
-          // Same backend configuration (only an option changed): keep it and
-          // its conversation.
+          // Same backend configuration (only an option changed): keep it.
         } else if (!nextBackend) {
-          backend = null;
-          backendKey = null;
-          ledger.forgetHeld();
+          installBackend(null, null);
         } else if (key === null || key !== backendKey) {
-          backend = nextBackend;
-          backendKey = key;
-          ledger.forgetHeld();
+          installBackend(nextBackend, key);
         }
         hub.setConfig(config);
+      });
+    },
+
+    // The model switcher's entry point: swaps to `backend` (a profile's
+    // backend, built by the caller) between turns, keeping the chat history,
+    // the pinned statement and the code the tutor has seen. Resolves once the
+    // swap has happened, after any turn already queued.
+    swapBackend({ backend: nextBackend, key = null, label: nextLabel = null, config = null }) {
+      if (!nextBackend) return Promise.reject(new Error('swapBackend needs a backend'));
+      return queueTurn(async () => {
+        if (nextLabel) label = nextLabel;
+        installBackend(nextBackend, key);
+        if (config) hub.setConfig(config);
       });
     },
 
@@ -248,11 +283,17 @@ export function createTutorEngine({ hub, log = () => {} }) {
         publish({ type: 'capture', problemSlug: slug, problemTitle: capture.problemTitle || null, trigger: capture.trigger, attemptSeq });
         const releaseBusy = holdBusy();
         try {
-          const message = buildSubmitMessage({ headerLine: captureHeaderLine(capture), plan, addendum: SUBMIT_ADDENDUM });
-          const ok = await sendTurn(message.text, {
-            problemContext: ledger.context(problemId) || captureProblemContext(capture),
-            heldCode: ledger.held(problemId),
-            compactText: message.compactText,
+          const turn = prepareSubmitTurn(ledger, {
+            problemId,
+            plan,
+            headerLine: captureHeaderLine(capture),
+            addendum: SUBMIT_ADDENDUM,
+            fallbackContext: captureProblemContext(capture),
+          });
+          const ok = await sendTurn(turn.message.text, {
+            problemContext: turn.problemContext,
+            currentCode: turn.currentCode,
+            compactText: turn.message.compactText,
             problemSlug: slug,
           });
           if (ok) ledger.commit(problemId, plan);
@@ -292,12 +333,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
           });
         }
         const codeUnavailable = !snapshot;
-        const preamble = () => {
-          const notes = [];
-          if (previousId !== problemSlug) notes.push(`(The student is now working on the LeetCode problem "${problemSlug}".)`);
-          if (codeUnavailable) notes.push("(The student's editor could not be read, so their current code is not included.)");
-          return notes.length ? notes.join('\n') : null;
-        };
+        const preamble = ({ hasHeld }) => chatPreamble({ previousId, problemId: problemSlug, codeUnavailable, hasHeld });
         await sendChatTurn({ text, problemId: problemSlug, problemSlug, preamble, codeUnavailable });
       })
         .catch((err) => log(`error handling a message: ${err.message}`))

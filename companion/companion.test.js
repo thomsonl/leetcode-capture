@@ -613,11 +613,12 @@ test('consecutive captures for the same problem do not clear context', async () 
   // this turn's own user message.
   assert.equal(requests[0].length, 3, 'first call: system + pinned description + this turn\'s user message');
   // Full continuity: system, pinned description (still pinned - same
-  // problem, not resent as a second copy), the pinned code the tutor now
-  // holds, the first user turn (compact: its full code is the pinned code),
-  // first assistant reply, second user turn - nothing truncated.
-  assert.equal(requests[1].length, 6, 'second call should still carry the first turn as history');
-  assert.match(requests[1][2].content, /exactly as you last saw it/);
+  // problem, not resent as a second copy), the first user turn, first
+  // assistant reply, second user turn - nothing truncated. The second Submit
+  // differs too much for a diff, so its message carries the whole current
+  // code and nothing is pinned twice.
+  assert.equal(requests[1].length, 5, 'second call should still carry the first turn as history');
+  assert.match(requests[1][4].content, /in full:/);
   assert.ok(!out.includes('new problem detected'), 'no reset notice should print for the same problem');
 });
 
@@ -1324,7 +1325,7 @@ test('the pinned problem description survives the count cap condensing the turn 
 // against the code the tutor holds, which LocalBackend pins as a system
 // message, and the older full-code turn is sent in its compact form so the
 // code is not resent twice.
-test('later Submits carry only a diff; the held code is pinned and the old full-code turn is compact', async () => {
+test('later Submits carry only a diff; the current code is pinned and the old full-code turn is compact', async () => {
   const { requests } = await runSameProblemManyTurns({ turnCount: 4, capturePort: 18172 });
 
   assert.equal(requests.length, 4);
@@ -1339,8 +1340,9 @@ test('later Submits carry only a diff; the held code is pinned and the old full-
   assert.match(current, /^\+ +7 \| {9}# attempt 4 marker line$/m);
   assert.ok(!current.includes('in full'), 'no full code once the tutor holds it');
 
-  const pinned = lastRequest.find((m) => m.role === 'system' && /exactly as you last saw it/.test(m.content));
-  assert.ok(pinned && pinned.content.includes('attempt 3 marker line'), 'the held code (attempt 3) is pinned');
+  const pinned = lastRequest.find((m) => m.role === 'system' && /^The student's current code/.test(m.content));
+  assert.ok(pinned && pinned.content.includes('attempt 4 marker line'), 'the current code (attempt 4, diff applied) is pinned');
+  assert.ok(!pinned.content.includes('attempt 3 marker line'), 'not the version before the diff');
   // The first turn is still in history (no trimming here), but compact.
   assert.ok(lastRequest.some((m) => m.role === 'user' && m.content.includes("The student's full code was shown here")));
   assert.equal(

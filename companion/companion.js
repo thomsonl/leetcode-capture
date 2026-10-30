@@ -75,13 +75,15 @@ import {
 } from './settings.js';
 import { createSettingsRpc } from './settings-rpc.js';
 import { CodexBackend } from './codex-backend.js';
+import { transferConversation } from '../extension/shared/conversation.js';
 import { requestCaptureTrim, pendingTrimFor, pendingTrimHappened, isPendingTrim } from './capture-log.js';
 import { stripControlChars, oneLine, sanitizeCapture } from '../extension/shared/sanitize.js';
 import {
   createCodeLedger,
   sendsToTutor,
-  buildSubmitMessage,
-  buildChatMessage,
+  chatPreamble,
+  prepareChatTurn,
+  prepareSubmitTurn,
   DEFAULT_MAX_PROBLEMS,
 } from '../extension/shared/code-ledger.js';
 
@@ -287,10 +289,11 @@ class ClaudeBackend {
 
   // `problemContext` (see companion.js's captureProblemContext) is supplied
   // whenever a problem is known - only actually used below on a fresh SDK
-  // session's very first message (see promptText). `heldCode`/`compactText`
-  // (LocalBackend's code pinning) are not needed here: a resumed session
-  // keeps the first full code and every later diff, and a reset starts a
-  // new session.
+  // session's very first message (see promptText). `currentCode`/`compactText`
+  // (the stateless backends' code pinning) are not needed here: a resumed
+  // session keeps the first full code and every later diff, and a reset starts a
+  // new session. See docs/context-measurement.md for the measured case for
+  // keeping the session and what it still lacks.
   async sendMessage(text, { onChunk, problemContext } = {}) {
     await this.ensureLoaded();
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
@@ -1120,7 +1123,7 @@ async function sendAndPrintTurn(label, text, options = {}) {
   }
 }
 
-async function sendAndPrintTurnBody(label, text, { onReply, problemContext, heldCode, compactText, panelMeta } = {}) {
+async function sendAndPrintTurnBody(label, text, { onReply, problemContext, currentCode, compactText, panelMeta } = {}) {
   const cutOffNote = 'The reply was cut off because the model ran out of room.';
   // Mirrors this turn to the in-page panel (see "in-page panel bridge"
   // above): a start marker, each streamed chunk, then one end event carrying
@@ -1195,7 +1198,7 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, held
           writeReplyPiece(streamer.push(chunk));
         },
         problemContext,
-        heldCode,
+        currentCode,
         compactText,
       });
     } catch (err) {
@@ -1249,7 +1252,7 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, held
   // shape as before streaming existed.
   let reply;
   try {
-    reply = await backend.sendMessage(text, { problemContext, heldCode, compactText });
+    reply = await backend.sendMessage(text, { problemContext, currentCode, compactText });
   } catch (err) {
     stopSpinner();
     clearBottomRows();
@@ -1371,19 +1374,14 @@ rl.on('line', (line) => {
 // goes with no code update at all (the newest Run or Submit does not stand
 // in for the live code), and the tutor is told why.
 async function sendChatTurn({ label, text, problemId, preamble = null, codeUnavailable = false }) {
-  const plan = problemId && !codeUnavailable ? ledger.planUpdate(problemId) : { kind: 'none' };
-  const message = buildChatMessage({
-    text,
-    plan,
-    preamble: typeof preamble === 'function' ? preamble(plan) : preamble,
-  });
-  const ok = await sendAndPrintTurn(label, message.text, {
-    problemContext: (problemId && ledger.context(problemId)) || undefined,
-    heldCode: problemId ? ledger.held(problemId) : null,
-    compactText: message.compactText,
+  const turn = prepareChatTurn(ledger, { text, problemId, preamble, codeUnavailable });
+  const ok = await sendAndPrintTurn(label, turn.message.text, {
+    problemContext: turn.problemContext,
+    currentCode: turn.currentCode,
+    compactText: turn.message.compactText,
     panelMeta: { problemSlug: panelProblemSlug },
   });
-  if (ok && (plan.kind === 'full' || plan.kind === 'diff')) ledger.commit(problemId, plan);
+  if (ok && (turn.plan.kind === 'full' || turn.plan.kind === 'diff')) ledger.commit(problemId, turn.plan);
 }
 
 rl.on('close', () => {
@@ -1598,12 +1596,14 @@ async function handleCaptureLine(line) {
           printAboveInput(dim(`companion: warning: could not prepare vault auto-summary context (${err.message})`));
         }
       }
-      const message = buildSubmitMessage({
-        headerLine: captureHeaderLine(capture),
+      const turn = prepareSubmitTurn(ledger, {
+        problemId,
         plan,
+        headerLine: captureHeaderLine(capture),
         addendum: SUBMIT_ADDENDUM + (vaultContext ? vaultContext.addendum : ''),
+        fallbackContext: captureProblemContext(capture),
       });
-      const ok = await sendAndPrintTurn(label, message.text, {
+      const ok = await sendAndPrintTurn(label, turn.message.text, {
         onReply: vaultContext
           ? (reply) => {
               const { displayText, vaultData } = extractVaultBlock(reply, {
@@ -1623,9 +1623,9 @@ async function handleCaptureLine(line) {
               return displayText;
             }
           : undefined,
-        problemContext: ledger.context(problemId) || captureProblemContext(capture),
-        heldCode: ledger.held(problemId),
-        compactText: message.compactText,
+        problemContext: turn.problemContext,
+        currentCode: turn.currentCode,
+        compactText: turn.message.compactText,
         panelMeta: { problemSlug: capture.problemSlug || null },
       });
       if (ok) ledger.commit(problemId, plan);
@@ -1693,12 +1693,7 @@ function handlePanelMessage(message) {
       });
     }
     const codeUnavailable = !snapshot;
-    const preamble = () => {
-      const notes = [];
-      if (previousId !== problemSlug) notes.push(`(The student is now working on the LeetCode problem "${problemSlug}".)`);
-      if (codeUnavailable) notes.push("(The student's editor could not be read, so their current code is not included.)");
-      return notes.length ? notes.join('\n') : null;
-    };
+    const preamble = ({ hasHeld }) => chatPreamble({ previousId, problemId: problemSlug, codeUnavailable, hasHeld });
     await sendChatTurn({ label, text, problemId: problemSlug, preamble, codeUnavailable });
   }).finally(releaseBusy);
 }
@@ -1990,20 +1985,29 @@ function backendKey(config) {
   ]);
 }
 
+// Puts `nextBackend` in place of the running one between turns, moving the
+// conversation over (extension/shared/conversation.js) so the new model sees
+// the same chat and statement (the code comes from the ledger every turn).
+// Only a backend that cannot take it over (ClaudeBackend's session) starts
+// fresh, and then the ledger forgets what the tutor saw, so the next message
+// carries the full code. Returns whether the conversation moved. This is
+// also what a model switcher calls.
+function swapBackend(nextBackend) {
+  const moved = transferConversation(backend, nextBackend);
+  backend = nextBackend;
+  if (!moved) ledger.forgetHeld();
+  return moved;
+}
+
 // Swaps in a saved configuration through the turn queue, so it lands between
 // turns and never in the middle of one (a message queued after the save goes
-// to the new backend). The new backend holds nothing, so the code the tutor
-// held is forgotten and the next message carries the full code. Not awaited
-// by the save itself: the options page hears "saved" at once even while a
-// long reply is still running.
+// to the new backend). Not awaited by the save itself: the options page hears
+// "saved" at once even while a long reply is still running.
 function applySettings(nextEffective, nextBackend) {
   queueTurn(async () => {
     const swap = backendKey(nextEffective) !== backendKey(effective);
     effective = nextEffective;
-    if (swap) {
-      backend = nextBackend;
-      ledger.forgetHeld();
-    }
+    if (swap) swapBackend(nextBackend);
     const now = statusSummary(effective);
     printAboveInput(
       dim(
