@@ -229,27 +229,43 @@ try {
   const NOTICE = 'notice: New problem detected. Started a fresh tutor session.';
   const settle = () => new Promise((r) => setTimeout(r, 1000));
 
-  await scenario('a Run that switches problems leaves no dangling notice, and one on the active problem none at all', async () => {
+  await scenario("switching problems drops the old problem's chat from the panel, not only from the worker", async () => {
     await front(other);
     await other.waitFor(`window.__q('.status span') && window.__q('.status span').textContent === 'Connected'`, { what: 'the second tab' });
     await other.eval(`window.__send('what about brackets?')`);
     await other.waitFor(`window.__feed().at(-1).startsWith('tutor: Reply') && window.__feed().at(-1).endsWith('part three.')`, { what: 'the reply in the second tab', timeout: 10000 });
+    const first = await other.eval('window.__feed()');
+    check(first.length === 3 && first[0] === NOTICE && first[1] === 'user: what about brackets?', `the second tab: ${JSON.stringify(first)}`);
+    // Back in the first tab, whose two-sum chat is still on screen.
     await front(page);
     await page.eval(`window.__send('back to two sum')`);
     await page.waitFor(`window.__feed().at(-1).endsWith('part three.') && window.__feed().includes('user: back to two sum')`, { what: 'the reply back on two-sum', timeout: 10000 });
+    const back = await page.eval('window.__feed()');
+    check(back.length === 3 && back[0] === NOTICE && back[1] === 'user: back to two sum', `the old two-sum chat stayed: ${JSON.stringify(back)}`);
+    await page.screenshot(path.join(shots, 'switch-back-dark.png'), { width: 1100, height: 760 });
+    // A reload shows the same.
+    await page.send('Page.reload');
+    await page.waitFor(`document.readyState === 'complete' && document.querySelector('[data-lc-tutor-tab]')`, { what: 'the reloaded page' });
+    await page.eval(helpers);
+    await page.eval('window.__openTutor()');
+    await page.waitFor(`window.__replies().length === 1`, { what: 'the replayed reply' });
+    const replayed = await page.eval('window.__feed()');
+    check(JSON.stringify(replayed) === JSON.stringify(back), `the reload replays something else: ${JSON.stringify(replayed)}`);
+  });
+
+  await scenario('a Run that switches problems leaves no dangling notice, and one on the active problem none at all', async () => {
     // The Run switches the tutor to valid-parentheses: nothing to show yet.
     await front(other);
     await other.eval('window.__run()');
     await settle();
     await front(other);
     const afterRun = await other.eval('window.__feed()');
-    check(afterRun.at(-1) !== NOTICE, `a dangling notice: ${JSON.stringify(afterRun)}`);
+    check(!afterRun.includes(NOTICE) && !afterRun.some((t) => t.startsWith('user:')), `a dangling notice or the old chat: ${JSON.stringify(afterRun)}`);
     // The next message shows the notice right before it.
     await other.eval(`window.__send('one more')`);
     await other.waitFor(`window.__feed().at(-1).endsWith('part three.') && window.__feed().includes('user: one more')`, { what: 'the reply after the Run', timeout: 10000 });
     const afterMessage = await other.eval('window.__feed()');
-    check(afterMessage.at(-3) === NOTICE && afterMessage.at(-2) === 'user: one more', `the notice is not right before the message: ${JSON.stringify(afterMessage)}`);
-    check(afterMessage.at(-4) !== NOTICE, `two notices in a row: ${JSON.stringify(afterMessage)}`);
+    check(afterMessage.length === 3 && afterMessage[0] === NOTICE && afterMessage[1] === 'user: one more', `the notice is not right before the message: ${JSON.stringify(afterMessage)}`);
     await other.screenshot(path.join(shots, 'switch-after-run-dark.png'), { width: 1100, height: 760 });
     // A Run on the problem already active changes nothing.
     await other.eval('window.__run()');

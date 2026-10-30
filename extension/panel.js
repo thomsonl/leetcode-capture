@@ -215,6 +215,16 @@
     return changed;
   }
 
+  // The tutor reset on a problem switch (a switch notice): it forgot every
+  // other problem, and the relay or the worker dropped their buffered chat,
+  // so the panel drops every transcript too. What a reload would replay is
+  // then exactly what is on screen.
+  function startFreshSession(state) {
+    state.byProblem.clear();
+    state.turnProblem.clear();
+    state.displayConfig = state.config;
+  }
+
   // Applies one relay event. Returns the problem slug whose transcript it
   // changed (or null), so the caller only touches the feed when that problem
   // is on screen. Returns RESTARTED when the change can touch every
@@ -278,9 +288,13 @@
         });
         return slug;
       case "notice":
-        // A switch notice (the tutor started a fresh session for this
-        // problem) is only shown once something follows it, see visibleItems.
-        pushItem(state, slug, { kind: "notice", text: event.text || "", switchNotice: event.switch === true });
+        if (event.switch === true) {
+          startFreshSession(state);
+          // Only shown once something follows it, see visibleItems.
+          pushItem(state, slug, { kind: "notice", text: event.text || "", switchNotice: true });
+          return slug;
+        }
+        pushItem(state, slug, { kind: "notice", text: event.text || "" });
         return slug;
       case "turn-start":
         if (state.turnProblem.has(event.turnId)) return null;

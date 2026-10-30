@@ -109,12 +109,27 @@ test("a switch notice is held back until something follows it, so it never dangl
   applyEvent(state, { type: "user", problemSlug: "a", text: "hi", seq: 1 });
   // A Run on another problem resets the tutor and shows nothing else.
   applyEvent(state, { type: "notice", problemSlug: "a", text: "fresh session", switch: true, seq: 2 });
-  assert.deepEqual(visibleItems(itemsFor(state, "a")).map((i) => i.kind), ["user"]);
+  assert.deepEqual(visibleItems(itemsFor(state, "a")), []);
   applyEvent(state, { type: "user", problemSlug: "a", text: "next", seq: 3 });
-  assert.deepEqual(visibleItems(itemsFor(state, "a")).map((i) => i.kind), ["user", "notice", "user"]);
+  assert.deepEqual(visibleItems(itemsFor(state, "a")).map((i) => i.kind), ["notice", "user"]);
   // Any other notice shows at once.
   applyEvent(state, { type: "notice", problemSlug: "a", text: "plain", seq: 4 });
   assert.equal(visibleItems(itemsFor(state, "a")).at(-1).text, "plain");
+});
+
+test("a switch notice drops every transcript, so the notice comes first and the old chat is gone", () => {
+  const state = createState();
+  applyEvent(state, { type: "user", problemSlug: "two-sum", text: "old", seq: 1 });
+  applyEvent(state, { type: "turn-start", problemSlug: "two-sum", turnId: "t1", seq: 2 });
+  applyEvent(state, { type: "turn-end", problemSlug: "two-sum", turnId: "t1", text: "old reply", seq: 3 });
+  applyEvent(state, { type: "user", problemSlug: "valid-parentheses", text: "older", seq: 4 });
+  // Back on two-sum after valid-parentheses was active.
+  assert.equal(applyEvent(state, { type: "notice", problemSlug: "two-sum", text: "fresh", switch: true, seq: 5 }), "two-sum");
+  applyEvent(state, { type: "user", problemSlug: "two-sum", text: "new", seq: 6 });
+  assert.deepEqual(itemsFor(state, "two-sum").map((i) => i.text), ["fresh", "new"]);
+  assert.equal(itemsFor(state, "valid-parentheses").length, 0);
+  // The old turn id is forgotten too: a late chunk for it changes nothing.
+  assert.equal(applyEvent(state, { type: "chunk", turnId: "t1", text: "late", seq: 7 }), null);
 });
 
 test("a Run shows no chip, even one an older companion still publishes", () => {
