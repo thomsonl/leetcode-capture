@@ -795,7 +795,7 @@ function postJson(port, route, body, headers) {
   });
 }
 
-test('end to end: a provider change saved from the options page takes over the next message and resets the held code', async (t) => {
+test('end to end: a provider change saved from the options page takes over the next message and keeps the conversation and code', async (t) => {
   const modelA = await startRecordingModel('A');
   const modelB = await startRecordingModel('B');
   const port = await freePort();
@@ -922,8 +922,12 @@ test('end to end: a provider change saved from the options page takes over the n
   const thirdText = JSON.stringify(third.body.messages);
   const thirdLast = third.body.messages[third.body.messages.length - 1];
   assert.equal(thirdLast.role, 'user');
-  assert.match(thirdLast.content, /in full:[\s\S]*seen = \{\}/, 'the swap reset the held code, so the message carries the full code again');
-  assert.ok(!thirdText.includes('first question'), 'the new backend starts a fresh conversation');
+  assert.equal(thirdLast.content, 'third question', 'the code is unchanged, so the message goes as typed');
+  assert.ok(
+    third.body.messages.some((m) => m.role === 'system' && /The student's current code[\s\S]*seen = \{\}/.test(m.content)),
+    'the current full code is pinned for the new model'
+  );
+  assert.ok(thirdText.includes('first question') && thirdText.includes('A reply 1'), 'the new backend carries on the same conversation');
   assert.ok(!out.includes('sk-test-secret-key-123'), 'the key is never printed');
 
   // A panel that connects now gets the newest config right away.
@@ -939,7 +943,7 @@ test('end to end: a provider change saved from the options page takes over the n
 // Condensing older exchanges (context-summary.js) is silent: its model call
 // is not streamed, so nothing of it reaches the panel feed, it adds no turn,
 // notice or status of its own, and a backend swap leaves the summary behind.
-test('end to end: the summary call never reaches the panel, and a swap clears the summary', async (t) => {
+test('end to end: the summary call never reaches the panel, and a swap keeps the summary', async (t) => {
   const SECRET = 'SECRET-SUMMARY-TEXT';
   const makeModel = (name) => {
     const turns = [];
@@ -1050,7 +1054,8 @@ test('end to end: the summary call never reaches the panel, and a swap clears th
   assert.ok(busyStarts <= 3, `the status light went busy ${busyStarts} times for 3 messages`);
   assert.ok(!out.includes(SECRET), 'nothing of it in the terminal either');
 
-  // Swap to model B: the new backend starts without the summary.
+  // Swap to model B: the new backend takes over the conversation, summary
+  // included.
   const saved = await postJson(
     port,
     '/settings/rpc',
@@ -1063,5 +1068,6 @@ test('end to end: the summary call never reaches the panel, and a swap clears th
   await until(() => turnEnds() === 4, 10000, 'reply 4');
   assert.equal(modelB.turns.length, 1);
   const afterSwap = JSON.stringify(modelB.turns[0].messages);
-  assert.ok(!afterSwap.includes(SUMMARY_HEADER) && !afterSwap.includes(SECRET), 'a swap clears the summary');
+  assert.ok(afterSwap.includes(SUMMARY_HEADER), 'a swap keeps the summary');
+  assert.ok(!modelB.turns[0].messages.some((m) => m.role !== 'system' && m.content.includes(SUMMARY_HEADER)), 'as a system message');
 });

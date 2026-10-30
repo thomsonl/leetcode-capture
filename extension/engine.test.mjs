@@ -203,7 +203,7 @@ test('the code rules: Runs are never sent, a Submit only when changed, messages 
   const sent = backend.calls[1];
   assert.match(sent.text, /line five/);
   assert.doesNotMatch(sent.text, /line 29/, 'a message carries a diff, not the whole code');
-  assert.equal(sent.options.heldCode.code, code1, 'the diff is against the held code');
+  assert.equal(sent.options.currentCode.code, code2, 'the request pins the current full code, with the diff applied');
 
   port.send({ type: 'message', id: 2, text: 'and now?', problemSlug: 'two-sum', snapshot: { code: code2 } });
   await settle(service);
@@ -237,7 +237,7 @@ test('activity on another problem resets the tutor, drops the old chat, and the 
   await settle(service);
   const sent = backend.calls.at(-1);
   assert.match(sent.text, /line 29/, 'the tutor holds nothing after a reset, so the full code goes');
-  assert.equal(sent.options.heldCode, null);
+  assert.equal(sent.options.currentCode.code, code2, 'and pins it');
 
   // A message from the old problem's tab switches back and says so.
   port.send({ type: 'message', id: 2, text: 'back', problemSlug: 'two-sum', snapshot: { code: code1 } });
