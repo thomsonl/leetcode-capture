@@ -382,7 +382,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with
   `COMPANION_AUTO_CLEAR_CONTEXT` on, the default) calls the backend's `resetContext()`, drops the old problem from the
   ledger, asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`) and clears the handled
-  part of `captures.jsonl` (see the `attemptSeq` bullet). `LocalBackend` pins the held code as a system message (like the description) so condensing old exchanges cannot
+  part of `captures.jsonl` (see the `attemptSeq` bullet).
+  Its panel notice carries `switch: true` (the relay keeps only that flag), and on it every open panel drops all its transcripts, so the screen matches what a reload replays.
+  The notice is held back until something follows it (`visibleItems`), since a Run shows nothing else, and a panel on any other problem shows only "Another problem is active now" (`state.activeProblem`), never which one or its chat.
+  A Run or Submit on the problem already active publishes no notice. `extension-runtime.e2e.mjs` checks this with two tabs, `panel-render.e2e.mjs` over the relay transport.
+  `LocalBackend` pins the held code as a system message (like the description) so condensing old exchanges cannot
   lose it, and an older full-code turn is sent as its `compactContent`. `ClaudeBackend` needs no pinning: its resumed
   session keeps the first full code and later diffs. `companion/code-updates.test.js` covers the rules end to end.
 - Real mouse-wheel scrolling inside the alternate screen: `companion/mouse-input.js` enables xterm's
