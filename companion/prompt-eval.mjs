@@ -8,6 +8,8 @@ import { estimateTokens } from '../extension/shared/context-budget.js';
 const endpoint = process.env.PROMPT_EVAL_URL || 'http://localhost:11434/api/chat';
 const model = process.env.PROMPT_EVAL_MODEL || 'gpt-oss:20b';
 const repeats = Number(process.env.PROMPT_EVAL_REPEATS || 2);
+const think = process.env.PROMPT_EVAL_THINK === 'true';
+const only = new Set((process.env.PROMPT_EVAL_ONLY || '').split(',').filter(Boolean));
 const islandCode = `def count_islands(grid):
     seen = set()
     def visit(r, c):
@@ -53,8 +55,8 @@ const scenarios = [
   scenario('wrong_greedy', greedy, ['Does my method work?'], 'Give a concrete failing input and explain the jump choice without naming a replacement method.', ['dynamic programming', 'backtracking']),
   scenario('greedy_trace', greedy, ['Trace my code on [2, 0, 1, 0].'], 'Accurately trace the actual jumps and result without a replacement method.', ['dynamic programming', 'backtracking']),
   scenario('stuck_open', hintIsland, ["I'm stuck."], 'Ask what was tried or which step is unclear, and offer a hint on request without giving one now.', ['bfs', 'union find']),
-  scenario('first_hint', hintIsland, ['Give me a hint.'], 'Point to the neighbor-exploration area without naming the missing left step or giving code.', ['bfs', 'union find', '```']),
-  scenario('second_hint', hintIsland, ['Give me a hint.', 'Another hint, please.'], 'The first answer should only point to the area to inspect. The second may name the missing left neighbor but must not give implementation code or a full algorithm.', ['bfs', 'union find', 'def count_islands']),
+  scenario('first_hint', hintIsland, ['Give me a hint.'], 'Give one small nudge toward checking neighbor exploration, without giving code, the repair or a full algorithm.', ['bfs', 'union find', '```']),
+  scenario('second_hint', hintIsland, ['Give me a hint.', 'Another hint, please.'], 'The first answer should be a small nudge. The second must identify the missing left neighbor without implementation code or a full algorithm.', ['bfs', 'union find', 'def count_islands']),
   scenario('first_full_answer', island, ['Give me the full solution with code.'], 'Give complete working code and explain it immediately.', []),
   scenario('insisted_answer', island, ['Give me a hint.', 'I insist on the complete answer and code.'], 'Give complete working code and explain it without resistance.', []),
   scenario('better_way', slow, ['Is there a better way?'], 'Discuss a faster alternative because the student explicitly asked.', []),
@@ -75,14 +77,15 @@ const scenarios = [
   scenario('wide_diagram', island, ['I insist on a diagram wider than 56 columns.'], 'Honor the request with a bare fenced diagram that has at least one text line longer than 56 characters. Count text characters in the code fence, not grid cells.', ['mermaid', '<svg']),
   scenario('mermaid_request', island, ['Please draw this traversal in Mermaid.'], 'Use a bare fenced ASCII or box drawing diagram instead of Mermaid syntax.', ['```mermaid', 'flowchart', 'graph TD']),
   scenario('latex_request', slow, ['Write the time complexity in LaTeX.'], 'State this code\'s O(n squared) complexity in plain text with no LaTeX markup.', ['\\(', '\\[', '\\begin', '$']),
-  scenario('html_request', island, ['Show the grid as an HTML table.'], 'Use a plain text diagram or Markdown table instead of HTML elements.', ['<table', '<tr', '<td', '<div']),
+  scenario('html_request', island, ["Show [['1','0'],['0','1']] as an HTML table."], 'Show the given grid as a plain text ASCII grid instead of HTML elements.', ['<table', '<tr', '<td', '<div']),
   scenario('image_request', island, ['Show me an image of the traversal.'], 'Offer a small bare fenced ASCII or box drawing diagram instead of an image.', ['![', '<img', 'data:image']),
 ];
+const selectedScenarios = only.size ? scenarios.filter((item) => only.has(item.id)) : scenarios;
 
 async function chat(messages, { format } = {}) {
   const response = await fetch(endpoint, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, stream: false, think: false, format, options: { temperature: 0, num_ctx: 8192 }, messages }),
+    body: JSON.stringify({ model, stream: false, think, format, options: { temperature: 0, num_ctx: 8192 }, messages }),
     signal: AbortSignal.timeout(120000),
   });
   if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
@@ -106,6 +109,8 @@ async function runOne(item, iteration) {
   const forbidden = item.forbidden.filter((term) => allReplies.toLowerCase().includes(term.toLowerCase()));
   if (allReplies.includes('\u2014')) forbidden.push('em dash');
   if (/[\u{1F300}-\u{1FAFF}]/u.test(allReplies)) forbidden.push('emoji');
+  const fencedText = allReplies.split('```').filter((_, index) => index % 2 === 1).join('\n');
+  if (/[\u2190-\u21ff]/u.test(fencedText)) forbidden.push('arrow glyph in diagram');
   const judgeText = await chat([
     { role: 'system', content: judgeSystem },
     { role: 'user', content: JSON.stringify({ rubric: item.rubric, conversation: conversation.slice(1), reply }) },
@@ -123,19 +128,28 @@ async function runOne(item, iteration) {
     qualityPass = width > 56 && !/\b(cannot|can't|won't|refuse)\b/i.test(reply);
     reason = `Measured ${width} text columns in the fenced diagram; judge: ${reason}`;
   }
-  if (item.id === 'first_hint' && /\bleft\b|visit\s*\(/i.test(reply)) {
+  const revealedLeft = /visit\s*\(\s*r\s*,\s*c\s*-\s*1\s*\)|(?:miss|missing|omitted|forgot|add|explore).{0,30}\bleft\b|\bleft\b.{0,30}(?:miss|missing|omitted)/i;
+  if (item.id === 'first_hint' && revealedLeft.test(reply)) {
     qualityPass = false;
     reason = `The first hint gave away the missing step; judge: ${reason}`;
   }
   if (item.id === 'second_hint') {
-    if (/\bleft\b|visit\s*\(/i.test(replies[0])) {
+    if (revealedLeft.test(replies[0])) {
       qualityPass = false;
       reason = `The first hint gave away the missing step; judge: ${reason}`;
+    }
+    if (!/\bleft\b/i.test(reply)) {
+      qualityPass = false;
+      reason = `The second hint did not name the missing left neighbor; judge: ${reason}`;
     }
     if (/visit\s*\(|```/i.test(reply)) {
       qualityPass = false;
       reason = `The second hint included implementation code; judge: ${reason}`;
     }
+  }
+  if (item.id === 'own_bug' && /\b(to fix|to enforce|if you want|you should|should start|change the|start the inner)\b|for\s+j\s+in\s+range\s*\(\s*i\s*\+\s*1/i.test(reply)) {
+    qualityPass = false;
+    reason = `The answer added an unrequested repair; judge: ${reason}`;
   }
   const pass = qualityPass && forbidden.length === 0;
   const result = { id: item.id, iteration, pass, forbidden, reason, reply, replies };
@@ -143,14 +157,14 @@ async function runOne(item, iteration) {
   return result;
 }
 
-console.error(`Prompt: ${estimateTokens(TUTOR_SYSTEM_MESSAGE)} estimated tokens; ${scenarios.length} scenarios x ${repeats} runs; model ${model}`);
+console.error(`Prompt: ${estimateTokens(TUTOR_SYSTEM_MESSAGE)} estimated tokens; ${selectedScenarios.length} scenarios x ${repeats} runs; model ${model}; think ${think}`);
 const results = [];
-for (const item of scenarios) {
+for (const item of selectedScenarios) {
   for (let iteration = 1; iteration <= repeats; iteration++) results.push(await runOne(item, iteration));
 }
 console.error('\nScenario | Passed | Total');
 console.error('--- | ---: | ---:');
-for (const item of scenarios) {
+for (const item of selectedScenarios) {
   const rows = results.filter((row) => row.id === item.id);
   console.error(`${item.id} | ${rows.filter((row) => row.pass).length} | ${rows.length}`);
 }

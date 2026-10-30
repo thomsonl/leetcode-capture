@@ -247,10 +247,10 @@ test('settings: keys are kept apart, validated, removable, and never in the publ
 // backend sends.
 test('the system message carries the diagram and table formatting rules', () => {
   const m = TUTOR_SYSTEM_MESSAGE;
-  assert.match(m, /ASCII or box drawing in a bare fenced block/);
-  assert.match(m, /within 56 columns/);
-  assert.match(m, /wider lines may scroll/);
+  assert.match(m, /ASCII or box-drawing diagrams in a bare fence/);
+  assert.match(m, /about 56 columns unless asked for wider/);
+  assert.match(m, /wider lines scroll/);
   assert.match(m, /Markdown tables only for comparisons/);
-  assert.match(m, /Never use Mermaid, LaTeX, images or HTML/);
-  assert.ok(m.indexOf('For diagrams') > m.indexOf('Use no em dashes'), 'format follows style');
+  assert.match(m, /no Mermaid, LaTeX, HTML, images or Unicode arrows/);
+  assert.ok(m.indexOf('Draw ASCII') > m.indexOf('Never output an em dash'), 'format follows style');
 });
