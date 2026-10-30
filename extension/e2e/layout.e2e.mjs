@@ -100,6 +100,22 @@ const page = (css, js) => `<!doctype html>
   .pane { padding: 20px 16px; font-size: 14px; line-height: 21px; }
   .border-b { height: 32px; border-bottom: 1px solid rgba(255,255,255,.1); }
   .row-label { color: rgba(239, 242, 246, 0.6); }
+  /* ?leetcode: what leetcode.com's own CSS does to the strip (measured live):
+     every tab button is a flex row with 0 8px of padding, no margin and no
+     gap; the content's row has a 4px gap (gap-1), a 16px icon box with its
+     svg absolutely centered, and the label drawn twice; dividers are 1px
+     lines with no margin. */
+  html.lc .flexlayout__tab_button { padding: 0 8px; margin: 0; gap: 0; }
+  html.lc .relative { position: relative; }
+  html.lc .flex { display: flex; }
+  html.lc .items-center { align-items: center; }
+  html.lc .gap-1 { gap: 4px; }
+  html.lc .whitespace-nowrap { white-space: nowrap; }
+  html.lc .icon-box { width: 16px; height: 16px; font-size: 14px; }
+  html.lc .icon-box > svg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  html.lc .ghost { position: absolute; inset: 0; visibility: hidden; font-weight: 400; }
+  html.lc .flexlayout__tab_button--selected .font-medium { font-weight: 600; }
+  html.lc .flexlayout__tabset_tab_divider { width: 1px; height: 14px; margin: 0; background: rgba(255, 255, 255, 0.15); }
 </style>
 <script>${FETCH_STUB}</script>
 </head><body><div id="root"></div><script>${js}</script></body></html>`;
@@ -166,6 +182,28 @@ const HELPERS = `(() => {
     if (strip) right = Math.min(right, strip.getBoundingClientRect().right);
     if (toolbar && el.closest('.flexlayout__tabset_tabbar_inner')) right = Math.min(right, toolbar.getBoundingClientRect().left);
     return { x: (r.left + right) / 2, y: r.top + r.height / 2 };
+  };
+  // How a tab button lays out its icon and label (leetcode.com's metrics:
+  // a 16px icon box, the label starting 20px after it), its label weight and
+  // the dividers on each side of it.
+  window.__tabLook = (b) => {
+    const svg = [...b.querySelectorAll('svg')].find((n) => n.checkVisibility());
+    const box = svg ? svg.parentElement.getBoundingClientRect() : null;
+    const leaf = [...b.querySelectorAll('*')].find((n) => n.children.length === 0 && n.textContent.trim() && !n.closest('svg') && n.checkVisibility({ visibilityProperty: true }));
+    const text = leaf ? leaf.getBoundingClientRect() : null;
+    const icon = svg ? svg.getBoundingClientRect() : null;
+    const before = getComputedStyle(b, '::before');
+    const divider = (el) => el && el.classList.contains('flexlayout__tabset_tab_divider') ? { cls: [...el.classList].filter((c) => c.startsWith('flexlayout__tabset_tab_divider')).map((c) => c.replace('flexlayout__tabset_tab_divider', '') || 'divider').sort().join(' '), bg: getComputedStyle(el).backgroundColor, w: Math.round(el.getBoundingClientRect().width) } : null;
+    return {
+      boxW: box ? Math.round(box.width) : null,
+      iconW: icon ? Math.round(icon.width) : null,
+      gap: box && text ? Math.round(text.left - box.left) : null,
+      textGap: icon && text ? Math.round(text.left - icon.right) : null,
+      weight: leaf ? getComputedStyle(leaf).fontWeight : null,
+      pseudoIcon: before.content !== 'none' && before.content !== 'normal',
+      before: divider(b.previousElementSibling),
+      after: divider(b.nextElementSibling),
+    };
   };
   window.__json = () => JSON.stringify(window.__fx.model().toJson());
   // The deep check: what the page saves while the Tutor tab is anywhere
@@ -268,6 +306,17 @@ try {
   await p.waitFor(`!!(window.__fx && document.querySelector('.flexlayout__tab_button'))`, { what: 'the flexlayout fixture' });
   await p.eval(HELPERS);
   await p.eval(`window.chrome = { runtime: { getURL: (file) => '/ext/' + file } }`);
+  // How a selected native tab that is not first in its strip looks, divider
+  // on each side included (the Tutor tab, second, is compared with it once
+  // selected), read before the panel is loaded; then Description again.
+  const selectNative = async (id) => {
+    await p.eval(`window.__fx.model().doAction(window.__fx.Actions.selectTab(${JSON.stringify(id)}))`);
+    await p.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+  };
+  await selectNative('editorial');
+  const selectedNative = await p.eval(`window.__tabLook(window.__button('Editorial'))`);
+  await selectNative('description');
+  await p.eval(`window.__fx.saved.length = 0`);
   await p.eval(`window.__base = window.__json(); window.__baseSizes = window.__sizes()`);
   await p.eval(`new Function(${JSON.stringify(panelSource)})()`);
   try {
@@ -351,8 +400,18 @@ try {
     check(JSON.stringify(look) === '["Tutor"]', `the Tutor button reads ${JSON.stringify(look)}`);
     const attrs = await p.eval(`(() => { const b = ${tutorButton}; return { draggable: b.getAttribute('draggable'), native: b.hasAttribute('data-lc-tutor-button'), icon: getComputedStyle(b, '::before').content }; })()`);
     check(attrs.draggable === 'true' && attrs.native, JSON.stringify(attrs));
-    check(attrs.icon !== 'none', `no Tutor icon: ${attrs.icon} ${await p.eval(`${tutorButton}.outerHTML`)}`);
+    check(attrs.icon !== 'none' || (await p.eval(`!!${tutorButton}.querySelector('[data-lc-tutor-label] svg')`)), `no Tutor icon: ${attrs.icon} ${await p.eval(`${tutorButton}.outerHTML`)}`);
     if (LEETCODE) {
+      // Unselected, the Tutor tab lays out like an unselected native tab
+      // (Editorial): the same icon box, the label 20px after it (4px past the
+      // box), the same weight and a divider on each side. A live build drew
+      // the icon from a pseudo-element touching the "T".
+      const tutor = await p.eval(`window.__tabLook(${tutorButton})`);
+      const native = await p.eval(`window.__tabLook(window.__button('Editorial'))`);
+      for (const key of ['boxW', 'iconW', 'gap', 'textGap', 'weight']) check(tutor[key] === native[key], `unselected Tutor ${key} ${tutor[key]} vs Editorial ${native[key]}: ${JSON.stringify({ tutor, native })}`);
+      check(native.boxW === 16 && native.gap === 20, `the fixture's native tab is not like leetcode.com's: ${JSON.stringify(native)}`);
+      check(!tutor.pseudoIcon, `a second, pseudo-element icon: ${JSON.stringify(tutor)}`);
+      check(tutor.before && tutor.after && tutor.before.w === 1 && tutor.after.w === 1, `dividers around the unselected Tutor tab: ${JSON.stringify(tutor)}`);
       const fork = await p.eval(`(() => { const m = window.__fx.model(); let named = 0; m.visitNodes((n) => { if (n.getType() === 'tab' && n.getName() !== '[Unnamed Tab]') named += 1; }); return { named, json: m.toJson().layout.children[0].children[0].name === undefined, add: typeof m.addChangeListener, hook: typeof m._setChangeListener }; })()`);
       // Only the Tutor tab carries a name; this script is not the bridge, so it sees addChangeListener.
       check(fork.named === 1 && fork.json && fork.hook === 'function', `not LeetCode-like: ${JSON.stringify(fork)}`);
@@ -365,7 +424,7 @@ try {
       check((await p.eval(`window.__labelOf(window.__tutorButtons()[0])`)) === 'Tutor', 'the label did not come back');
       await p.eval('window.__fx.rerender()');
       await settle();
-      const seen = await p.eval(`[...window.__tutorButtons()[0].querySelectorAll('*')].filter((n) => n.children.length === 0 && n.textContent.trim() && n.checkVisibility()).map((n) => n.textContent.trim())`);
+      const seen = await p.eval(`[...window.__tutorButtons()[0].querySelectorAll('*')].filter((n) => n.children.length === 0 && n.textContent.trim() && n.checkVisibility({ visibilityProperty: true })).map((n) => n.textContent.trim())`);
       check(JSON.stringify(seen) === '["Tutor"]', `the label after a re-render: ${JSON.stringify(seen)}`);
     }
   });
@@ -389,6 +448,14 @@ try {
     const after = await p.eval(`({ unread: ${tutorButton}.hasAttribute('data-unread'), focus: document.activeElement && document.activeElement.id === 'lc-tutor-panel-host' && window.__root().activeElement === window.__q('textarea') })`);
     check(!after.unread, 'still unread');
     check(after.focus, 'the composer did not get focus');
+    if (LEETCODE) {
+      // Selected, it lays out like a selected native tab, and its dividers
+      // get what flexlayout gives the dividers beside any selected tab.
+      const tutor = await p.eval(`window.__tabLook(${tutorButton})`);
+      for (const key of ['boxW', 'iconW', 'gap', 'textGap', 'weight']) check(tutor[key] === selectedNative[key], `selected Tutor ${key} ${tutor[key]} vs selected Editorial ${selectedNative[key]}: ${JSON.stringify({ tutor, selectedNative })}`);
+      check(JSON.stringify(tutor.before) === JSON.stringify(selectedNative.before) && JSON.stringify(tutor.after) === JSON.stringify(selectedNative.after), `the dividers beside the selected Tutor tab: ${JSON.stringify({ tutor, selectedNative })}`);
+      check(!tutor.pseudoIcon, `a second, pseudo-element icon: ${JSON.stringify(tutor)}`);
+    }
     await p.screenshot(path.join(SHOTS, '01-native-selected.png'), { width: 1200, height: 800 });
   });
 

@@ -201,15 +201,27 @@ function onRenderTab(node, values) {
     // A lookup by component, as on leetcode.com: for one it does not know
     // it draws the i18n key itself ("Tabs.LcTutor" for "lc-tutor") and no
     // icon.
+    // The real markup, measured live: the content holds a row with a 4px
+    // gap (gap-1) of a 16px icon box (its svg absolutely centered) and the
+    // label, drawn twice (font-medium, and an absolutely positioned
+    // regular-weight copy); no leading element. The page's CSS gives every
+    // tab button 0 8px of padding, no margin and no gap (see
+    // layout.e2e.mjs, html.lc).
     const component = node.getComponent() || '';
     const label = LABELS[component] || `Tabs.${component.replace(/(^|-)(\w)/g, (_, __, c) => c.toUpperCase())}`;
     values.content = (
-      <div className="label">
-        <div>{label}</div>
-        <div className="ghost">{label}</div>
+      <div className="relative flex items-center gap-1">
+        {LABELS[component] ? (
+          <div className="relative text-[14px] icon-box">
+            <svg width="1em" height="1em" viewBox="0 0 24 24" className="absolute tab-icon"><path fill="currentColor" d="M4 4h16v16H4z" /></svg>
+          </div>
+        ) : null}
+        <div className="relative">
+          <div className="font-medium whitespace-nowrap">{label}</div>
+          <div className="normal ghost">{label}</div>
+        </div>
       </div>
     );
-    if (LABELS[component]) values.leading = <svg width="1em" height="1em" viewBox="0 0 24 24" className="tab-icon"><path fill="currentColor" d="M4 4h16v16H4z" /></svg>;
     return;
   }
   const name = node.getName();
@@ -259,4 +271,5 @@ function App() {
   );
 }
 
+if (LEETCODE) document.documentElement.classList.add('lc');
 createRoot(document.getElementById('root')).render(<App />);

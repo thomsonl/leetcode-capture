@@ -816,13 +816,22 @@
   // The button's label. The tab's JSON has the name "Tutor", but a page
   // whose onRenderTab draws labels by component draws something else for
   // one it does not know: nothing, or (leetcode.com) its i18n key,
-  // "Tabs.LcTutor". Either way the page's content is hidden and "Tutor"
-  // shown in its place (panel.js draws the icon, from CSS); an observer on
-  // the button re-applies it after React re-renders, before the next paint,
-  // so it never flickers. A real label the page drew stays.
+  // "Tabs.LcTutor", with no icon. Either way the page's content is hidden
+  // and the bridge's own label shown in its place: a copy of a native tab's
+  // content from the same strip (on leetcode.com an icon box 16px wide, a
+  // 4px gap and the label drawn twice), with "Tutor" for the text and the
+  // chat icon for the page's icon, so spacing, weight and color follow the
+  // page's own rules exactly. A page with no native tab to copy gets the
+  // same shape built here. An observer on the button re-applies it after
+  // React re-renders, before the next paint, so it never flickers. A real
+  // label the page drew stays (panel.js then adds the icon from CSS).
   const LABEL_ATTR = "data-lc-tutor-label";
   const HIDDEN_ATTR = "data-lc-tutor-hidden";
   const I18N_KEY = /^[A-Za-z][\w-]*(\.[\w-]+)+$/;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  // The same chat bubble and color as panel.js (CHAT_PATH, TUTOR_COLOR).
+  const CHAT_PATH = "M5 3h14a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-7.2L6 21.5V17H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z";
+  const TUTOR_COLOR = "rgb(150, 115, 255)";
   let labelled = null;
   let labelObserver = null;
 
@@ -847,6 +856,75 @@
     }
   }
 
+  function chatIcon(template) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    // The page's own icon classes and size, so it sits in its box the same.
+    for (const name of ["class", "width", "height", "style"]) {
+      const value = template && template.getAttribute(name);
+      if (value) svg.setAttribute(name, value);
+    }
+    if (!svg.hasAttribute("width")) svg.setAttribute("width", "1em");
+    if (!svg.hasAttribute("height")) svg.setAttribute("height", "1em");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.color = TUTOR_COLOR;
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", CHAT_PATH);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  // A native tab's content in the same strip, with an icon and a real label.
+  function nativeContent(button) {
+    const strip = button.parentElement;
+    if (!strip) return null;
+    for (const other of strip.querySelectorAll(":scope > .flexlayout__tab_button")) {
+      if (other === button || other.hasAttribute(BUTTON_ATTR)) continue;
+      const content = [...other.children].find((n) => n.classList.contains("flexlayout__tab_button_content"));
+      if (content && content.querySelector("svg") && isRealLabel(pageLabel(other))) return content;
+    }
+    return null;
+  }
+
+  function buildLabel(button) {
+    const template = nativeContent(button);
+    let label;
+    if (template) {
+      label = template.cloneNode(true);
+      for (const el of [label, ...label.querySelectorAll("*")]) {
+        el.removeAttribute("id");
+        el.removeAttribute(HIDDEN_ATTR);
+      }
+      label.style.removeProperty("display");
+      for (const leaf of label.querySelectorAll("*")) {
+        if (leaf.children.length === 0 && leaf.textContent.trim() && !leaf.closest("svg")) leaf.textContent = "Tutor";
+      }
+      for (const svg of label.querySelectorAll("svg")) svg.replaceWith(chatIcon(svg));
+    } else {
+      label = document.createElement("div");
+      label.className = "flexlayout__tab_button_content";
+      const row = document.createElement("div");
+      row.style.cssText = "display: flex; align-items: center; gap: 4px;";
+      const box = document.createElement("div");
+      box.style.cssText = "position: relative; flex: none; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 14px;";
+      box.appendChild(chatIcon(null));
+      const text = document.createElement("div");
+      text.style.whiteSpace = "nowrap";
+      text.textContent = "Tutor";
+      row.append(box, text);
+      label.appendChild(row);
+    }
+    label.setAttribute(LABEL_ATTR, "text");
+    return label;
+  }
+
+  function isOurLabel(el) {
+    if (!el) return false;
+    const leaves = [...el.querySelectorAll("*")].filter((n) => n.children.length === 0 && n.textContent.trim() && !n.closest("svg"));
+    return leaves.length > 0 && leaves.every((n) => n.textContent === "Tutor") && !!el.querySelector("svg");
+  }
+
   function applyLabel() {
     const button = labelled;
     if (!button || !button.isConnected) return;
@@ -858,12 +936,9 @@
       if (content) setHidden(content, false);
     } else {
       if (content) setHidden(content, true);
-      if (!text || text.textContent !== "Tutor") {
+      if (!isOurLabel(text)) {
         if (text) text.remove();
-        text = document.createElement("div");
-        text.className = "flexlayout__tab_button_content";
-        text.setAttribute(LABEL_ATTR, "text");
-        text.textContent = "Tutor";
+        text = buildLabel(button);
       }
       const after = content || button.querySelector(".flexlayout__tab_button_leading") || null;
       const want = after ? after.nextSibling : button.firstChild;
