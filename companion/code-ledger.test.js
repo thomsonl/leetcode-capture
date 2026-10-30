@@ -75,7 +75,7 @@ test('three recorded versions then one plan: only the diff from the held code to
   assert.equal(plan.added, 2);
   assert.equal(plan.removed, 2);
   const text = formatCodeUpdate(plan);
-  assert.match(text, /^Changes to the student's code since the version you last saw \(Python3, \+2\/-2 lines\):/);
+  assert.match(text, /^Changes to the student's code since the version you last saw \(Python3, \+2\/-2 lines; the line numbers are those of the current code\):/);
   // Line numbers are the new code's, removed lines carry none, and a couple
   // of unchanged lines around each change give the tutor its place.
   const lines = text.split('\n');
@@ -224,6 +224,38 @@ test('a chat message goes as typed when nothing changed, and leads with the code
 test('the pinned code names the version later changes apply to', () => {
   assert.equal(formatPinnedCode(null), null);
   const pinned = formatPinnedCode({ code: 'x = 1', language: 'Python3' });
-  assert.match(pinned, /exactly as you last saw it \(Python3\)/);
+  assert.match(pinned, /^The student's current code \(Python3\), exactly as it is now/);
   assert.match(pinned, /```python\nx = 1\n```$/);
+});
+
+test('every request carries the current code: diff applied, stale after a failed read, and a swap keeps the chat', async () => {
+  const { currentCodeFor, prepareChatTurn } = await import('../extension/shared/code-ledger.js');
+  const { LocalBackend } = await import('../extension/shared/local-backend.js');
+  const { transferConversation } = await import('../extension/shared/conversation.js');
+  const ledger = createCodeLedger();
+  ledger.activate('p');
+  const body = Array.from({ length: 20 }, (_, i) => `x${i} = ${i}`).join('\n');
+  ledger.record('p', { code: `a = 1\n${body}`, language: 'python3', context: { problemId: 'p', title: 'P', slug: 'p', description: 'STATEMENT' } });
+  ledger.commit('p', { code: `a = 1\n${body}`, language: 'python3' });
+  ledger.record('p', { code: `a = 2\n${body}`, language: 'python3' });
+  const turn = prepareChatTurn(ledger, { text: 'q', problemId: 'p' });
+  assert.equal(turn.plan.kind, 'diff');
+  assert.equal(turn.currentCode.code, `a = 2\n${body}`, 'the pin is the code after the diff');
+  assert.match(formatPinnedCode(turn.currentCode), /a = 2/);
+  const failed = prepareChatTurn(ledger, { text: 'q', problemId: 'p', codeUnavailable: true, preamble: () => null });
+  assert.deepEqual(failed.currentCode, { code: `a = 1\n${body}`, language: 'python3', stale: true }, 'a failed read keeps the last code seen');
+  assert.match(formatPinnedCode(failed.currentCode), /could not be read[\s\S]*a = 1/);
+  assert.equal(formatPinnedCode(currentCodeFor({ kind: 'full', code: 'x', language: null }, null)), null, 'a full message is not pinned twice');
+
+  // A swap moves the exchanges, the summary and the statement.
+  const probe = async () => null;
+  const a = new LocalBackend({ baseUrl: 'http://127.0.0.1:9', model: 'a', probe, numCtx: 8192 });
+  a.history.push({ role: 'user', content: 'first' }, { role: 'assistant', content: 'reply' });
+  a.summary = 'SUMMARY';
+  a.pinnedProblemContext = { problemId: 'p', title: 'P', slug: 'p', description: 'STATEMENT' };
+  const b = new LocalBackend({ baseUrl: 'http://127.0.0.1:9', model: 'b', probe, numCtx: 8192 });
+  assert.equal(transferConversation(a, b), true);
+  b.pinnedCode = { text: formatPinnedCode(turn.currentCode) };
+  const sent = JSON.stringify(b.buildMessages());
+  for (const part of ['first', 'reply', 'SUMMARY', 'STATEMENT', 'a = 2']) assert.ok(sent.includes(part), part);
 });

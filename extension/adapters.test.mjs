@@ -114,7 +114,7 @@ test('Anthropic: streams text deltas with the browser-access headers and the sys
     const reply = await backend.sendMessage('my question', {
       onChunk: (c) => chunks.push(c),
       problemContext: { problemId: 'two-sum', title: 'Two Sum', slug: 'two-sum', description: 'Find two numbers.' },
-      heldCode: { code: 'x = 1', language: 'python3' },
+      currentCode: { code: 'x = 1', language: 'python3' },
     });
     assert.equal(reply, 'Nice work.');
     assert.deepEqual(chunks, ['Nice ', 'work.']);

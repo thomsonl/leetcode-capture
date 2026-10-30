@@ -38,11 +38,14 @@ export const DIFF_CONTEXT_LINES = 2;
 // maxCells): about 2,000 by 2,000 changed lines. Past it the full code goes.
 export const MAX_DIFF_CELLS = 4_000_000;
 
-// Shown to the model in place of an older turn's full code, once the code it
-// holds is pinned at the top of the conversation (see context-budget.js's
-// buildMessages).
+// What every stateless request labels the pinned current code with (see
+// formatPinnedCode).
+export const CURRENT_CODE_LABEL = "The student's current code";
+
+// Shown to the model in place of an older turn's full code, since every
+// request pins the current code (see context-budget.js's buildMessages).
 export const FULL_CODE_COMPACT_NOTE =
-  "(The student's full code was shown here. The latest version you have seen is pinned at the top of the conversation.)";
+  `(The student's full code was shown here. Their current code is pinned at the top of the conversation as "${CURRENT_CODE_LABEL}".)`;
 
 // Only a Submit is sent to the tutor by itself. Anything else, a Run or an
 // unknown trigger (the relay's /capture route accepts posts from any page),
@@ -206,7 +209,9 @@ export function createCodeLedger({ maxProblems = DEFAULT_MAX_PROBLEMS } = {}) {
 }
 
 // The code part of a message for a plan from planUpdate, or null when there
-// is nothing to show (`none` or `unchanged`).
+// is nothing to show (`none` or `unchanged`). A `full` plan carries the code
+// (a resumed Claude session has no pinned copy); a `diff` the numbered diff,
+// which the pinned full code alone cannot show: what the student just changed.
 export function formatCodeUpdate(plan) {
   if (plan.kind === 'full') {
     return `The student's current code (${languageName(plan.language)}), in full:\n\n${fenced(plan.code, plan.language)}`;
@@ -214,22 +219,40 @@ export function formatCodeUpdate(plan) {
   if (plan.kind === 'diff') {
     return (
       `Changes to the student's code since the version you last saw ` +
-      `(${languageName(plan.language)}, +${plan.added}/-${plan.removed} lines):\n\n` +
+      `(${languageName(plan.language)}, +${plan.added}/-${plan.removed} lines; the line numbers are those of ` +
+      `the current code):\n\n` +
       `\`\`\`diff\n${plan.diff}\n\`\`\``
     );
   }
   return null;
 }
 
-// The pinned system message holding the code the tutor has been shown (see
-// context-budget.js's buildMessages), or null when it holds none.
-export function formatPinnedCode(held) {
-  if (!held || typeof held.code !== 'string') return null;
-  return (
-    `The student's code exactly as you last saw it (${languageName(held.language)}). ` +
-    `It already includes every change shown earlier in the conversation, and any code change in the ` +
-    `student's newest message applies to this version:\n\n${fenced(held.code, held.language)}`
-  );
+// The block holding the student's current full code, which every request
+// carries (see context-budget.js's buildMessages, and ClaudeBackend's
+// session path), or null when no code is known. `code.stale` marks the last
+// version the tutor was shown, standing in when the editor could not be read.
+export function formatPinnedCode(code) {
+  if (!code || typeof code.code !== 'string' || code.inMessage) return null;
+  const language = languageName(code.language);
+  const header = code.stale
+    ? `${CURRENT_CODE_LABEL} (${language}), as last read: their editor could not be read for the newest ` +
+      'message, so this is the last version you were shown and it may be out of date.'
+    : `${CURRENT_CODE_LABEL} (${language}), exactly as it is now. Every code change shown in the conversation ` +
+      'is already applied here; reason about this version.';
+  return `${header}\n\n${fenced(code.code, code.language)}`;
+}
+
+// The code a turn's request carries: the code the plan sends (full, diff or
+// unchanged), else the last version the tutor was shown (marked stale when
+// the editor could not be read), else null. A `full` plan's message already
+// holds the whole code, so it is marked `inMessage` and not pinned a second
+// time on that request (formatPinnedCode); every later request pins it.
+export function currentCodeFor(plan, held, { codeUnavailable = false } = {}) {
+  if (plan && typeof plan.code === 'string' && (plan.kind === 'full' || plan.kind === 'diff' || plan.kind === 'unchanged')) {
+    return { code: plan.code, language: plan.language || null, stale: false, ...(plan.kind === 'full' ? { inMessage: true } : {}) };
+  }
+  if (held && typeof held.code === 'string') return { code: held.code, language: held.language || null, stale: Boolean(codeUnavailable) };
+  return null;
 }
 
 // A Submit: its header line, the code update (full or diff), then the
@@ -264,4 +287,47 @@ export function buildChatMessage({ text, plan = { kind: 'none' }, preamble = nul
   parts.push(message);
   compactParts.push(message);
   return { text: parts.join('\n\n'), compactText: compactParts.join('\n\n') };
+}
+
+// The notes a panel message leads with: the problem the student moved to,
+// and why their code is missing when the editor could not be read.
+export function chatPreamble({ previousId, problemId, codeUnavailable = false, hasHeld = false }) {
+  const notes = [];
+  if (problemId && previousId !== problemId) notes.push(`(The student is now working on the LeetCode problem "${problemId}".)`);
+  if (codeUnavailable) {
+    notes.push(
+      hasHeld
+        ? `(The student's editor could not be read, so their newest code is not included: "${CURRENT_CODE_LABEL}" is the last version you were shown and may be out of date.)`
+        : "(The student's editor could not be read, so their current code is not included.)"
+    );
+  }
+  return notes.length ? notes.join('\n') : null;
+}
+
+// Everything a typed message's turn needs, the same in both runtimes (the
+// companion and the extension's engine): the plan, the message, and the code
+// the request carries. `preamble` is a string, a function of { plan, hasHeld },
+// or null.
+export function prepareChatTurn(ledger, { text, problemId, preamble = null, codeUnavailable = false }) {
+  const plan = problemId && !codeUnavailable ? ledger.planUpdate(problemId) : { kind: 'none' };
+  const held = problemId ? ledger.held(problemId) : null;
+  const lead = typeof preamble === 'function' ? preamble({ plan, hasHeld: Boolean(held) }) : preamble;
+  const message = buildChatMessage({ text, plan, preamble: lead });
+  return {
+    plan,
+    message,
+    problemContext: (problemId && ledger.context(problemId)) || undefined,
+    currentCode: currentCodeFor(plan, held, { codeUnavailable }),
+  };
+}
+
+// The same for a Submit the ledger decided to send (plan `full` or `diff`).
+export function prepareSubmitTurn(ledger, { problemId, plan, headerLine, addendum = '', fallbackContext = null }) {
+  const message = buildSubmitMessage({ headerLine, plan, addendum });
+  return {
+    plan,
+    message,
+    problemContext: ledger.context(problemId) || fallbackContext || undefined,
+    currentCode: currentCodeFor(plan, ledger.held(problemId)),
+  };
 }
