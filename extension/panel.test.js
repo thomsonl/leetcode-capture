@@ -16,6 +16,7 @@ const {
   streamLost,
   RESTARTED,
   itemsFor,
+  visibleItems,
   firstChangedBlock,
   parseInline,
   parseBlocks,
@@ -101,6 +102,50 @@ test("captures and notices become transcript items; status only updates the flag
     ["capture", "notice"]
   );
   assert.equal(state.companionBusy, false);
+});
+
+test("a switch notice is held back until something follows it, so it never dangles at the end", () => {
+  const state = createState();
+  applyEvent(state, { type: "user", problemSlug: "a", text: "hi", seq: 1 });
+  // A Run on another problem resets the tutor and shows nothing else.
+  applyEvent(state, { type: "notice", problemSlug: "a", text: "fresh session", switch: true, seq: 2 });
+  assert.deepEqual(visibleItems(itemsFor(state, "a")), []);
+  applyEvent(state, { type: "user", problemSlug: "a", text: "next", seq: 3 });
+  assert.deepEqual(visibleItems(itemsFor(state, "a")).map((i) => i.kind), ["notice", "user"]);
+  // Any other notice shows at once.
+  applyEvent(state, { type: "notice", problemSlug: "a", text: "plain", seq: 4 });
+  assert.equal(visibleItems(itemsFor(state, "a")).at(-1).text, "plain");
+});
+
+test("a switch notice drops every transcript, so the notice comes first and the old chat is gone", () => {
+  const state = createState();
+  applyEvent(state, { type: "user", problemSlug: "two-sum", text: "old", seq: 1 });
+  applyEvent(state, { type: "turn-start", problemSlug: "two-sum", turnId: "t1", seq: 2 });
+  applyEvent(state, { type: "turn-end", problemSlug: "two-sum", turnId: "t1", text: "old reply", seq: 3 });
+  applyEvent(state, { type: "user", problemSlug: "valid-parentheses", text: "older", seq: 4 });
+  // Back on two-sum after valid-parentheses was active.
+  // Every panel redraws, whatever problem it is on.
+  assert.equal(applyEvent(state, { type: "notice", problemSlug: "two-sum", text: "fresh", switch: true, seq: 5 }), RESTARTED);
+  assert.equal(state.activeProblem, "two-sum");
+  applyEvent(state, { type: "user", problemSlug: "two-sum", text: "new", seq: 6 });
+  assert.deepEqual(itemsFor(state, "two-sum").map((i) => i.text), ["fresh", "new"]);
+  assert.equal(itemsFor(state, "valid-parentheses").length, 0);
+  // The old turn id is forgotten too: a late chunk for it changes nothing.
+  assert.equal(applyEvent(state, { type: "chunk", turnId: "t1", text: "late", seq: 7 }), null);
+});
+
+test("the active problem follows switch notices, and chat on another problem without one", () => {
+  const state = createState();
+  assert.equal(state.activeProblem, null);
+  applyEvent(state, { type: "user", problemSlug: "a", text: "hi", seq: 1 });
+  assert.equal(state.activeProblem, null, "only a switch says which problem is active");
+  applyEvent(state, { type: "notice", problemSlug: "b", text: "fresh", switch: true, seq: 2 });
+  assert.equal(state.activeProblem, "b");
+  // Auto-clear turned off: a message on another problem resets nothing.
+  applyEvent(state, { type: "user", problemSlug: "c", text: "yo", seq: 3 });
+  assert.equal(state.activeProblem, "c");
+  applyEvent(state, { type: "notice", problemSlug: "c", text: "plain", seq: 4 });
+  assert.equal(state.activeProblem, "c");
 });
 
 test("a Run shows no chip, even one an older companion still publishes", () => {

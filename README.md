@@ -36,6 +36,10 @@ Then load the browser extension.
 
 Open any `leetcode.com/problems/<slug>/` page to confirm it loaded.
 
+Chrome prints a warning about `background.scripts` when it loads the repo folder, because the manifest lists that key for Firefox.
+For a warning-free Chrome folder, run `node extension/scripts/build.mjs --browser chrome --out <dir>` and load `<dir>` instead.
+It copies only the files the browser needs and drops `background.scripts` from the copy; `--browser firefox` copies the manifest unchanged.
+
 ## Runtimes
 
 The tutor runs in one of two places, chosen per provider on the settings page ("Where the tutor runs").

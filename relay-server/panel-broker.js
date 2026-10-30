@@ -180,6 +180,9 @@ function sanitizeEvent(raw) {
     if (!Number.isInteger(raw.attemptSeq) || raw.attemptSeq < 0) return null;
     event.attemptSeq = raw.attemptSeq;
   }
+  // The notice of a reset on a problem switch (the panel treats it as the
+  // start of a fresh session).
+  if (raw.type === "notice" && raw.switch === true) event.switch = true;
   return event;
 }
 

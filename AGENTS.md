@@ -382,7 +382,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `queueTurn`, so a reset never lands mid-request. A message, Run or Submit on another problem (with
   `COMPANION_AUTO_CLEAR_CONTEXT` on, the default) calls the backend's `resetContext()`, drops the old problem from the
   ledger, asks the relay to drop its buffered chat (companion-only `POST /panel/drop-problem`) and clears the handled
-  part of `captures.jsonl` (see the `attemptSeq` bullet). `LocalBackend` pins the held code as a system message (like the description) so condensing old exchanges cannot
+  part of `captures.jsonl` (see the `attemptSeq` bullet).
+  Its panel notice carries `switch: true` (the relay keeps only that flag), and on it every open panel drops all its transcripts, so the screen matches what a reload replays.
+  The notice is held back until something follows it (`visibleItems`), since a Run shows nothing else, and a panel on any other problem shows only "Another problem is active now" (`state.activeProblem`), never which one or its chat.
+  A Run or Submit on the problem already active publishes no notice. `extension-runtime.e2e.mjs` checks this with two tabs, `panel-render.e2e.mjs` over the relay transport.
+  `LocalBackend` pins the held code as a system message (like the description) so condensing old exchanges cannot
   lose it, and an older full-code turn is sent as its `compactContent`. `ClaudeBackend` needs no pinning: its resumed
   session keeps the first full code and later diffs. `companion/code-updates.test.js` covers the rules end to end.
 - Real mouse-wheel scrolling inside the alternate screen: `companion/mouse-input.js` enables xterm's
@@ -846,6 +850,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     `content.js`'s Ctrl/Cmd+Enter shortcut ignores events whose composed path includes `#lc-tutor-panel-host`.
   - To test against the real page without loading the unpacked extension, run the relay + companion (with a stub
     model) and inject `panel.js` by `new Function(code)()` through the browser tool; leetcode's CSP allows it.
+
+- `extension/scripts/build.mjs --browser chrome|firefox --out <dir>` (zero-dependency, covered by `extension/build.test.mjs` in `npm test`) copies the extension without tests, e2e, `package.json` files, checklists, the privacy policy, and screenshots; the chrome target also drops `background.scripts` from the output manifest only, since Chrome warns about it. Never edit the repo manifest for this: Firefox and `npm run lint:amo` need both background keys.
 
 - Settings (which LLM the tutor uses, plus the auto-clear and vault options) are edited on the extension's options page (`extension/settings.html`, `settings.js`), never in the Tutor panel, since leetcode.com's own scripts can read anything typed into the page.
   The panel's gear sends `{ type: 'lc-tutor:open-settings' }` to `extension/background.js`, which calls `openOptionsPage`; the manifest declares `background` with both `service_worker` (Chrome) and `scripts` (Firefox), so `npm run lint:amo` always shows one warning about `service_worker` being ignored on Firefox.

@@ -361,7 +361,7 @@ test('activity on another problem resets everything, and the next message carrie
   assert.equal(c.requests.length, 2, 'a Run on B must not reach the model');
   const events = await c.relayEvents();
   assert.ok(!events.some((e) => e.problemSlug === 'two-sum'), `the relay still holds A's chat: ${JSON.stringify(events)}`);
-  assert.ok(events.some((e) => e.type === 'notice' && e.problemSlug === 'house-robber'));
+  assert.ok(events.some((e) => e.type === 'notice' && e.problemSlug === 'house-robber' && e.switch === true), 'the relay keeps the switch flag');
 
   // The first message on B carries B's statement and its full code, and
   // nothing of A.

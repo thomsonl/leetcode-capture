@@ -228,7 +228,7 @@ test('activity on another problem resets the tutor, drops the old chat, and the 
   assert.equal(backend.resets, 1);
   assert.equal(service.hub.events().filter((e) => e.problemSlug === 'two-sum').length, 0, "the old problem's chat is dropped");
   const notice = service.hub.events().find((e) => e.type === 'notice');
-  assert.deepEqual([notice.problemSlug, notice.text], ['add-two-numbers', NEW_PROBLEM_NOTICE]);
+  assert.deepEqual([notice.problemSlug, notice.text, notice.switch], ['add-two-numbers', NEW_PROBLEM_NOTICE, true]);
   assert.equal(service.engine.activeProblemId, 'add-two-numbers');
 
   const port = fakePort();
@@ -244,6 +244,24 @@ test('activity on another problem resets the tutor, drops the old chat, and the 
   await settle(service);
   assert.equal(backend.resets, 2);
   assert.match(backend.calls.at(-1).text, /now working on the LeetCode problem "two-sum"/);
+});
+
+test('a Run or Submit on the problem already active publishes no switch notice', async () => {
+  const { service, backends } = await setup();
+  await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: LOCAL } }, OPTIONS_PAGE);
+  const port = fakePort();
+  service.connectPort(port);
+  port.send({ type: 'message', id: 1, text: 'first', problemSlug: 'two-sum', snapshot: { code: code1 } });
+  await settle(service);
+  port.send({ type: 'message', id: 2, text: 'switch', problemSlug: 'valid-parentheses', snapshot: { code: code2 } });
+  await settle(service);
+  const notices = () => service.hub.events().filter((e) => e.type === 'notice');
+  assert.equal(notices().length, 1);
+  await service.handleMessage(capture('run', code2, 'valid-parentheses'), CONTENT_SCRIPT);
+  await service.handleMessage(capture('submit', code1, 'valid-parentheses'), CONTENT_SCRIPT);
+  await settle(service);
+  assert.equal(notices().length, 1, JSON.stringify(notices()));
+  assert.equal(backends.built.at(-1).resets, 1);
 });
 
 test('a problem-switch notice appears before the panel message that triggered it', async () => {

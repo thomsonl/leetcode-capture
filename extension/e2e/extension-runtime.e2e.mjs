@@ -105,41 +105,57 @@ try {
     options.close();
   });
 
-  // The problem page, served by the browser from the fixture.
-  const page = await browser.openPage('about:blank');
+  // A problem page, served by the browser from the fixture. Every page
+  // records its requests to the relay in relayRequests.
   const relayRequests = [];
-  await page.send('Fetch.enable', { patterns: [{ urlPattern: 'https://leetcode.com/*' }, { urlPattern: 'http://localhost:8135/*' }] });
-  page.on('Fetch.requestPaused', async (p) => {
-    const url = new URL(p.request.url);
-    if (url.host === 'localhost:8135') {
-      relayRequests.push(p.request.url);
-      await page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'ConnectionRefused' });
-      return;
-    }
-    const isPage = url.pathname.startsWith('/problems/');
-    await page.send('Fetch.fulfillRequest', {
-      requestId: p.requestId,
-      responseCode: isPage ? 200 : 404,
-      responseHeaders: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }],
-      body: Buffer.from(isPage ? fixture : '').toString('base64'),
-    });
-  });
-  await page.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 760, deviceScaleFactor: 1, mobile: false });
-  await page.send('Page.navigate', { url: 'https://leetcode.com/problems/two-sum/description/' });
-  await page.waitFor(`document.readyState === 'complete'`, { what: 'the problem page' });
-  await page.eval(`(() => {
+  const helpers = `(() => {
     window.__root = () => document.getElementById('lc-tutor-panel-host').shadowRoot;
     window.__q = (sel) => window.__root().querySelector(sel);
     window.__qa = (sel) => [...window.__root().querySelectorAll(sel)];
     window.__openTutor = () => document.querySelector('[data-lc-tutor-tab]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
     window.__replies = () => window.__qa('.feed .tutor').map((n) => n.textContent);
+    window.__feed = () => window.__qa('.feed > *').map((n) => n.className.split(' ')[0] + ': ' + n.textContent);
     window.__send = (text) => {
       const t = window.__q('textarea');
       t.value = text;
       t.dispatchEvent(new Event('input', { bubbles: true }));
       t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     };
-  })()`);
+    window.__run = () => document.getElementById('editor-button').dispatchEvent(new KeyboardEvent('keydown', { key: "'", ctrlKey: true, bubbles: true }));
+  })()`;
+  async function openProblem(slug) {
+    const tab = await browser.openPage('about:blank');
+    await tab.send('Fetch.enable', { patterns: [{ urlPattern: 'https://leetcode.com/*' }, { urlPattern: 'http://localhost:8135/*' }] });
+    tab.on('Fetch.requestPaused', async (p) => {
+      const url = new URL(p.request.url);
+      if (url.host === 'localhost:8135') {
+        relayRequests.push(p.request.url);
+        await tab.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'ConnectionRefused' });
+        return;
+      }
+      const isPage = url.pathname.startsWith('/problems/');
+      await tab.send('Fetch.fulfillRequest', {
+        requestId: p.requestId,
+        responseCode: isPage ? 200 : 404,
+        responseHeaders: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }],
+        body: Buffer.from(isPage ? fixture : '').toString('base64'),
+      });
+    });
+    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 760, deviceScaleFactor: 1, mobile: false });
+    await tab.send('Page.navigate', { url: `https://leetcode.com/problems/${slug}/description/` });
+    await tab.waitFor(`document.readyState === 'complete'`, { what: `the ${slug} page` });
+    await tab.eval(helpers);
+    return tab;
+  }
+  // A background tab draws nothing (the panel renders on animation frames),
+  // so a tab is brought to the front before its feed is read.
+  async function front(tab) {
+    await tab.send('Page.bringToFront');
+    await new Promise((r) => setTimeout(r, 200));
+    await tab.eval('window.__openTutor()');
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const page = await openProblem('two-sum');
 
   await scenario('the real content scripts mount the Tutor tab, connected to the worker', async () => {
     await page.waitFor(`document.querySelector('[data-lc-tutor-tab]')`, { what: 'the Tutor tab' });
@@ -201,14 +217,79 @@ try {
   await scenario('a reload replays the conversation from the worker', async () => {
     await page.send('Page.reload');
     await page.waitFor(`document.readyState === 'complete' && document.querySelector('[data-lc-tutor-tab]')`, { what: 'the reloaded page' });
-    await page.eval(`(() => {
-      window.__root = () => document.getElementById('lc-tutor-panel-host').shadowRoot;
-      window.__q = (sel) => window.__root().querySelector(sel);
-      window.__qa = (sel) => [...window.__root().querySelectorAll(sel)];
-      window.__replies = () => window.__qa('.feed .tutor').map((n) => n.textContent);
-      document.querySelector('[data-lc-tutor-tab]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
-    })()`);
+    await page.eval(helpers);
+    await page.eval('window.__openTutor()');
     await page.waitFor(`window.__replies().length === 2`, { what: 'the replayed replies' });
+  });
+
+  // A second tab on another problem, on the same extension (one worker, one
+  // tutor). The active problem is whichever one the last message, Run or
+  // Submit came from.
+  const other = await openProblem('valid-parentheses');
+  const NOTICE = 'notice: New problem detected. Started a fresh tutor session.';
+  const settle = () => new Promise((r) => setTimeout(r, 1000));
+  const QUIET = 'empty: Another problem is active now. Send a message or Run here to switch to this one.';
+
+  await scenario("switching problems drops the old problem's chat from the panel, not only from the worker", async () => {
+    await front(other);
+    await other.waitFor(`window.__q('.status span') && window.__q('.status span').textContent === 'Connected'`, { what: 'the second tab' });
+    await other.eval(`window.__send('what about brackets?')`);
+    await other.waitFor(`window.__feed().at(-1).startsWith('tutor: Reply') && window.__feed().at(-1).endsWith('part three.')`, { what: 'the reply in the second tab', timeout: 10000 });
+    const first = await other.eval('window.__feed()');
+    check(first.length === 3 && first[0] === NOTICE && first[1] === 'user: what about brackets?', `the second tab: ${JSON.stringify(first)}`);
+  });
+
+  await scenario('a panel on a problem that is no longer active empties at once and says so, without sending anything', async () => {
+    await front(page);
+    const quiet = await page.eval('window.__feed()');
+    check(JSON.stringify(quiet) === JSON.stringify([QUIET]), `the first tab: ${JSON.stringify(quiet)}`);
+    await page.screenshot(path.join(shots, 'another-problem-active-dark.png'), { width: 1100, height: 760 });
+  });
+
+  await scenario('a message from the old tab switches back: its notice comes first, and the other tab empties', async () => {
+    await front(page);
+    await page.eval(`window.__send('back to two sum')`);
+    await page.waitFor(`window.__feed().at(-1).endsWith('part three.') && window.__feed().includes('user: back to two sum')`, { what: 'the reply back on two-sum', timeout: 10000 });
+    const back = await page.eval('window.__feed()');
+    check(back.length === 3 && back[0] === NOTICE && back[1] === 'user: back to two sum', `the old two-sum chat stayed: ${JSON.stringify(back)}`);
+    await page.screenshot(path.join(shots, 'switch-back-dark.png'), { width: 1100, height: 760 });
+    // A reload shows the same.
+    await page.send('Page.reload');
+    await page.waitFor(`document.readyState === 'complete' && document.querySelector('[data-lc-tutor-tab]')`, { what: 'the reloaded page' });
+    await page.eval(helpers);
+    await page.eval('window.__openTutor()');
+    await page.waitFor(`window.__replies().length === 1`, { what: 'the replayed reply' });
+    const replayed = await page.eval('window.__feed()');
+    check(JSON.stringify(replayed) === JSON.stringify(back), `the reload replays something else: ${JSON.stringify(replayed)}`);
+    await front(other);
+    const emptied = await other.eval('window.__feed()');
+    check(JSON.stringify(emptied) === JSON.stringify([QUIET]), `the second tab: ${JSON.stringify(emptied)}`);
+  });
+
+  await scenario('a Run that switches problems leaves no dangling notice, and one on the active problem none at all', async () => {
+    // The Run switches the tutor to valid-parentheses: nothing to show yet.
+    await front(other);
+    await other.eval('window.__run()');
+    await settle();
+    await front(other);
+    const afterRun = await other.eval('window.__feed()');
+    check(afterRun.length === 1 && afterRun[0].startsWith('empty: Submit your code'), `a dangling notice, or not the usual empty state: ${JSON.stringify(afterRun)}`);
+    await front(page);
+    const firstTab = await page.eval('window.__feed()');
+    check(JSON.stringify(firstTab) === JSON.stringify([QUIET]), `the first tab after the Run: ${JSON.stringify(firstTab)}`);
+    // The next message shows the notice right before it.
+    await front(other);
+    await other.eval(`window.__send('one more')`);
+    await other.waitFor(`window.__feed().at(-1).endsWith('part three.') && window.__feed().includes('user: one more')`, { what: 'the reply after the Run', timeout: 10000 });
+    const afterMessage = await other.eval('window.__feed()');
+    check(afterMessage.length === 3 && afterMessage[0] === NOTICE && afterMessage[1] === 'user: one more', `the notice is not right before the message: ${JSON.stringify(afterMessage)}`);
+    await other.screenshot(path.join(shots, 'switch-after-run-dark.png'), { width: 1100, height: 760 });
+    // A Run on the problem already active changes nothing.
+    await other.eval('window.__run()');
+    await settle();
+    await front(other);
+    const unchanged = await other.eval('window.__feed()');
+    check(JSON.stringify(unchanged) === JSON.stringify(afterMessage), `a Run on the active problem changed the feed: ${JSON.stringify(unchanged)}`);
   });
 
   await scenario('the problem page never contacted the relay', async () => {
@@ -216,7 +297,7 @@ try {
   });
 
   await scenario('no exceptions in the page', async () => {
-    const errors = page.console.filter((l) => /exception|error/i.test(l));
+    const errors = [...page.console, ...other.console].filter((l) => /exception|error/i.test(l));
     check(errors.length === 0, errors.join('\n'));
   });
 } finally {

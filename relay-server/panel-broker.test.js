@@ -748,7 +748,7 @@ test("the companion's busy flag reaches every panel in the status event, and cle
 // These run the broker in-process (createPanelBroker behind a plain http
 // server on an ephemeral port), so the call timeout can be made short.
 
-const { createPanelBroker, sanitizeConfig, EXTENSION_ORIGIN_RE } = require("./panel-broker");
+const { createPanelBroker, sanitizeConfig, sanitizeEvent, EXTENSION_ORIGIN_RE } = require("./panel-broker");
 
 const CHROME_EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const FIREFOX_EXT = "moz-extension://0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e";
@@ -915,4 +915,10 @@ test("the newest config event goes to every panel, also to panels that connect l
   const types = replay.map((e) => e.type);
   assert.deepEqual(types, ["notice", "config", "status"], "the replay, then the one newest config, then status");
   assert.equal(replay[1].model, "gpt-x");
+});
+
+test("unit: sanitizeEvent keeps the switch flag only on a notice, and only as true", () => {
+  assert.equal(sanitizeEvent({ type: "notice", text: "fresh", problemSlug: "a", switch: true }).switch, true);
+  assert.equal(sanitizeEvent({ type: "notice", text: "fresh", problemSlug: "a", switch: "yes" }).switch, undefined);
+  assert.equal(sanitizeEvent({ type: "user", text: "hi", problemSlug: "a", switch: true }).switch, undefined);
 });

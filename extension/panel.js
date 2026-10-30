@@ -85,8 +85,19 @@
       config: null,
       displayConfig: null,
       byProblem: new Map(), // slug -> items[]
+      // The problem the tutor is on, once a switch notice said so (or null).
+      // A panel on any other problem shows only that another one is active.
+      activeProblem: null,
       turnProblem: new Map(), // turnId -> slug, so a chunk (which has no slug) finds its turn
     };
+  }
+
+  // What the feed shows of a transcript: a switch notice with nothing after
+  // it yet (a Run on another problem resets the tutor but shows nothing) is
+  // held back until the next message or reply, so it never dangles at the
+  // end.
+  function visibleItems(items) {
+    return items.length && items[items.length - 1].switchNotice ? items.slice(0, -1) : items;
   }
 
   function itemsFor(state, slug) {
@@ -207,6 +218,16 @@
     return changed;
   }
 
+  // The tutor reset on a problem switch (a switch notice): it forgot every
+  // other problem, and the relay or the worker dropped their buffered chat,
+  // so the panel drops every transcript too. What a reload would replay is
+  // then exactly what is on screen.
+  function startFreshSession(state) {
+    state.byProblem.clear();
+    state.turnProblem.clear();
+    state.displayConfig = state.config;
+  }
+
   // Applies one relay event. Returns the problem slug whose transcript it
   // changed (or null), so the caller only touches the feed when that problem
   // is on screen. Returns RESTARTED when the change can touch every
@@ -254,6 +275,11 @@
       state.lastSeq = event.seq;
     }
     const slug = event.problemSlug || "";
+    // Chat on another problem with no switch (auto-clear turned off) means
+    // the tutor is there now.
+    if (state.activeProblem && slug && slug !== state.activeProblem && (event.type === "user" || event.type === "capture" || event.type === "turn-start")) {
+      state.activeProblem = slug;
+    }
     switch (event.type) {
       case "user":
         pushItem(state, slug, { kind: "user", text: event.text || "" });
@@ -270,6 +296,14 @@
         });
         return slug;
       case "notice":
+        if (event.switch === true) {
+          startFreshSession(state);
+          state.activeProblem = slug || null;
+          // Only shown once something follows it, see visibleItems.
+          pushItem(state, slug, { kind: "notice", text: event.text || "", switchNotice: true });
+          // Every open panel redraws: the one on the old problem empties.
+          return RESTARTED;
+        }
         pushItem(state, slug, { kind: "notice", text: event.text || "" });
         return slug;
       case "turn-start":
@@ -1073,6 +1107,7 @@
       streamLost,
       RESTARTED,
       itemsFor,
+      visibleItems,
       firstChangedBlock,
       parseInline,
       plainMath,
@@ -1113,6 +1148,7 @@
   // model goes without code (a Run or Submit is not captured at all); see
   // content.js. Nothing stands in for it.
   const EDITOR_READ_FAILED = "Couldn't read your editor, so the tutor has not seen this code.";
+  const ANOTHER_PROBLEM_ACTIVE = "Another problem is active now. Send a message or Run here to switch to this one.";
   const CODE_TOO_LONG = "Your code is too long to send with a message, so the tutor has not seen this code.";
 
   const state = createState();
@@ -1824,11 +1860,16 @@
     });
   }
 
-  function emptyStateText(conn) {
+  function emptyStateText(conn, slug) {
     if (sourceReachable === false || state.companionOnline === false) {
       // The composer is disabled and the banner above says how to start the
       // companion; don't invite a question that can't be asked.
       return "Once the companion is running, your Run and Submit attempts and the tutor's replies show up here.";
+    }
+    // The tutor moved to another problem and forgot this one. Which problem
+    // is never shown here, nor anything of its chat.
+    if (state.activeProblem && slug && slug !== state.activeProblem) {
+      return ANOTHER_PROBLEM_ACTIVE;
     }
     // A Run is only recorded (the tutor sees it with the next message), so
     // only a Submit is promised a review.
@@ -1966,7 +2007,7 @@
     renderHeader(p, conn, slug);
 
     if (!active) return;
-    const emptyText = emptyStateText(conn);
+    const emptyText = emptyStateText(conn, slug);
     if (emptyNode && emptyNode.firstChild.textContent !== emptyText) emptyNode.firstChild.textContent = emptyText;
     if (slug !== renderedSlug) feedDirty = true;
     // Status changes and events for other problems end here: nothing in the
@@ -1976,7 +2017,7 @@
     renderedSlug = slug;
 
     const stick = p.view.follow;
-    const items = (slug && state.byProblem.get(slug)) || [];
+    const items = visibleItems((slug && state.byProblem.get(slug)) || []);
     let nodes;
     if (items.length === 0) {
       if (!emptyNode) {
