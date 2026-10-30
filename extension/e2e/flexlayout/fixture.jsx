@@ -17,7 +17,8 @@
 // JSON has no `name`), so a tab is known only by its component; its
 // onRenderTab draws labels and icons by component and nothing at all for a
 // component it does not know; and it runs an older fork with no
-// addChangeListener on the Model (only a single `_setChangeListener` hook).
+// addChangeListener on the Model (only a single `_setChangeListener` hook),
+// and whose nodes have no getPath().
 // Like the fork, every tabset in its JSON also carries `foldBeforeWeight`,
 // which a splitter drag rewrites (the real page's values: 58.85 on both
 // tabsets, 27.78 after a drag).
@@ -103,6 +104,24 @@ function newModel() {
         return /layout-bridge\.js/.test(new Error().stack || '') ? undefined : real;
       },
     });
+  }
+  // The fork's nodes have no getPath(); the library's own code here still
+  // needs it, so it is hidden from the bridge only.
+  const hidePath = (proto) => {
+    for (let o = proto; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+      const real = Object.getOwnPropertyDescriptor(o, 'getPath');
+      if (!real || typeof real.value !== 'function') continue;
+      Object.defineProperty(o, 'getPath', {
+        configurable: true,
+        get() {
+          return /layout-bridge\.js/.test(new Error().stack || '') ? undefined : real.value;
+        },
+      });
+    }
+  };
+  if (!newModel.pathHidden) {
+    newModel.pathHidden = true;
+    m.visitNodes((n) => hidePath(Object.getPrototypeOf(n)));
   }
   // The fork's foldBeforeWeight: in the JSON right after `weight`, set for
   // every tabset in a row by a splitter drag there, and by an update.

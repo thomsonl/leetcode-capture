@@ -867,15 +867,75 @@
   }
 
   // flexlayout gives a tab's pane the node's path ("/ts0/t4") and its button
-  // the same path with "tb" ("/ts0/tb4").
+  // the same path with "tb" ("/ts0/tb4"). LeetCode's older fork has no
+  // getPath(), so the path is built the way the library builds
+  // data-layout-path: each step is "/r", "/ts" or "/t" plus the node's index
+  // among its parent's children, from the root row (path "") down; a tab in
+  // a border is "/border/<location>/t<index>".
+  function pathOf(node) {
+    const own = call(node, "getPath");
+    if (typeof own === "string") return own;
+    const steps = [];
+    let n = node;
+    for (let depth = 0; depth < 40; depth++) {
+      const parent = call(n, "getParent");
+      if (!parent) return steps.join("");
+      const i = (call(parent, "getChildren") || []).indexOf(n);
+      if (i < 0) return null;
+      const type = call(n, "getType");
+      if (call(parent, "getType") === "border") {
+        const location = call(parent, "getLocation");
+        const name = location && typeof location.getName === "function" ? location.getName() : null;
+        return typeof name === "string" && type === "tab" ? `/border/${name}/t${i}` + steps.join("") : null;
+      }
+      const prefix = type === "row" ? "/r" : type === "tabset" ? "/ts" : type === "tab" ? "/t" : null;
+      if (!prefix) return null;
+      steps.unshift(prefix + i);
+      n = parent;
+    }
+    return null;
+  }
+
+  // The last resort when no path finds the button: in the tabset's own
+  // strip, the button at the tab's index.
+  function buttonByPosition(node, layoutEl) {
+    const tabset = call(node, "getParent");
+    const at = (call(tabset, "getChildren") || []).indexOf(node);
+    const tabsetPath = pathOf(tabset);
+    const el = typeof tabsetPath === "string" ? byPath(layoutEl, ".flexlayout__tabset", tabsetPath) : null;
+    if (!el || at < 0) return null;
+    const buttons = [...el.querySelectorAll(".flexlayout__tab_button")].filter((b) => !b.closest(".flexlayout__layout_tab_stamps"));
+    if (buttons.length !== (call(tabset, "getChildren") || []).length) return null;
+    const id = buttons[at].id || "";
+    return !id.startsWith("flexlayout-tabbutton-") || id === `flexlayout-tabbutton-${call(node, "getId")}` ? buttons[at] : null;
+  }
+
+  // A path built from the Model can run ahead of the DOM (React has not
+  // drawn the tab yet, so its index still belongs to the next tab): the
+  // tabset's strip must have every tab the Model has, and a button carrying
+  // the library's own id must carry this tab's.
+  function drawn(node, button, layoutEl) {
+    if (!button) return false;
+    const id = button.id || "";
+    if (id.startsWith("flexlayout-tabbutton-")) return id === `flexlayout-tabbutton-${call(node, "getId")}`;
+    const tabset = call(node, "getParent");
+    const tabsetPath = pathOf(tabset);
+    const el = typeof tabsetPath === "string" ? byPath(layoutEl, ".flexlayout__tabset", tabsetPath) : null;
+    if (!el) return call(tabset, "getType") !== "tabset";
+    const buttons = [...el.querySelectorAll(".flexlayout__tab_button")].filter((b) => !b.closest(".flexlayout__layout_tab_stamps"));
+    return buttons.length === (call(tabset, "getChildren") || []).length && buttons.includes(button);
+  }
+
   function domFor(node, layoutEl) {
-    const path = call(node, "getPath");
-    if (typeof path !== "string") return { pane: null, button: null };
+    const own = typeof call(node, "getPath") === "string";
+    const path = pathOf(node);
+    if (typeof path !== "string") return { pane: null, button: buttonByPosition(node, layoutEl) };
     const buttonPath = path.replace(/\/t(\d+)$/, "/tb$1");
-    return {
-      pane: byPath(layoutEl, ".flexlayout__tab", path),
-      button: byPath(layoutEl, ".flexlayout__tab_button", buttonPath),
-    };
+    let button = byPath(layoutEl, ".flexlayout__tab_button", buttonPath);
+    if (!own && button && !drawn(node, button, layoutEl)) button = null;
+    if (!button) button = buttonByPosition(node, layoutEl);
+    if (!own && !button) return { pane: null, button: null };
+    return { pane: byPath(layoutEl, ".flexlayout__tab", path), button };
   }
 
   function isShown(node, pane) {

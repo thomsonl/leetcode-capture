@@ -297,6 +297,7 @@ try {
     const w = await where();
     const json = await p.eval('window.__json()');
     const saved = await p.eval(`window.__fx.saved.filter((s) => s.includes('lc-tutor')).length`);
+    if (w.tutors !== 1) console.log(await p.eval(`JSON.stringify(window.__tutorButtons().map((b) => [b.outerHTML.slice(0, 300), b.getAttribute('data-layout-path')]))`), await p.eval('JSON.stringify(window.__bridgeStates)'));
     check(w.tutors === 1, `${label}: ${w.tutors} Tutor tabs`);
     // flexlayout renders a tab's pane the first time it is shown.
     if (w.paneExists) {
