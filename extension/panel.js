@@ -607,7 +607,8 @@
       return runEnd;
     };
     const flush = () => {
-      if (buf) nodes.push({ t: "text", v: buf });
+      // The model still emits em dashes despite the prompt; show a comma.
+      if (buf) nodes.push({ t: "text", v: buf.replace(/\s*\u2014\s*/g, ", ") });
       buf = "";
     };
     const isWordChar = (c) => c !== undefined && /[A-Za-z0-9]/.test(c);

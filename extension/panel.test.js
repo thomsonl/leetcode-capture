@@ -219,6 +219,8 @@ test("plain math leaves code, money, escapes and prose alone", () => {
   assert.equal(plain("a^b is XOR, {a: 1} is a dict"), "a^b is XOR, {a: 1} is a dict");
   assert.equal(plain("an unmatched \\( stays"), "an unmatched ( stays");
   assert.equal(plain("\\foo is unknown"), "\\foo is unknown");
+  assert.equal(plain("twice\u2014does it work"), "twice, does it work");
+  assert.equal(plain("`a\u2014b`"), "<a\u2014b>");
   // A fenced block is never parsed inline.
   const blocks = parseBlocks("```\n\\frac{a}{b} $x$\n```");
   assert.equal(blocks[0].t, "code");
