@@ -198,6 +198,7 @@ test("raw LaTeX from a small model becomes plain text", () => {
   const plain = (t) => parseInline(t).map((n) => (n.t === "code" ? `<${n.v}>` : n.v)).join("");
   // What gpt-oss:20b sent live: \[ \] would otherwise turn into bare brackets.
   assert.equal(plain("\\[ \\frac{n(n-1)}{2} = O(n^2). \\]"), "n(n-1)/2 = O(n\u00b2).");
+  assert.equal(plain("\\( \\Theta(n) \\) and \\(\\Omega(n \\log n)\\)"), "\u0398(n) and \u03a9(n log n)");
   assert.equal(plain("so \\( a \\cdot b \\le c \\) holds"), "so a \u00b7 b \u2264 c holds");
   assert.equal(plain("time $O(n \\log n)$ here"), "time O(n log n) here");
   assert.equal(plain("$$\\frac{a+b}{2} \\times 3$$"), "(a+b)/2 \u00d7 3");
@@ -217,7 +218,7 @@ test("plain math leaves code, money, escapes and prose alone", () => {
   assert.equal(plain("\\[not a link\\]"), "[not a link]");
   assert.equal(plain("a^b is XOR, {a: 1} is a dict"), "a^b is XOR, {a: 1} is a dict");
   assert.equal(plain("an unmatched \\( stays"), "an unmatched ( stays");
-  assert.equal(plain("\\alpha is unknown"), "\\alpha is unknown");
+  assert.equal(plain("\\foo is unknown"), "\\foo is unknown");
   // A fenced block is never parsed inline.
   const blocks = parseBlocks("```\n\\frac{a}{b} $x$\n```");
   assert.equal(blocks[0].t, "code");

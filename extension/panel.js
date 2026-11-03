@@ -377,6 +377,10 @@
     cdot: "·", times: "×", le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠",
     ldots: "...", cdots: "...", dots: "...", infty: "∞", sum: "Σ", log: "log", ln: "ln", min: "min", max: "max",
     left: "", right: "", quad: " ", qquad: " ",
+    Theta: "Θ", Omega: "Ω", Sigma: "Σ", Delta: "Δ", theta: "θ", omega: "ω", sigma: "σ", delta: "δ",
+    alpha: "α", beta: "β", gamma: "γ", lambda: "λ", mu: "μ", pi: "π", epsilon: "ε",
+    rightarrow: "→", to: "→", leftarrow: "←", approx: "≈", pm: "±", div: "÷", in: "∈", lceil: "⌈", rceil: "⌉",
+    lfloor: "⌊", rfloor: "⌋", bmod: "mod", mod: "mod", gcd: "gcd", prod: "Π",
   };
   const MATH_WRAPPERS = new Set(["text", "textrm", "texttt", "mathrm", "mathit", "mathbf", "operatorname"]);
   const MAX_MATH_DEPTH = 6;
