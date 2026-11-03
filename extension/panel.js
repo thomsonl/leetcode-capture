@@ -1866,6 +1866,9 @@
   }
 
   function emptyStateText(conn, slug) {
+    if (sourceReachable === false && providerChosen === false) {
+      return "Once you choose a model in the extension options, your Run and Submit attempts and the tutor's replies show up here.";
+    }
     if (sourceReachable === false || state.companionOnline === false) {
       // The composer is disabled and the banner above says how to start the
       // companion; don't invite a question that can't be asked.
@@ -2000,7 +2003,11 @@
     const canSend = conn.ok && Boolean(slug);
     p.input.disabled = !canSend;
     p.send.disabled = !canSend || sending || !p.input.value.trim() || p.input.value.length > MAX_MESSAGE_CHARS;
-    p.input.placeholder = canSend ? "Ask the tutor about this problem" : "Start the companion to chat";
+    p.input.placeholder = canSend
+      ? "Ask the tutor about this problem"
+      : sourceReachable === false && providerChosen === false
+        ? "Choose a model to chat"
+        : "Start the companion to chat";
   }
 
   function render() {
