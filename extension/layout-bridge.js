@@ -1031,9 +1031,22 @@
   // data-layout-path: each step is "/r", "/ts" or "/t" plus the node's index
   // among its parent's children, from the root row (path "") down; a tab in
   // a border is "/border/<location>/t<index>".
+  // LeetCode changed how a nested row is named in data-layout-path (the
+  // fork's "/r0" became "/c0", seen live 2026-11-03: "/c0/ts0/tb0"), so the
+  // row step is learned from the page's own paths instead of assumed.
+  function rowStep() {
+    const layoutEl = mainLayout();
+    if (!layoutEl) return "/r";
+    for (const el of layoutEl.querySelectorAll("[data-layout-path]")) {
+      if (/^(?:\/[a-z]+\d+)*\/c\d+(?:\/|$)/.test(el.getAttribute("data-layout-path") || "")) return "/c";
+    }
+    return "/r";
+  }
+
   function pathOf(node) {
     const own = call(node, "getPath");
     if (typeof own === "string") return own;
+    const row = rowStep();
     const steps = [];
     let n = node;
     for (let depth = 0; depth < 40; depth++) {
@@ -1047,7 +1060,7 @@
         const name = location && typeof location.getName === "function" ? location.getName() : null;
         return typeof name === "string" && type === "tab" ? `/border/${name}/t${i}` + steps.join("") : null;
       }
-      const prefix = type === "row" ? "/r" : type === "tabset" ? "/ts" : type === "tab" ? "/t" : null;
+      const prefix = type === "row" ? row : type === "tabset" ? "/ts" : type === "tab" ? "/t" : null;
       if (!prefix) return null;
       steps.unshift(prefix + i);
       n = parent;
