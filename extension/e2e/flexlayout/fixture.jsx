@@ -69,6 +69,22 @@ const DEFAULT_LAYOUT = {
 
 const LEETCODE = new URLSearchParams(location.search).has('leetcode');
 
+// leetcode.com (checked live 2026-11-03) names a nested row "/c0" in
+// data-layout-path where flexlayout 0.11 writes "/r0". The LeetCode variant
+// renames them on every render so the bridge meets the real page's paths.
+if (LEETCODE) {
+  const rename = (el) => {
+    const p = el.getAttribute('data-layout-path');
+    if (p && /\/r\d/.test(p)) el.setAttribute('data-layout-path', p.replace(/\/r(\d)/g, '/c$1'));
+  };
+  new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === 'attributes') rename(r.target);
+      else r.addedNodes.forEach((n) => n.nodeType === 1 && [n, ...n.querySelectorAll('[data-layout-path]')].forEach(rename));
+    }
+  }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-layout-path'] });
+}
+
 const LABELS = {
   description: 'Description',
   editorial: 'Editorial',
