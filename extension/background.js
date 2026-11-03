@@ -18,7 +18,8 @@
 // API keys live in storage.local and are only ever sent to the provider's
 // API. No message to a content script carries one (tutor-service.js).
 
-import { createTutorService } from "./shared/tutor-service.js";
+import { createTutorService, SETTINGS_KEY } from "./shared/tutor-service.js";
+import { normalizeSettings } from "./shared/extension-settings.js";
 import { createHelperLauncher } from "./shared/helper-launcher.js";
 
 const api = typeof browser !== "undefined" ? browser : chrome;
@@ -75,6 +76,26 @@ launcher.onChange((view) => {
     }
   }
 });
+
+// Dev builds only (build.mjs --dev-ollama <model>): a dev-seed.json next to
+// the manifest picks the local provider and model when nothing is saved yet,
+// so removing and re-adding the unpacked extension does not need the options
+// page. It never overwrites a saved choice and is absent from real builds.
+async function applyDevSeed() {
+  try {
+    const response = await fetch(api.runtime.getURL("dev-seed.json"));
+    if (!response.ok) return;
+    const seed = await response.json();
+    const stored = await api.storage.local.get([SETTINGS_KEY]);
+    const saved = normalizeSettings(stored && stored[SETTINGS_KEY]);
+    if (saved.provider) return;
+    const next = normalizeSettings({ provider: seed.provider, runtimes: { [seed.provider]: "extension" }, providers: { [seed.provider]: seed.fields } });
+    await api.storage.local.set({ [SETTINGS_KEY]: next });
+  } catch {
+    // no seed file: a normal build
+  }
+}
+applyDevSeed();
 
 const service = createTutorService({
   onRuntime: (next) => {

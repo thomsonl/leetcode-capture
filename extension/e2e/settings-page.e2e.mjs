@@ -116,6 +116,17 @@ async function scenario(name, mock, run) {
 // "Saving..." is shown while a request is in flight; a result replaces it.
 const SAVE_DONE = `(() => { const t = document.getElementById('save-result').textContent; return t.length > 0 && t !== 'Saving...'; })()`;
 const text = (page, selector) => page.eval(`(document.querySelector(${JSON.stringify(selector)}) || {}).textContent || ''`);
+// The local model is a dropdown; a name the list lacks goes through "Other".
+const pickLocalModel = async (page, name) => {
+  await page.eval(`(() => {
+    const s = document.getElementById('local-model');
+    if (s.tagName !== 'SELECT') return;
+    const has = [...s.options].some((o) => o.value === ${JSON.stringify(name)});
+    s.value = has ? ${JSON.stringify(name)} : '__other__';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  if (await page.eval(`document.getElementById('local-model').tagName === 'INPUT'`)) await page.type('#local-model', name);
+};
 const value = (page, selector) => page.eval(`document.querySelector(${JSON.stringify(selector)}).value`);
 const lastCall = (page, method) => [...page.mockedRequests].reverse().find((r) => r.body && r.body.method === method);
 
@@ -135,8 +146,10 @@ await scenario('a saved local model fills the form, and "Find models" suggests w
   assert.equal(await value(page, '#local-contextTokens'), '8192');
   assert.equal(await page.eval(`document.getElementById('vaultAutoSummary').checked`), true);
   await page.click('#local-find');
-  await page.waitFor(`document.querySelectorAll('#local-models option').length === 2`, { what: 'model suggestions' });
-  assert.match(await text(page, '#local-models-note'), /Found 2/);
+  await page.waitFor(`/Found 2/.test(document.getElementById('local-models-note').textContent)`, { what: 'model suggestions' });
+  assert.equal(await page.eval(`document.getElementById('local-model').tagName`), 'SELECT', 'the model is a dropdown');
+  assert.equal(await page.eval(`document.getElementById('local-model').value`), 'gpt-oss:20b', 'the saved model stays selected after a refresh');
+  assert.equal(await page.eval(`[...document.getElementById('local-model').options].some((o) => o.value === '__other__')`), true);
   const sent = lastCall(page, 'models').body.params;
   assert.deepEqual([sent.provider, sent.baseUrl], ['local', 'http://localhost:11434/v1']);
   await page.screenshot(path.join(shots, 'local-dark.png'), { scheme: 'dark' });
@@ -292,8 +305,8 @@ function stubServer({ status = 200 } = {}) {
     assert.match(await text(page, '#foot'), /extension storage/);
     await page.type('#local-baseUrl', model.url);
     await page.click('#local-find');
-    await page.waitFor(`document.querySelectorAll('#local-models option').length === 2`, { what: 'model suggestions from the stub' });
-    await page.type('#local-model', 'qwen3:8b');
+    await page.waitFor(`/Found 2/.test(document.getElementById('local-models-note').textContent)`, { what: 'model suggestions from the stub' });
+    await pickLocalModel(page, 'qwen3:8b');
     await page.click('#test');
     await page.waitFor(`document.getElementById('test-result').textContent.includes('Connected')`, { what: 'the connection test', timeout: 20000 });
     assert.equal(await page.eval(`document.getElementById('test-result').getAttribute('data-kind')`), 'ok');
@@ -343,7 +356,7 @@ await scenario('browser runtime: an Anthropic key is saved in extension storage 
 await scenario('browser runtime: a denied permission prompt says what happened and saves nothing', null, async (page) => {
   await page.eval(`chrome.permissions.request = () => Promise.resolve(false)`);
   await page.type('#local-baseUrl', 'http://192.0.2.10:11434/v1');
-  await page.type('#local-model', 'llama3.2');
+  await pickLocalModel(page, 'llama3.2');
   await page.click('#save');
   await page.waitFor(SAVE_DONE);
   assert.equal(await page.eval(`document.getElementById('save-result').getAttribute('data-kind')`), 'error');
@@ -359,7 +372,7 @@ await scenario('browser runtime: a denied permission prompt says what happened a
   const model = await stubServer({ status: 403 });
   await scenario('browser runtime: an Ollama that refuses the extension (403) gets the OLLAMA_ORIGINS fix in the test result', null, async (page) => {
     await page.type('#local-baseUrl', model.url);
-    await page.type('#local-model', 'llama3.2');
+    await pickLocalModel(page, 'llama3.2');
     await page.click('#test');
     await page.waitFor(`document.getElementById('test-result').getAttribute('data-kind') === 'error'`, { what: 'the failed test', timeout: 20000 });
     const result = await text(page, '#test-result');
@@ -460,7 +473,7 @@ await liveScenario('live: the page reads, tests and saves through the real relay
   const origins = new Set(page.redirectedRequests.map((r) => r.headers.Origin || r.headers.origin));
   assert.deepEqual([...origins], [`chrome-extension://${browser.extensionId}`], 'the page sends its extension origin');
   assert.equal(await value(page, '#local-model'), 'model-a');
-  await page.type('#local-model', 'model-b');
+  await pickLocalModel(page, 'model-b');
   await page.type('#local-baseUrl', live.modelB.url);
   await page.click('#test');
   await page.waitFor(`document.getElementById('test-result').textContent.includes('Connected')`, { what: 'the live connection test', timeout: 20000 });

@@ -23,7 +23,7 @@ export function isExcluded(relPath) {
   return false;
 }
 
-export function build({ browser, out, src = SRC }) {
+export function build({ browser, out, src = SRC, devOllama = null }) {
   if (browser !== 'chrome' && browser !== 'firefox') {
     throw new Error('--browser must be chrome or firefox');
   }
@@ -47,6 +47,15 @@ export function build({ browser, out, src = SRC }) {
     if (manifest.background) delete manifest.background.scripts;
     writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
   }
+  if (devOllama) {
+    // A dev build only: pre-pick the local Ollama model and let the extension
+    // reach it without the options page's permission prompt.
+    writeFileSync(join(dest, 'dev-seed.json'), JSON.stringify({ provider: 'local', fields: { model: devOllama } }, null, 2) + '\n');
+    const path = join(dest, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.host_permissions = [...new Set([...(manifest.host_permissions || []), 'http://localhost:11434/*', 'http://127.0.0.1:11434/*'])];
+    writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
+  }
   return dest;
 }
 
@@ -55,6 +64,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--browser') args.browser = argv[++i];
     else if (argv[i] === '--out') args.out = argv[++i];
+    else if (argv[i] === '--dev-ollama') args.devOllama = argv[++i];
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
   return args;

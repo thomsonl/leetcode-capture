@@ -521,6 +521,54 @@
     return wrap;
   }
 
+  // The local provider's model is picked from a dropdown of what the server
+  // actually has (Ollama's /api/tags or /v1/models), not typed. Embedding and
+  // reranker models are left out: they cannot chat.
+  const foundModels = {};
+  const typeModelByHand = {};
+  const modelsNote = {};
+  const NOT_CHAT = /embed|rerank/i;
+  const OTHER = "__other__";
+
+  function modelSelect(id, value, attrs) {
+    const names = (foundModels[id] || []).filter((n) => !NOT_CHAT.test(n) || n === value);
+    const select = h("select", { ...attrs, onchange: () => {
+      if (select.value === OTHER) {
+        // In place, so nothing typed in the other fields is lost.
+        typeModelByHand[id] = true;
+        const box = h("input", { ...attrs, type: "text", value: "", placeholder: "Model name" });
+        select.replaceWith(box);
+        box.focus();
+      }
+    } });
+    if (!names.length && !value) select.appendChild(h("option", { value: "", text: "No models found yet" }));
+    if (value && !names.includes(value)) names.unshift(value);
+    for (const name of names) select.appendChild(h("option", { value: name, text: name, selected: name === value }));
+    select.appendChild(h("option", { value: OTHER, text: "Other (type a name)..." }));
+    return select;
+  }
+
+  // On opening the page, fill the dropdown without asking for anything: only
+  // when the browser already lets the extension reach the server.
+  const autoFound = new Set();
+  async function autoFindModels(id) {
+    const key = `${id}:${runtimeOf(id)}`;
+    if (id !== "local" || autoFound.has(key)) return;
+    autoFound.add(key);
+    const inBrowser = runtimeOf(id) === "extension";
+    if (inBrowser) {
+      const pattern = originPatternFor(id);
+      let granted = false;
+      try {
+        granted = Boolean(await api.permissions.contains({ origins: [pattern] }));
+      } catch {
+        granted = false;
+      }
+      if (!granted) return;
+    }
+    await findModels(id, { quiet: true });
+  }
+
   function fieldFor(id, field) {
     const info = infoFor(id);
     if (field === "apiKey") return keyField(id, info);
@@ -534,13 +582,15 @@
     let input;
     if (field === "contextTokens") {
       input = h("input", { ...attrs, type: "number", min: "1024", max: "2000000", step: "1024", value });
+    } else if (field === "model" && id === "local" && !typeModelByHand[id]) {
+      input = modelSelect(id, value, attrs);
     } else {
       input = h("input", {
         ...attrs,
         type: "text",
         value,
         placeholder: field === "model" ? (required ? "Model name" : defaults.model || "Default") : defaults[field] || "",
-        list: field === "model" ? `${id}-models` : false,
+        list: field === "model" && id !== "local" ? `${id}-models` : false,
       });
     }
     const label = h("label", { for: `${id}-${field}` }, FIELD_LABELS[field], required ? null : h("span", { class: "opt", text: " (optional)" }));
@@ -548,10 +598,10 @@
     const findable = field === "model" && (id === "local" || id === "openai" || (id === "anthropic" && runtime === "extension"));
     if (findable) {
       wrap.appendChild(
-        h("div", { class: "row" }, input, h("button", { type: "button", class: "btn", id: `${id}-find`, text: "Find models", disabled: locked || !info, onclick: () => findModels(id) }))
+        h("div", { class: "row" }, input, h("button", { type: "button", class: "btn", id: `${id}-find`, text: id === "local" ? "Refresh" : "Find models", disabled: locked || !info, onclick: () => findModels(id) }))
       );
-      wrap.appendChild(h("datalist", { id: `${id}-models` }));
-      wrap.appendChild(h("p", { class: "hint", id: `${id}-models-note` }));
+      if (id !== "local") wrap.appendChild(h("datalist", { id: `${id}-models` }));
+      wrap.appendChild(h("p", { class: "hint", id: `${id}-models-note`, text: modelsNote[id] || "" }));
     } else {
       wrap.appendChild(input);
     }
@@ -708,6 +758,7 @@
     renderOffline();
     renderConnection();
     renderFoot();
+    autoFindModels("local");
     const can = usable(selected);
     $("test").disabled = !can;
     $("save").disabled = !can;
@@ -783,11 +834,11 @@
 
   // ---- actions ----------------------------------------------------------------------------
 
-  async function findModels(id) {
+  async function findModels(id, { quiet = false } = {}) {
     const inBrowser = runtimeOf(id) === "extension";
     // Asked first, while this still counts as the click.
     const pattern = inBrowser ? originPatternFor(id) : null;
-    const allowed = inBrowser ? requestPermission(pattern) : Promise.resolve(true);
+    const allowed = inBrowser && !quiet ? requestPermission(pattern) : Promise.resolve(true);
     const note = $(`${id}-models-note`);
     const button = $(`${id}-find`);
     button.disabled = true;
@@ -810,12 +861,28 @@
       note.textContent = res.error.message;
       return;
     }
+    const names = res.result.models;
+    const message = names.length ? `Found ${names.length}.` : res.result.message || "No models found.";
+    if (id === "local") {
+      foundModels[id] = names;
+      modelsNote[id] = names.length ? `Found ${names.filter((n) => !NOT_CHAT.test(n)).length} models you can chat with.` : message;
+      // Keep what is typed in the other fields across the redraw.
+      const keep = {};
+      for (const el of document.querySelectorAll("#providers input[id], #providers select[id]")) keep[el.id] = el.value;
+      const keptModel = $(`${id}-model`) ? $(`${id}-model`).value : "";
+      render();
+      for (const [elId, v] of Object.entries(keep)) {
+        const el = $(elId);
+        if (el && el.tagName === "INPUT" && el.type !== "radio" && el.type !== "checkbox" && elId !== `${id}-model`) el.value = v;
+      }
+      const sel = $(`${id}-model`);
+      if (sel && keptModel && sel.tagName === "SELECT" && [...sel.options].some((o) => o.value === keptModel)) sel.value = keptModel;
+      return;
+    }
     const list = $(`${id}-models`);
     list.textContent = "";
-    for (const name of res.result.models) list.appendChild(h("option", { value: name }));
-    note.textContent = res.result.models.length
-      ? `Found ${res.result.models.length}. Start typing the model field to pick one.`
-      : res.result.message || "No models found.";
+    for (const name of names) list.appendChild(h("option", { value: name }));
+    note.textContent = names.length ? `${message} Start typing the model field to pick one.` : message;
   }
 
   async function runTest() {
