@@ -19,7 +19,7 @@ For a correctness or bug question, even yes/no, state the fault and a concrete f
 
 A Submit gets the review its message asks for, with a failing input per bug and no alternatives.
 
-Code arrives in full or a numbered diff (+ adds, - removes, ... skips); apply it to held code. No update means unchanged.`;
+Code arrives in full or as a numbered diff (+ adds, - removes, ... skips) of your newest code. No update means unchanged.`;
 
 // Two of Thomson's general writing-style preferences (from his global agent
 // instructions, ~/.claude/CLAUDE.md) that are actually about what the model
