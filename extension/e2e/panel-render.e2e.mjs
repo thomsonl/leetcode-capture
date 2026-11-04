@@ -1613,6 +1613,68 @@ try {
     }
   });
 
+  await scenario('"Practice a skill" says so when the worker cannot answer, keeps the student where they were, and retries', async () => {
+    const skills = [{ id: 'arrays', label: 'Arrays' }, { id: 'trees', label: 'Trees' }];
+    const three = (from) => [0, 1, 2].map((i) => ({ slug: `tree-problem-${from + i}`, title: `Tree Problem ${from + i}`, difficulty: 'Medium', reason: `Same level · ${9 - i}k likes` }));
+    await page.eval(`(() => {
+      window.__savedRuntime = window.chrome.runtime;
+      window.__practiceAsks = [];
+      window.__practiceAnswers = [];
+      window.chrome.runtime = { ...window.__savedRuntime, id: 'abcdefghijklmnopabcdefghijklmnop', sendMessage: (m) => { window.__practiceAsks.push(m); return Promise.resolve(window.__practiceAnswers.shift() ?? null); } };
+    })()`);
+    try {
+      await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+      await settle();
+      check(!(await page.eval(`window.__q('button.practice-open').hidden`)), 'no header button with an extension runtime');
+      const card = `window.__qa('.feed .practice-card').at(-1)`;
+      const state = () => page.eval(`(() => { const c = ${card}; const n = c.querySelector('.practice-note'); const r = [...c.querySelectorAll('.practice-link')].find((b) => b.textContent === 'Try again'); return { note: n.hidden ? null : n.textContent, retry: !r.hidden, chips: c.querySelectorAll('.skill-chip').length, chipsShown: !c.querySelector('.skill-chips').hidden, items: [...c.querySelectorAll('.practice-list li a')].map((a) => a.textContent), focus: window.__root().activeElement?.textContent || null }; })()`);
+      // The skills cannot be had: a note and a way to try again.
+      await page.eval(`window.__q('button.practice-open').click()`);
+      await settle();
+      let m = await state();
+      check(m.note === "Couldn't load suggestions. Try again." && m.retry && m.chips === 0 && m.focus === 'Try again', `no skills: ${JSON.stringify(m)}`);
+      await page.eval(`window.__practiceAnswers.push({ ok: true, skills: ${JSON.stringify(skills)}, suggestions: [] })`);
+      await page.eval(`[...${card}.querySelectorAll('.practice-link')].find((b) => b.textContent === 'Try again').click()`);
+      await settle();
+      m = await state();
+      check(m.note === null && !m.retry && m.chips === 2 && m.focus === 'Arrays', `after a retry: ${JSON.stringify(m)}`);
+      // A chip the worker refuses: the chips stay, with the note, focus on the chip.
+      await page.eval(`window.__chip = (label) => [...${card}.querySelectorAll('.skill-chip')].find((c) => c.textContent === label)`);
+      await page.eval(`window.__chip('Trees').click()`);
+      await settle();
+      m = await state();
+      check(m.chipsShown && m.note === "Couldn't load suggestions. Try again." && m.focus === 'Trees', `a refused chip: ${JSON.stringify(m)}`);
+      // An answer for another skill or with a forged link is not shown as asked.
+      await page.eval(`window.__practiceAnswers.push({ ok: true, skills: ${JSON.stringify(skills)}, skill: { id: 'arrays', label: 'Arrays' }, suggestions: ${JSON.stringify(three(1))}, offset: 0, more: true })`);
+      await page.eval(`window.__chip('Trees').click()`);
+      await settle();
+      check((await state()).chipsShown, 'an answer for another skill was shown');
+      await page.eval(`window.__practiceAnswers.push({ ok: true, skills: ${JSON.stringify(skills)}, skill: { id: 'trees', label: 'Trees' }, suggestions: [{ slug: 'javascript:alert(1)', title: 'Bad', difficulty: 'Easy', reason: 'x' }, ...${JSON.stringify(three(1))}], offset: 0, more: true })`);
+      await page.eval(`window.__chip('Trees').click()`);
+      await settle();
+      m = await state();
+      check(!m.chipsShown && JSON.stringify(m.items) === JSON.stringify(['Tree Problem 1', 'Tree Problem 2', 'Tree Problem 3']) && m.note === null && m.focus === 'Tree Problem 1', `the forged one dropped: ${JSON.stringify(m)}`);
+      // "Show 3 more" refused: the same three stay, with the note.
+      await page.eval(`[...${card}.querySelectorAll('.practice-link')].find((b) => b.textContent === 'Show 3 more').click()`);
+      await settle();
+      m = await state();
+      check(JSON.stringify(m.items) === JSON.stringify(['Tree Problem 1', 'Tree Problem 2', 'Tree Problem 3']) && m.note === "Couldn't load suggestions. Try again.", `a refused page: ${JSON.stringify(m)}`);
+      await page.eval(`window.__practiceAnswers.push({ ok: true, skills: ${JSON.stringify(skills)}, skill: { id: 'trees', label: 'Trees' }, suggestions: [], offset: 3, more: false })`);
+      await page.eval(`[...${card}.querySelectorAll('.practice-link')].find((b) => b.textContent === 'Show 3 more').click()`);
+      await settle();
+      m = await state();
+      check(m.items.length === 0 && m.note === 'No more Trees problems to suggest.' && m.focus === 'Other skill', `the end: ${JSON.stringify(m)}`);
+      const asks = await page.eval('window.__practiceAsks');
+      check(asks.every((a) => a.type === 'lc-tutor:practice' && a.slug === 'two-sum'), `asks: ${JSON.stringify(asks)}`);
+      check(JSON.stringify(asks.at(-1)) === JSON.stringify({ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'trees', offset: 3 }), `the last ask: ${JSON.stringify(asks.at(-1))}`);
+      await page.screenshot(path.join(SHOTS, 'practice-end-dark.png'), { width: 1100, height: 760 });
+      await page.eval(`${card}.querySelector('.practice-close').click()`);
+      await settle();
+    } finally {
+      await page.eval(`window.chrome.runtime = window.__savedRuntime`);
+    }
+  });
+
   await scenario('the model label changes after the old reply ends', async () => {
     await page.eval(`window.__ev({ type: 'config', provider: 'local', label: 'Local model', model: 'old-model' })`);
     await page.eval(`window.__ev({ type: 'turn-start', turnId: 'model-switch', problemSlug: 'two-sum' })`);

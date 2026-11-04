@@ -251,6 +251,14 @@ The newest card also has a small "Working on" menu that switches lists right the
 The tab builds it from the bundled lists; it is never sent to the tutor and never enters its context.
 For a problem that is not on the chosen list, the card offers only that list's next problem.
 
+The card also has a **Practice a skill** row: twenty fixed skills (Arrays, Hash maps, Two pointers, Trees, Graphs, Dynamic programming and so on, never the solved problem's own tags, so nothing hints at how it is solved).
+Pick one and the card shows three problems from all of LeetCode for that skill, each with its difficulty and a short reason ("Same level · 18k likes · on NeetCode 150"), with "Show 3 more" and "Other skill".
+They are the problems you have not solved, free ones only, nearest the solved problem's difficulty (the same level first, then one up, then one down) and most liked first, with a small boost for problems on the bundled lists.
+The target button next to the gear opens the same picker any time, for the problem on the page (its difficulty from the index; a problem the index does not have gets every level, by likes).
+The skills and how each maps onto LeetCode's topic tags are documented in `extension/shared/practice.js`.
+The problems come from `extension/shared/problem-index.js`, public problem metadata from LeetCode (title, difficulty, topic tags, likes and total submissions, no user data) bundled with the extension, so nothing is fetched at run time and nothing leaves the browser.
+To refresh it, run `node extension/scripts/problem-index.mjs` (about 210 polite requests to LeetCode's public GraphQL, resumable through a cache in the temp folder) and commit the file; `node extension/scripts/problem-index.mjs --check` (also part of `npm test`) validates it and checks that every slug of the bundled lists is in it with the same title and difficulty.
+
 ## Optional features
 
 - **Local model backend.**

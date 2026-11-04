@@ -49,7 +49,7 @@ The extension runtime would work there, but the Tutor tab is built for LeetCode'
 ## Notes to reviewer
 
 ```
-No build step: every file in the package is hand-written source, with no bundler, minifier, transpiler or generated code, so the uploaded zip is the source. To reproduce it from https://github.com/thomsonl/leetcode-capture, run "npm run build:amo" in extension/ (it runs web-ext build with an ignore list for tests and docs; there are no dependencies).
+No build step: every file in the package is hand-written source, with no bundler, minifier or transpiler, so the uploaded zip is the source. The one generated file is shared/problem-index.js, plain data (LeetCode's public problem titles, difficulties, topic tags and like and submission counts) written by extension/scripts/problem-index.mjs from LeetCode's public GraphQL and read locally for practice suggestions; the extension never fetches it. To reproduce the package from https://github.com/thomsonl/leetcode-capture, run "npm run build:amo" in extension/ (it runs web-ext build with an ignore list for tests and docs; there are no dependencies).
 
 What it does: adds a Tutor tab to leetcode.com/problems/* pages. When the user clicks Run or Submit or types to the tutor, it reads the problem text and the editor code and sends them only to the AI provider the user picked in Settings.
 

@@ -23,6 +23,10 @@ It reads nothing else from that request.
 It does not read your LeetCode account details, cookies, passwords or any other page.
 It does not read your browsing history.
 
+The extension also ships a fixed list of LeetCode's public problem metadata (each problem's title, difficulty, topic tags and public like and submission counts), which the Tutor tab's "Practice a skill" suggestions are picked from.
+It holds nothing about you, is read only inside your browser, and is never fetched or updated over the network.
+Suggestions leave out the problems you solved by looking at the solved problems kept in the browser (below); they are never sent anywhere, including to the tutor.
+
 ## Where that data goes
 
 That data goes to exactly one place: the provider you chose in Settings.

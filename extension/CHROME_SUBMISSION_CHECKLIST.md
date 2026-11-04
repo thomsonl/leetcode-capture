@@ -22,6 +22,7 @@ This release is a tutor:
 - An optional helper runtime for the Claude and ChatGPT subscriptions, through a separately installed Native Messaging helper that starts the local companion and relay.
 - New optional permissions, requested at runtime only: host access to the one model server the student configures, and `nativeMessaging` for the helper.
 - The `storage` permission, for the settings and API keys.
+- Progress tracking and "Practice a skill" suggestions, built from lists and LeetCode's public problem metadata bundled in the package (`shared/catalog.js`, `shared/roadmap.js`, `shared/problem-index.js`); no new permission and no network use for them.
 - A new manifest description.
 
 ## Before you start
