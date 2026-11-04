@@ -2188,7 +2188,9 @@
 
   // "Working on [list]": a compact native menu of the bundled lists. A
   // choice asks the worker to work on that list (only the choice is stored,
-  // never the solved problems) and to answer this page's card for it.
+  // never the solved problems) and to answer this page's card for it. When
+  // that fails the menu goes back to the list in use and says so.
+  const LIST_HINT = "Couldn't switch lists. Try again.";
   function listMenu(item) {
     const label = el("label", "solved-switch");
     label.appendChild(el("span", "", "Working on"));
@@ -2205,10 +2207,17 @@
       const answer = await askWorker({ type: "lc-tutor:set-list", list: wanted, slug: item.slug });
       select.disabled = false;
       const fresh = answer && answer.ok === true && answer.card && typeof answer.card === "object" ? cardSuggestions(answer.card) : null;
-      if (!fresh || fresh.roadmapId !== wanted || currentSlug() !== item.slug) {
+      if (currentSlug() !== item.slug) {
+        // The page moved on to another problem meanwhile.
         select.value = item.roadmapId;
         return;
       }
+      if (!fresh || fresh.roadmapId !== wanted) {
+        select.value = item.roadmapId;
+        showHint(LIST_HINT);
+        return;
+      }
+      if (mounted && mounted.panel.hint.textContent === LIST_HINT) showHint("");
       Object.assign(item, fresh);
       touch(item);
       noteApplied(item.slug);
@@ -3168,7 +3177,7 @@
     return { ok: false, message };
   }
 
-  function showSwitchHint(text) {
+  function showHint(text) {
     if (!mounted) return;
     const p = mounted.panel;
     p.hint.textContent = text;
@@ -3190,7 +3199,7 @@
     if (!entry && !followUp) return;
     switching = id;
     unsettledSwitch = null;
-    if (!followUp) showSwitchHint("");
+    if (!followUp) showHint("");
     scheduleRender();
     const fromTransport = transport;
     try {
@@ -3213,10 +3222,10 @@
       if (result.ok) {
         if (!followUp) activeProfileId = id;
       } else {
-        showSwitchHint(result.message || "Couldn't switch models.");
+        showHint(result.message || "Couldn't switch models.");
       }
     } catch {
-      showSwitchHint("Couldn't switch models. Try again.");
+      showHint("Couldn't switch models. Try again.");
     } finally {
       switching = null;
       scheduleRender();
@@ -3232,7 +3241,7 @@
     unsettledSwitch = null;
     activeProfileId = id;
     postToWorker({ type: "profile-switched", id });
-    if (mounted && mounted.panel.hint.textContent === UNSETTLED_HINT) showSwitchHint("");
+    if (mounted && mounted.panel.hint.textContent === UNSETTLED_HINT) showHint("");
     scheduleRender();
   }
 

@@ -1567,6 +1567,52 @@ try {
     await resizePane(480, 620);
   });
 
+  await scenario('the card\'s list menu says so when a list switch fails, and goes back to the list in use', async () => {
+    const lists = [
+      { id: 'neetcode-150', title: 'NeetCode 150', size: 150 },
+      { id: 'blind-75', title: 'Blind 75', size: 75 },
+    ];
+    const card = {
+      roadmap: { id: 'neetcode-150', title: 'NeetCode 150' },
+      lists,
+      solvedTitle: 'Two Sum',
+      next: { slug: 'contains-duplicate', title: 'Contains Duplicate', difficulty: 'Easy' },
+      more: null,
+      finished: false,
+    };
+    await page.eval(`(() => {
+      window.__savedRuntime = window.chrome.runtime;
+      window.__listAsks = [];
+      window.chrome.runtime = { ...window.__savedRuntime, id: 'abcdefghijklmnopabcdefghijklmnop', sendMessage: (m) => { window.__listAsks.push(m); return Promise.resolve(window.__listAnswer); } };
+    })()`);
+    try {
+      await page.eval(`document.dispatchEvent(new CustomEvent('leetcode-capture:solved', { detail: ${JSON.stringify(JSON.stringify({ slug: 'two-sum', pageTitle: 'Two Sum', card }))} }))`);
+      await settle();
+      const pick = (id) => page.eval(`(() => { const sel = window.__qa('.feed .solved').at(-1).querySelector('.solved-switch select'); sel.focus(); sel.value = ${JSON.stringify(id)}; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+      const menu = () => page.eval(`({ value: window.__qa('.feed .solved').at(-1).querySelector('.solved-switch select').value, hint: window.__q('.hint').hidden ? null : window.__q('.hint').textContent, text: window.__qa('.feed .solved').at(-1).textContent })`);
+      // The worker refuses (or cannot be asked).
+      await page.eval(`window.__listAnswer = { ok: false }`);
+      await pick('blind-75');
+      await settle();
+      let m = await menu();
+      check(m.value === 'neetcode-150' && m.hint === "Couldn't switch lists. Try again.", `a refused switch: ${JSON.stringify(m)}`);
+      check(JSON.stringify(await page.eval('window.__listAsks')) === JSON.stringify([{ type: 'lc-tutor:set-list', list: 'blind-75', slug: 'two-sum' }]), 'asked once, with the card\'s problem');
+      await page.eval(`window.__listAnswer = null`);
+      await pick('blind-75');
+      await settle();
+      m = await menu();
+      check(m.value === 'neetcode-150' && m.hint, `no answer: ${JSON.stringify(m)}`);
+      // A switch that works clears the hint.
+      await page.eval(`window.__listAnswer = { ok: true, card: ${JSON.stringify({ ...card, roadmap: { id: 'blind-75', title: 'Blind 75' } })} }`);
+      await pick('blind-75');
+      await settle();
+      m = await menu();
+      check(m.value === 'blind-75' && m.hint === null && m.text.includes('Next up on Blind 75'), `a switch that works: ${JSON.stringify(m)}`);
+    } finally {
+      await page.eval(`window.chrome.runtime = window.__savedRuntime`);
+    }
+  });
+
   await scenario('the model label changes after the old reply ends', async () => {
     await page.eval(`window.__ev({ type: 'config', provider: 'local', label: 'Local model', model: 'old-model' })`);
     await page.eval(`window.__ev({ type: 'turn-start', turnId: 'model-switch', problemSlug: 'two-sum' })`);
