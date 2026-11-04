@@ -1506,6 +1506,67 @@ try {
     await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); t.blur(); })()`);
   });
 
+  await scenario('an accepted submission shows the "nice job" card: plain links, colored difficulties, dark, light and narrow', async () => {
+    const card = {
+      roadmap: { id: 'neetcode-150', title: 'NeetCode 150' },
+      solvedTitle: 'Two Sum',
+      next: { slug: 'contains-duplicate', title: 'Contains Duplicate', difficulty: 'Easy' },
+      more: { topic: { id: 'arrays-hashing', title: 'Arrays & Hashing' }, problem: { slug: 'group-anagrams', title: 'Group Anagrams', difficulty: 'Medium' } },
+      finished: false,
+    };
+    const solved = (detail) => page.eval(`document.dispatchEvent(new CustomEvent('leetcode-capture:solved', { detail: ${JSON.stringify(typeof detail === 'string' ? detail : JSON.stringify(detail))} }))`);
+    const cards = () => page.eval(`window.__qa('.feed .solved').length`);
+    await resizePane(480, 620);
+    await page.eval('window.__openTutor()');
+    const before = await cards();
+    // Another problem's card, a malformed detail and a forged link are ignored.
+    await solved({ slug: 'valid-parentheses', pageTitle: 'x', card });
+    await solved('not json');
+    await solved({ slug: 'two-sum', card: { ...card, next: { slug: 'javascript:alert(1)', title: 'Bad', difficulty: 'Easy' }, more: null, finished: false } });
+    await settle();
+    const forged = await page.eval(`window.__qa('.feed .solved').at(-1)?.textContent || ''`);
+    check((await cards()) === before + 1 && !/Bad/.test(forged) && !(await page.eval(`window.__qa('.feed .solved a').some((a) => !a.href.startsWith('https://leetcode.com/problems/'))`)), `forged card: ${forged}`);
+    await solved({ slug: 'two-sum', pageTitle: 'Two Sum - page', card });
+    await settle();
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await settle();
+    const m = await page.eval(`(() => {
+      const c = window.__qa('.feed .solved').at(-1);
+      const links = [...c.querySelectorAll('a')].map((a) => ({ text: a.textContent, href: a.getAttribute('href'), target: a.target, color: getComputedStyle(a).color }));
+      const diffs = [...c.querySelectorAll('.diff')].map((d) => ({ text: d.textContent, color: getComputedStyle(d).color }));
+      const r = c.getBoundingClientRect();
+      const feed = window.__q('.feed').getBoundingClientRect();
+      return { text: c.textContent, links, diffs, label: c.getAttribute('aria-label'), more: Boolean(c.querySelector('.solved-more')), left: r.left - feed.left, right: feed.right - r.right, radius: getComputedStyle(c).borderRadius };
+    })()`);
+    check(/^Nice job completing Two Sum\./.test(m.text), `title from the roadmap: ${m.text}`);
+    check(/Next up on NeetCode 150Contains DuplicateEasy/.test(m.text) && /More Arrays & Hashing problemsGroup AnagramsMedium/.test(m.text), `rows: ${m.text}`);
+    check(m.links.length === 2 && m.links[0].href === 'https://leetcode.com/problems/contains-duplicate/' && m.links[1].href === 'https://leetcode.com/problems/group-anagrams/', `links: ${JSON.stringify(m.links)}`);
+    check(m.links.every((l) => l.target === ''), 'card links are ordinary links (same tab unless the student asks for a new one)');
+    check(m.diffs[0].color === 'rgb(44, 187, 93)' && m.diffs[1].color === 'rgb(255, 161, 22)', `difficulty colors: ${JSON.stringify(m.diffs)}`);
+    check(!m.more, 'no "See your progress" without an extension runtime');
+    check(m.left === 0 && m.right === 0 && m.radius === '8px', `card box: ${JSON.stringify(m)}`);
+    await page.screenshot(path.join(SHOTS, 'solved-card-dark.png'), { width: 1100, height: 760 });
+    // Off the roadmap: the page's title, and only the agenda.
+    await solved({ slug: 'two-sum', pageTitle: 'Some Other Problem', card: { ...card, solvedTitle: null, more: null } });
+    await settle();
+    const off = await page.eval(`window.__qa('.feed .solved').at(-1).textContent`);
+    check(off === 'Nice job completing Some Other Problem.Next up on NeetCode 150Contains DuplicateEasy', `off the roadmap: ${off}`);
+    await page.eval(`document.documentElement.classList.add('light')`);
+    await settle();
+    const light = await page.eval(`(() => { const c = window.__qa('.feed .solved').at(-2); return { diffs: [...c.querySelectorAll('.diff')].map((d) => getComputedStyle(d).color), link: getComputedStyle(c.querySelector('a')).color }; })()`);
+    check(light.diffs[0] === 'rgb(14, 138, 58)' && light.diffs[1] === 'rgb(194, 94, 0)' && light.link === 'rgb(11, 99, 229)', `light colors: ${JSON.stringify(light)}`);
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await page.screenshot(path.join(SHOTS, 'solved-card-light.png'), { width: 1100, height: 760 });
+    await page.eval(`document.documentElement.classList.remove('light')`);
+    await resizePane(240, 620);
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await settle();
+    const narrow = await page.eval(`(() => { const c = window.__qa('.feed .solved').at(-2); const s = window.__q('.scroll'); return { sideways: s.scrollWidth > s.clientWidth, overflow: [...c.querySelectorAll('*')].some((n) => n.getBoundingClientRect().right > c.getBoundingClientRect().right + 0.5) }; })()`);
+    check(!narrow.sideways && !narrow.overflow, `narrow pane: ${JSON.stringify(narrow)}`);
+    await page.screenshot(path.join(SHOTS, 'solved-card-narrow.png'), { width: 1100, height: 760 });
+    await resizePane(480, 620);
+  });
+
   await scenario('the model label changes after the old reply ends', async () => {
     await page.eval(`window.__ev({ type: 'config', provider: 'local', label: 'Local model', model: 'old-model' })`);
     await page.eval(`window.__ev({ type: 'turn-start', turnId: 'model-switch', problemSlug: 'two-sum' })`);

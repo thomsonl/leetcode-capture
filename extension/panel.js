@@ -1299,6 +1299,27 @@
     .chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); font-size: 12px; line-height: 16px; color: var(--muted); }
     .chip b { font-weight: 500; color: var(--fg); }
     .notice { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
+    /* The "nice job" card after an accepted submission: the panel's own,
+       never a tutor reply, so it gets a faint green card instead of plain
+       text. Links are ordinary links (same tab, or a new one by the
+       browser's usual gestures). */
+    .solved { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); background: color-mix(in srgb, var(--green) 7%, transparent); }
+    .solved-head { display: flex; align-items: flex-start; gap: 8px; margin: 0; }
+    .solved-head svg { flex: none; margin-top: 2.5px; color: var(--green); }
+    .solved-head b { font-weight: 600; }
+    .solved-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0 0 0 24px; list-style: none; }
+    .solved-list li { display: flex; flex-direction: column; min-width: 0; }
+    .solved-label { font-size: 12px; line-height: 16px; color: var(--muted); }
+    .solved-line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+    .solved a { color: var(--link); text-decoration: none; }
+    .solved a:hover { text-decoration: underline; }
+    .solved a:focus-visible, .solved button.solved-more:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 2px; border-radius: 2px; }
+    .diff { font-size: 12px; line-height: 16px; }
+    .diff[data-level="Easy"] { color: var(--easy); }
+    .diff[data-level="Medium"] { color: var(--medium); }
+    .diff[data-level="Hard"] { color: var(--red); }
+    button.solved-more { align-self: flex-start; width: auto; height: auto; margin-left: 24px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; cursor: pointer; }
+    button.solved-more:hover:not(:disabled) { background: none; color: var(--fg); text-decoration: underline; }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; }
     .user-text.collapsed { max-height: 220px; overflow: hidden; }
@@ -1498,6 +1519,10 @@
     // surface instead.
     style.setProperty("--link", light ? "#0b63e5" : "#4b9bff");
     style.setProperty("--red", "#ef4743");
+    // Difficulty colors for the "nice job" card: green, orange and the red
+    // above, each darker on white so it keeps 3:1 against the panel.
+    style.setProperty("--easy", light ? "#0e8a3a" : "#2cbb5d");
+    style.setProperty("--medium", light ? "#c25e00" : "#ffa116");
     // LeetCode's own "Medium" yellow in the dark theme; on white a darker
     // shade, so the light keeps at least 3:1 against the panel.
     style.setProperty("--yellow", light ? "#b97c00" : "#ffc01e");
@@ -1878,11 +1903,21 @@
   // an extension page. Without an extension runtime (the panel injected by
   // hand for a test) there is nothing to open.
   function openSettings() {
+    sendToWorker({ type: "lc-tutor:open-settings" });
+  }
+
+  function messagingRuntime() {
     const runtime =
       (typeof browser !== "undefined" && browser.runtime) || (typeof chrome !== "undefined" && chrome.runtime) || null;
-    if (!runtime || typeof runtime.sendMessage !== "function" || !runtime.id) return;
+    return runtime && typeof runtime.sendMessage === "function" && runtime.id ? runtime : null;
+  }
+
+  // A one-way message to the background worker (opening a page).
+  function sendToWorker(message) {
+    const runtime = messagingRuntime();
+    if (!runtime) return;
     try {
-      const pending = runtime.sendMessage({ type: "lc-tutor:open-settings" });
+      const pending = runtime.sendMessage(message);
       if (pending && typeof pending.catch === "function") pending.catch(() => {});
     } catch {
       // The extension was reloaded under this page; nothing to do.
@@ -1992,6 +2027,109 @@
   let feedDirty = true; // the on-screen transcript changed since the last feed render
   let renderedSlug; // the slug the feed currently shows (undefined: none yet)
 
+  // ---- the "nice job" card ------------------------------------------------
+  //
+  // After LeetCode accepts a submission, content.js has the worker record the
+  // problem as solved and passes on what to suggest next, built only from the
+  // bundled NeetCode 150 roadmap and the solved list
+  // (leetcode-capture:solved, see shared/solved.js's congratulation). The
+  // card lives only in this tab's transcript: it is never sent to the tutor,
+  // never enters its context and is not kept anywhere.
+
+  const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  const LEVELS = ["Easy", "Medium", "Hard"];
+
+  function cleanText(value, max = 200) {
+    return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
+  }
+
+  function cleanProblem(problem) {
+    if (!problem || typeof problem !== "object" || typeof problem.slug !== "string" || !SLUG_RE.test(problem.slug)) return null;
+    const title = cleanText(problem.title);
+    if (!title) return null;
+    return { slug: problem.slug, title, difficulty: LEVELS.includes(problem.difficulty) ? problem.difficulty : null };
+  }
+
+  // The transcript item for a leetcode-capture:solved detail, or null.
+  function solvedItem(detail, slug) {
+    let data;
+    try {
+      data = JSON.parse(detail);
+    } catch {
+      return null;
+    }
+    if (!data || typeof data !== "object" || data.slug !== slug || !data.card || typeof data.card !== "object") return null;
+    const card = data.card;
+    const title = cleanText(card.solvedTitle) || cleanText(data.pageTitle) || "this problem";
+    const roadmap = cleanText(card.roadmap && card.roadmap.title, 60) || "NeetCode 150";
+    const next = cleanProblem(card.next);
+    const moreProblem = card.more && typeof card.more === "object" ? cleanProblem(card.more.problem) : null;
+    const moreTopic = moreProblem ? cleanText(card.more.topic && card.more.topic.title, 60) : "";
+    return {
+      kind: "solved",
+      title,
+      roadmap,
+      next,
+      more: moreProblem && moreTopic ? { topic: moreTopic, problem: moreProblem } : null,
+      finished: !next && card.finished === true,
+    };
+  }
+
+  function checkCircleIcon() {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    for (const [name, value] of [["width", "16"], ["height", "16"], ["viewBox", "0 0 16 16"], ["fill", "none"], ["aria-hidden", "true"]]) svg.setAttribute(name, value);
+    const circle = document.createElementNS(NS, "circle");
+    for (const [name, value] of [["cx", "8"], ["cy", "8"], ["r", "7"], ["stroke", "currentColor"], ["stroke-width", "1.5"]]) circle.setAttribute(name, value);
+    const tick = document.createElementNS(NS, "path");
+    for (const [name, value] of [["d", "M4.75 8.25l2.1 2.1 4.4-4.6"], ["stroke", "currentColor"], ["stroke-width", "1.5"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"]]) tick.setAttribute(name, value);
+    svg.append(circle, tick);
+    return svg;
+  }
+
+  function problemLine(problem) {
+    const line = el("span", "solved-line");
+    const link = el("a", "", problem.title);
+    link.href = `https://leetcode.com/problems/${problem.slug}/`;
+    line.appendChild(link);
+    if (problem.difficulty) {
+      const level = el("span", "diff", problem.difficulty);
+      level.dataset.level = problem.difficulty;
+      line.appendChild(level);
+    }
+    return line;
+  }
+
+  function renderSolved(item) {
+    const card = el("section", "solved");
+    card.setAttribute("aria-label", "Accepted");
+    const head = el("p", "solved-head");
+    head.appendChild(checkCircleIcon());
+    const text = el("span", "", "Nice job completing ");
+    text.appendChild(el("b", "", item.title));
+    text.appendChild(document.createTextNode("."));
+    head.appendChild(text);
+    card.appendChild(head);
+    const list = el("ul", "solved-list");
+    const row = (label, content) => {
+      const li = el("li");
+      li.appendChild(el("span", "solved-label", label));
+      li.appendChild(content);
+      list.appendChild(li);
+    };
+    if (item.next) row(`Next up on ${item.roadmap}`, problemLine(item.next));
+    else if (item.finished) row(item.roadmap, el("span", "solved-line", "You have solved every problem on it."));
+    if (item.more) row(`More ${item.more.topic} problems`, problemLine(item.more.problem));
+    if (list.children.length) card.appendChild(list);
+    if (messagingRuntime()) {
+      const more = el("button", "solved-more", "See your progress");
+      more.type = "button";
+      more.addEventListener("click", () => sendToWorker({ type: "lc-tutor:open-progress" }));
+      card.appendChild(more);
+    }
+    return card;
+  }
+
   function renderStaticItem(item) {
     if (item.kind === "capture") {
       const chip = el("div", "chip");
@@ -2000,6 +2138,7 @@
       return chip;
     }
     if (item.kind === "notice") return el("div", "notice", item.text);
+    if (item.kind === "solved") return renderSolved(item);
     if (item.text.length <= 1200) return el("div", "user", item.text);
     const bubble = el("div", "user");
     const body = el("div", "user-text collapsed", item.text);
@@ -3288,6 +3427,16 @@
       const affected = applyEvent(state, { type: "notice", problemSlug: slug, text: EDITOR_READ_FAILED });
       if (!active) setUnread(true);
       noteApplied(affected);
+    });
+    // LeetCode accepted a submission on this problem: the "nice job" card,
+    // added to this tab's transcript only (see renderSolved).
+    document.addEventListener("leetcode-capture:solved", (event) => {
+      const slug = currentSlug();
+      const item = slug ? solvedItem(event.detail, slug) : null;
+      if (!item) return;
+      pushItem(state, slug, item);
+      if (!active) setUnread(true);
+      noteApplied(slug);
     });
 
     // Not running as an extension (the e2e fixture injects this script into
