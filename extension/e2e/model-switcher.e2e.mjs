@@ -380,6 +380,30 @@ try {
     await page.screenshot(path.join(SHOTS, '06-helper-offline-dark.png'), { width: 1100, height: 760 });
     await key('Escape');
   });
+
+  await scenario('a helper switch the relay stopped waiting for is taken from the companion\'s next config event', async () => {
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: true, epoch: 'r1', openTurns: [] })`);
+    await settle();
+    check(await page.eval(`window.__q('button.model').textContent`) === 'Haiku, the quick one with a long name', 'starts on haiku');
+    await page.eval(`(() => { window.__switchDelayMs = 0; window.__switchStatus = 504; window.__switchBody = { ok: false, error: { message: 'The tutor did not answer within 190 seconds.' } }; })()`);
+    await clickAt('button.model');
+    await clickAt('.opt[data-id="sonnet"]');
+    await page.waitFor(`!window.__q('.hint').hidden`, { what: 'the waiting hint' });
+    check(/waiting for the tutor's current reply/.test(await page.eval(`window.__q('.hint').textContent`)), 'says it is still waiting');
+    check(await page.eval(`window.__q('button.model').textContent`) === 'Haiku, the quick one with a long name', 'not switched yet');
+    // The companion finishes the switch after its reply and says so.
+    await page.eval(`window.__event({ type: 'config', provider: 'claude', label: 'Claude subscription', model: 'claude-sonnet-5', profile: 'sonnet', epoch: 'r1' })`);
+    await settle();
+    check(await page.eval(`window.__q('button.model').textContent`) === 'Sonnet', 'the switch is taken from the config event');
+    check(await page.eval(`window.__posted.some((m) => m.type === 'profile-switched' && m.id === 'sonnet')`), 'the worker hears of it');
+    check(await page.eval(`window.__q('.hint').hidden`), 'the waiting hint goes away');
+    // Without a switch left unsettled, a config event never moves the choice.
+    await page.eval(`window.__event({ type: 'config', provider: 'claude', label: 'Claude subscription', model: 'claude-haiku-5-5', profile: 'haiku', epoch: 'r1' })`);
+    await settle();
+    check(await page.eval(`window.__q('button.model').textContent`) === 'Sonnet', 'an unrelated config event changes nothing');
+    check(!(await page.eval(`window.__posted.some((m) => m.type === 'profile-switched' && m.id === 'haiku' && window.__posted.indexOf(m) > window.__posted.findIndex((x) => x.type === 'profile-switched' && x.id === 'sonnet'))`)), 'nor tells the worker');
+    await page.eval(`window.__switchStatus = 200`);
+  });
 } finally {
   await browser.close();
   server.close();

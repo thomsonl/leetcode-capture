@@ -748,7 +748,7 @@ test("the companion's busy flag reaches every panel in the status event, and cle
 // These run the broker in-process (createPanelBroker behind a plain http
 // server on an ephemeral port), so the call timeout can be made short.
 
-const { createPanelBroker, sanitizeConfig, sanitizeEvent, EXTENSION_ORIGIN_RE } = require("./panel-broker");
+const { createPanelBroker, sanitizeConfig, sanitizeEvent, EXTENSION_ORIGIN_RE, RPC_TIMEOUT_MS, SWITCH_RPC_TIMEOUT_MS } = require("./panel-broker");
 
 const CHROME_EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const FIREFOX_EXT = "moz-extension://0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e";
@@ -814,6 +814,34 @@ test("unit: the extension origin pattern and sanitizeConfig", () => {
   });
   assert.equal(sanitizeConfig({ provider: "Local!", label: "x" }), null);
   assert.equal(sanitizeConfig({ provider: "local" }), null);
+  // The active profile goes on as an id only.
+  assert.equal(sanitizeConfig({ provider: "local", label: "x", model: null, profile: "gemma" }).profile, "gemma");
+  assert.equal("profile" in sanitizeConfig({ provider: "local", label: "x", model: null, profile: null }), false);
+  assert.equal(sanitizeConfig({ provider: "local", label: "x", model: null, profile: "Bad Id" }), null);
+  assert.equal(sanitizeConfig({ provider: "local", label: "x", model: null, profile: { id: "a" } }), null);
+});
+
+test("a model switch waits longer than other settings calls, and longer than the panel does", async (t) => {
+  // The panel gives up after 180 s (SWITCH_TIMEOUT_MS in extension/panel.js),
+  // and a switch waits behind the reply already running.
+  assert.ok(SWITCH_RPC_TIMEOUT_MS > 180_000);
+  assert.ok(SWITCH_RPC_TIMEOUT_MS > RPC_TIMEOUT_MS);
+  const port = await startInProcess(t, { rpcTimeoutMs: 200, switchTimeoutMs: 3000 });
+  const companion = await companionInbox(port);
+  t.after(() => companion.inbox.close());
+  const pending = request({
+    method: "POST",
+    route: "/panel/switch-profile",
+    headers: { origin: "https://leetcode.com", "sec-fetch-mode": "cors" },
+    body: { id: "gemma" },
+    port,
+  });
+  const call = await companion.nextRpc();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await companion.answer(call.id, { ok: true, result: { profile: "gemma", active: { provider: "local", label: "Local model", model: "g" } } });
+  const res = await pending;
+  assert.equal(res.status, 200, "past the general settings timeout, the switch still answers");
+  assert.equal(JSON.parse(res.body).profile, "gemma");
 });
 
 test("settings calls: only an extension origin with the right Host may call, and 503 without a companion", async (t) => {

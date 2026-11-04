@@ -109,6 +109,13 @@ const EXTENSION_ORIGIN_RE =
   /^(chrome-extension:\/\/[a-p]{32}|moz-extension:\/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 // A connection test can wait on a slow model (settings-rpc.js gives it 90 s).
 const RPC_TIMEOUT_MS = 120_000;
+// A model switch answers only once the new model is in place, after the reply
+// already running (companion/settings-rpc.js), which may take minutes. The
+// panel waits 180 s (SWITCH_TIMEOUT_MS in extension/panel.js), so the relay
+// waits longer and the panel is always the one that gives up; a switch that
+// lands after that still reaches the panel as the companion's next config
+// event, which names the active profile.
+const SWITCH_RPC_TIMEOUT_MS = 190_000;
 const MAX_RPC_BYTES = 64 * 1024;
 const MAX_RPC_RESULT_BYTES = 1024 * 1024;
 const MAX_PENDING_RPCS = 50;
@@ -208,6 +215,9 @@ function sanitizeConfig(raw) {
   if (raw.model === null || raw.model === undefined) config.model = null;
   else if (isShortString(raw.model, 200)) config.model = stripControlChars(raw.model);
   else return null;
+  // The saved profile in use (an id only), left out when none is.
+  if (typeof raw.profile === "string" && PROFILE_ID_RE.test(raw.profile)) config.profile = raw.profile;
+  else if (raw.profile !== null && raw.profile !== undefined) return null;
   return config;
 }
 
@@ -243,7 +253,7 @@ function sameFile(a, b) {
 
 // captureLog, when given, is { path, trim(before) } from server.js; without
 // it the trim route answers 404.
-function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT_MS }) {
+function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT_MS, switchTimeoutMs = SWITCH_RPC_TIMEOUT_MS }) {
   const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 
   // Identifies this run of the relay; see the file header.
@@ -434,8 +444,9 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
   }
 
   // Sends a settings call down the companion's inbox and answers the request
-  // with `answer(response)` -> [status, body] once the companion has.
-  function forwardRpc(req, res, method, params, answer) {
+  // with `answer(response)` -> [status, body] once the companion has, or 504
+  // after `timeoutMs`.
+  function forwardRpc(req, res, method, params, answer, timeoutMs = rpcTimeoutMs) {
     if (consumers.size === 0) {
       sendJson(req, res, 503, { ok: false, error: { message: "The tutor isn't running." } });
       return;
@@ -449,9 +460,9 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
       pendingRpcs.delete(id);
       sendJson(req, res, 504, {
         ok: false,
-        error: { message: `The tutor did not answer within ${Math.round(rpcTimeoutMs / 1000)} seconds.` },
+        error: { message: `The tutor did not answer within ${Math.round(timeoutMs / 1000)} seconds.` },
       });
-    }, rpcTimeoutMs);
+    }, timeoutMs);
     timer.unref();
     pendingRpcs.set(id, { req, res, timer, answer });
     res.on("close", () => {
@@ -635,7 +646,7 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
           sendJson(req, res, 400, { ok: false, error: { code: "invalid", message: "a saved model's `id` is required" } });
           return;
         }
-        forwardRpc(req, res, "switchProfile", { id }, switchAnswer);
+        forwardRpc(req, res, "switchProfile", { id }, switchAnswer, switchTimeoutMs);
       });
       return true;
     }
@@ -774,6 +785,8 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
 
 module.exports = {
   createPanelBroker,
+  RPC_TIMEOUT_MS,
+  SWITCH_RPC_TIMEOUT_MS,
   sanitizeEvent,
   sanitizeConfig,
   stripControlChars,

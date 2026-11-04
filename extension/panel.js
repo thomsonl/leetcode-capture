@@ -2953,6 +2953,12 @@
   let activeProfileId = null;
   let switching = null; // the id being switched to
   let relaySwitchPending = null; // an id the helper's companion should take once it is here
+  // A helper switch the panel stopped waiting for (it timed out behind a long
+  // reply, or the request broke). The companion may still finish it, and its
+  // next config event names the profile it then runs, so the panel takes it
+  // from there (see noteCompanionProfile).
+  let unsettledSwitch = null;
+  const UNSETTLED_HINT = "The switch is waiting for the tutor's current reply.";
   const pendingSwitches = new Map(); // reqId -> { resolve, reject, timer }
   let nextSwitchId = 1;
   // A switch waits behind a reply that may run for minutes.
@@ -3150,6 +3156,8 @@
     }
     if (res.status === 200 && body && body.ok) return { ok: true, runtime: "helper" };
     if (res.status === 503) return { ok: false, message: "The helper app isn't running, so the model wasn't switched." };
+    // The relay stopped waiting, but the companion may still switch.
+    if (res.status === 504) return { ok: false, unsettled: true };
     const message = body && body.error && typeof body.error.message === "string" ? body.error.message : "Couldn't switch models.";
     return { ok: false, message };
   }
@@ -3175,14 +3183,23 @@
     const entry = profiles.find((e) => e.id === id);
     if (!entry && !followUp) return;
     switching = id;
+    unsettledSwitch = null;
     if (!followUp) showSwitchHint("");
     scheduleRender();
     const fromTransport = transport;
     try {
       let result;
       if (followUp || (entry.runtime === "helper" && transport === relayTransport)) {
-        result = await relaySwitch(id);
+        try {
+          result = await relaySwitch(id);
+        } catch {
+          result = { ok: false, unsettled: true };
+        }
         if (result.ok) postToWorker({ type: "profile-switched", id });
+        else if (result.unsettled) {
+          unsettledSwitch = id;
+          result.message = UNSETTLED_HINT;
+        }
       } else {
         result = await workerSwitch(id);
         if (result.ok && result.runtime === "helper" && fromTransport !== relayTransport) relaySwitchPending = id;
@@ -3198,6 +3215,19 @@
       switching = null;
       scheduleRender();
     }
+  }
+
+  // The helper's companion says which saved profile it runs (its config
+  // event). Only a switch the panel stopped waiting for is taken from it: a
+  // companion that missed a save made while it was down may name an older
+  // profile, and the extension's choice stands then.
+  function noteCompanionProfile(id) {
+    if (!unsettledSwitch || id !== unsettledSwitch || switching) return;
+    unsettledSwitch = null;
+    activeProfileId = id;
+    postToWorker({ type: "profile-switched", id });
+    if (mounted && mounted.panel.hint.textContent === UNSETTLED_HINT) showSwitchHint("");
+    scheduleRender();
   }
 
   // ---- transports ----------------------------------------------------------
@@ -3223,6 +3253,7 @@
       relaySwitchPending = null;
       setTimeout(() => chooseProfile(id, { followUp: true }), 0);
     }
+    if (event.type === "config" && transport === relayTransport && typeof event.profile === "string") noteCompanionProfile(event.profile);
     const affected = applyEvent(state, event);
     if (event.type === "turn-end" && !suppressUnread && !active && affected === currentSlug()) setUnread(true);
     noteApplied(affected);

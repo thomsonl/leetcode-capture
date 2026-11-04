@@ -370,8 +370,12 @@ export function resolveEffective(stored, env = process.env) {
 
   let contextTokens = fields.contextTokens || null;
   if (provider === 'openai') contextTokens = OPENAI_CONTEXT_TOKENS;
+  // The saved profile this runs as, when an env var does not override it.
+  const active = findProfile(stored.profiles, stored.activeProfile);
+  const profile = active && active.provider === provider && (active.model || null) === (fields.model || null) ? active.id : null;
   return {
     provider,
+    profile,
     model: fields.model || null,
     baseUrl: fields.baseUrl || null,
     apiKey: fields.apiKey || null,
@@ -415,12 +419,14 @@ export function claudeBackendEnv(apiKey, env = process.env) {
 
 // ---- what other parties may see -----------------------------------------------
 
-// Non-secret summary of what is running; published to the in-page panel.
+// Non-secret summary of what is running; published to the in-page panel,
+// whose model switcher follows `profile` (the saved profile in use, or null).
 export function statusSummary(effective) {
   return {
     provider: effective.provider,
     label: PROVIDERS[effective.provider].label,
     model: effective.model || null,
+    profile: effective.profile || null,
   };
 }
 

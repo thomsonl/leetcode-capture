@@ -199,7 +199,7 @@ test('switchProfile: only a saved id, only the active profile changes, and it wa
   assert.equal(unknown.error.code, 'unknown');
   const sneaky = await rpc.handle('switchProfile', { id: 'gemma', baseUrl: 'http://evil', patch: { providers: { local: { baseUrl: 'http://evil' } } } });
   assert.equal(sneaky.ok, true);
-  assert.deepEqual(sneaky.result, { active: { provider: 'local', label: 'Local model', model: 'gemma4:26b' }, profile: 'gemma' });
+  assert.deepEqual(sneaky.result, { active: { provider: 'local', label: 'Local model', model: 'gemma4:26b', profile: 'gemma' }, profile: 'gemma' });
   const saved = loadSettings(file).settings;
   assert.equal(saved.activeProfile, 'gemma');
   assert.equal(saved.providers.local.model, 'gemma4:26b');

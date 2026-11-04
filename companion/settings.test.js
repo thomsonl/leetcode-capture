@@ -197,9 +197,14 @@ test('publicView never contains a key, but says whether one exists and where it 
   assert.deepEqual(Object.keys(view.catalog), Object.keys(PROVIDERS));
 });
 
-test('statusSummary is non-secret and names the provider', () => {
-  const eff = resolveEffective(applyPatch(emptySettings(), { provider: 'local', providers: { local: { model: 'gpt-oss:20b', apiKey: 'k' } } }), {});
-  assert.deepEqual(statusSummary(eff), { provider: 'local', label: 'Local model', model: 'gpt-oss:20b' });
+test('statusSummary is non-secret and names the provider and the saved profile in use', () => {
+  const stored = applyPatch(emptySettings(), { provider: 'local', providers: { local: { model: 'gpt-oss:20b', apiKey: 'k' } } });
+  const eff = resolveEffective(stored, {});
+  assert.deepEqual(statusSummary(eff), { provider: 'local', label: 'Local model', model: 'gpt-oss:20b', profile: 'default' });
+  // An env var that runs something else means no saved profile is in use.
+  assert.equal(statusSummary(resolveEffective(stored, { COMPANION_MODEL: 'other' })).profile, null);
+  assert.equal(statusSummary(resolveEffective(stored, { COMPANION_BACKEND: 'openai' })).profile, null);
+  assert.equal(statusSummary(resolveEffective(emptySettings(), {})).profile, null);
 });
 
 test('the Claude backend environment drops stray keys for the subscription and sets exactly the chosen key otherwise', () => {
