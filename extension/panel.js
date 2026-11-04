@@ -1282,6 +1282,12 @@
     button.gear { flex: none; width: 24px; height: 24px; margin-right: -4px; border-radius: 4px; color: var(--muted); }
     button.gear:hover { color: var(--fg); background: var(--fill); }
     button.gear:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
+    /* "Practice a skill" next to the gear: the same icon button, without the
+       gear's pull to the right edge. */
+    button.practice-open { flex: none; width: 24px; height: 24px; border-radius: 4px; color: var(--muted); }
+    button.practice-open:hover { color: var(--fg); background: var(--fill); }
+    button.practice-open:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
+    button.practice-open[hidden] { display: none; }
     .status { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
     .status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     /* The status light: neutral (the text color) while connecting or with
@@ -1330,6 +1336,38 @@
     .solved-switch select:disabled { opacity: 0.6; cursor: default; }
     button.solved-more { width: auto; height: auto; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; cursor: pointer; }
     button.solved-more:hover:not(:disabled) { background: none; color: var(--fg); text-decoration: underline; }
+    /* "Practice a skill": a row of the "nice job" card, and a card of its own
+       when opened from the header (neutral, since nothing was solved). Skill
+       chips are LeetCode's topic pills: a faint fill, 12px text, fully
+       round. The chosen skill's suggestions read like the card's rows, each
+       with one muted reason line. */
+    .practice { display: flex; flex-direction: column; gap: 8px; margin-left: 24px; min-width: 0; }
+    .practice-title { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+    .practice-title b { font-weight: 500; font-size: 12px; line-height: 16px; color: var(--body); }
+    .skill-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; min-width: 0; }
+    .skill-chips[hidden], .practice-list[hidden], .practice-foot[hidden], .practice-note[hidden], button.practice-link[hidden] { display: none; }
+    button.skill-chip { width: auto; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill); color: var(--body); font: inherit; font-size: 12px; line-height: 16px; white-space: nowrap; }
+    button.skill-chip:hover:not(:disabled) { background: color-mix(in srgb, var(--body) 12%, transparent); }
+    button.skill-chip:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 1px; }
+    button.skill-chip[aria-pressed="true"] { background: color-mix(in srgb, var(--body) 18%, transparent); }
+    button.skill-chip:disabled { opacity: 0.6; cursor: default; }
+    .practice-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .practice-list li { display: flex; flex-direction: column; min-width: 0; }
+    .practice-reason, .practice-note { font-size: 12px; line-height: 16px; color: var(--muted); }
+    .practice-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-width: 0; }
+    .practice a { color: var(--link); text-decoration: none; }
+    .practice a:hover { text-decoration: underline; }
+    button.practice-link { align-self: flex-start; width: auto; height: auto; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; cursor: pointer; }
+    button.practice-link:hover:not(:disabled) { background: none; color: var(--fg); text-decoration: underline; }
+    .practice a:focus-visible, .practice button.practice-link:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 2px; border-radius: 2px; }
+    .practice-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--line); }
+    .practice-card .solved-head { align-items: center; }
+    .practice-card .solved-head svg { margin-top: 0; color: var(--muted); }
+    .practice-card .solved-head span { flex: 1; min-width: 0; }
+    button.practice-close { flex: none; width: 24px; height: 24px; margin: -4px -6px -4px 0; border-radius: 4px; color: var(--muted); }
+    button.practice-close:hover { color: var(--fg); background: var(--fill); }
+    button.practice-close:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; }
     .user-text.collapsed { max-height: 220px; overflow: hidden; }
@@ -1718,7 +1756,21 @@
       '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' +
       "</svg>";
     gear.addEventListener("click", openSettings);
-    headRight.append(model, gear);
+    // "Practice a skill" without a submission: a card of suggestions for the
+    // problem on the page (see openPractice). Only with the extension's
+    // worker, which holds the problem index and the solved problems.
+    const practice = document.createElement("button");
+    practice.type = "button";
+    practice.className = "practice-open";
+    practice.hidden = true;
+    practice.setAttribute("aria-label", "Practice a skill");
+    practice.title = "Practice a skill";
+    // Feather's "target" (MIT), drawn in the text color.
+    practice.innerHTML =
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
+    practice.addEventListener("click", () => openPractice());
+    headRight.append(model, practice, gear);
     head.append(headLeft, headRight);
 
     const banner = el("div", "banner");
@@ -1799,7 +1851,7 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    const p = { host, wrap, status, statusText, headRight, model, provider, menu, gear, banner, scroll, view, feed, box, input, send, hint, counter };
+    const p = { host, wrap, status, statusText, headRight, model, provider, menu, gear, practice, banner, scroll, view, feed, box, input, send, hint, counter };
     wireSwitcher(p);
     return p;
   }
@@ -2119,7 +2171,7 @@
     if (!data || typeof data !== "object" || data.slug !== slug || !data.card || typeof data.card !== "object") return null;
     const card = data.card;
     const title = cleanText(card.solvedTitle) || cleanText(data.pageTitle) || "this problem";
-    return { kind: "solved", title, slug, ...cardSuggestions(card) };
+    return { kind: "solved", title, slug, skills: cleanSkills(card.skills), ...cardSuggestions(card) };
   }
 
   function checkCircleIcon() {
@@ -2174,6 +2226,7 @@
     head.appendChild(text);
     card.appendChild(head);
     card.appendChild(solvedList(item));
+    if (messagingRuntime() && item.skills.length) card.appendChild(practiceBlock(item.slug, item.skills));
     if (messagingRuntime()) {
       const foot = el("div", "solved-foot");
       if (item.lists.length > 1) foot.appendChild(listMenu(item));
@@ -2238,6 +2291,288 @@
     if (select && select.value !== item.roadmapId) select.value = item.roadmapId;
   }
 
+  // ---- "Practice a skill" ----------------------------------------------
+  //
+  // Problems from all of LeetCode for a skill the student picks from a fixed
+  // list (never the tags of the problem on the page, so nothing hints at how
+  // it is solved), three at a time, ranked by the worker from the bundled
+  // problem index near the page problem's difficulty, solved ones left out
+  // (lc-tutor:practice, see shared/solved.js and shared/practice.js). It is
+  // a row of the "nice job" card, and a card of its own from the header's
+  // button. Like the card it stays in this tab's transcript only: never sent
+  // to the tutor, never in its context.
+  //
+  // Keyboard: the chips are one toolbar (Tab enters it at the chosen or the
+  // first chip; arrows, Home and End move). Choosing a skill puts focus on
+  // its first suggestion; "Show 3 more" on the first new one; "Other skill"
+  // back on the chips; closing the card on the header button.
+
+  const PRACTICE_HINT = "Couldn't load suggestions. Try again.";
+
+  function cleanSkills(list) {
+    const skills = [];
+    for (const skill of Array.isArray(list) ? list.slice(0, 40) : []) {
+      if (!skill || typeof skill.id !== "string" || !LIST_ID_RE.test(skill.id) || skill.id.length > 40) continue;
+      const label = cleanText(skill.label, 40);
+      if (label && !skills.some((s) => s.id === skill.id)) skills.push({ id: skill.id, label });
+    }
+    return skills;
+  }
+
+  // The worker's answer, cleaned, or null when it is not a usable one.
+  function cleanPractice(answer, skillId) {
+    if (!answer || typeof answer !== "object" || answer.ok !== true) return null;
+    const skills = cleanSkills(answer.skills);
+    if (skillId === null) return { skills, suggestions: [], more: false, offset: 0 };
+    if (!answer.skill || answer.skill.id !== skillId || !Array.isArray(answer.suggestions)) return null;
+    const suggestions = [];
+    for (const s of answer.suggestions.slice(0, 10)) {
+      const problem = cleanProblem(s);
+      if (problem) suggestions.push({ ...problem, reason: cleanText(s && s.reason, 120) });
+    }
+    return { skills, suggestions, more: answer.more === true, offset: Number.isInteger(answer.offset) && answer.offset >= 0 ? answer.offset : 0, reference: LEVELS.includes(answer.reference) ? answer.reference : null };
+  }
+
+  // The practice row for problem `slug`. `skills` may be empty: the list is
+  // then asked for first.
+  function practiceBlock(slug, skills, { label = true } = {}) {
+    const block = el("div", "practice");
+    const title = el("div", "practice-title");
+    const titleText = el("span", "solved-label", "Practice a skill");
+    const chosen = el("b");
+    chosen.hidden = true;
+    if (label) title.append(titleText, chosen);
+    else title.append(chosen);
+    title.hidden = !label;
+    const chips = el("div", "skill-chips");
+    chips.setAttribute("role", "toolbar");
+    chips.setAttribute("aria-label", "Skills to practice");
+    const list = el("ul", "practice-list");
+    list.hidden = true;
+    const note = el("p", "practice-note");
+    note.hidden = true;
+    note.style.margin = "0";
+    const foot = el("div", "practice-foot");
+    foot.hidden = true;
+    const more = el("button", "practice-link", "Show 3 more");
+    more.type = "button";
+    const other = el("button", "practice-link", "Other skill");
+    other.type = "button";
+    foot.append(more, other);
+    // Only when the list of skills itself could not be had.
+    const retry = el("button", "practice-link", "Try again");
+    retry.type = "button";
+    retry.hidden = true;
+    const live = el("div", "sr-only");
+    live.setAttribute("aria-live", "polite");
+    block.append(title, chips, list, note, retry, live);
+    block.insertBefore(foot, retry);
+
+    const view = { skills: [], skill: null, offset: 0, shown: 0, request: 0, loading: false };
+
+    function drawChips() {
+      chips.textContent = "";
+      view.skills.forEach((skill) => {
+        const chip = el("button", "skill-chip", skill.label);
+        chip.type = "button";
+        chip.dataset.skill = skill.id;
+        chip.setAttribute("aria-pressed", String(view.skill !== null && view.skill.id === skill.id));
+        chip.tabIndex = -1;
+        chips.appendChild(chip);
+      });
+      rove(chips.querySelector('[aria-pressed="true"]') || chips.firstElementChild);
+    }
+
+    function rove(target) {
+      for (const chip of chips.children) chip.tabIndex = chip === target ? 0 : -1;
+    }
+
+    function showChips(focus) {
+      chips.hidden = false;
+      list.hidden = true;
+      foot.hidden = true;
+      note.hidden = true;
+      chosen.hidden = true;
+      chosen.textContent = "";
+      titleText.textContent = "Practice a skill";
+      drawChips();
+      if (focus) {
+        const target = chips.querySelector('[tabindex="0"]');
+        if (target) target.focus({ preventScroll: true });
+      }
+    }
+
+    function fail(text) {
+      note.textContent = text;
+      note.hidden = false;
+      live.textContent = text;
+    }
+
+    async function load(skill, offset, focus) {
+      if (view.loading) return;
+      const token = ++view.request;
+      view.loading = true;
+      for (const b of [...chips.children, more, other, retry]) b.disabled = true;
+      block.setAttribute("aria-busy", "true");
+      const answer = await askWorker({ type: "lc-tutor:practice", slug, ...(skill ? { skill: skill.id, offset } : {}) });
+      if (token !== view.request) return;
+      view.loading = false;
+      block.removeAttribute("aria-busy");
+      for (const b of [...chips.children, more, other, retry]) b.disabled = false;
+      const fresh = cleanPractice(answer, skill ? skill.id : null);
+      if (fresh && fresh.skills.length) view.skills = fresh.skills;
+      if (!skill) {
+        if (!view.skills.length) {
+          fail(PRACTICE_HINT);
+          retry.hidden = false;
+          if (focus) retry.focus({ preventScroll: true });
+          return;
+        }
+        retry.hidden = true;
+        note.hidden = true;
+        return showChips(focus);
+      }
+      if (!fresh) {
+        // Stay where the student was, and say so.
+        fail(PRACTICE_HINT);
+        if (focus && !chips.hidden) {
+          const target = chips.querySelector(`[data-skill="${skill.id}"]`);
+          if (target) target.focus({ preventScroll: true });
+        }
+        return;
+      }
+      view.skill = skill;
+      view.offset = fresh.offset;
+      view.shown = fresh.suggestions.length;
+      chips.hidden = true;
+      titleText.textContent = "Practice";
+      chosen.textContent = skill.label;
+      chosen.hidden = false;
+      title.hidden = false;
+      list.textContent = "";
+      for (const s of fresh.suggestions) {
+        const li = el("li");
+        li.appendChild(problemLine(s));
+        if (s.reason) li.appendChild(el("span", "practice-reason", s.reason));
+        list.appendChild(li);
+      }
+      list.hidden = !fresh.suggestions.length;
+      list.setAttribute("aria-label", `${skill.label} problems`);
+      note.textContent = fresh.suggestions.length ? "" : fresh.offset ? `No more ${skill.label} problems to suggest.` : `You have solved every ${skill.label} problem near this level.`;
+      note.hidden = Boolean(fresh.suggestions.length);
+      more.hidden = !fresh.more;
+      foot.hidden = false;
+      live.textContent = fresh.suggestions.length ? `${fresh.suggestions.length} ${skill.label} problems` : note.textContent;
+      if (focus) {
+        const first = list.querySelector("a");
+        (first || other).focus({ preventScroll: true });
+      }
+    }
+
+    chips.addEventListener("click", (e) => {
+      const chip = e.target.closest(".skill-chip");
+      if (!chip || chip.disabled) return;
+      const skill = view.skills.find((s) => s.id === chip.dataset.skill);
+      if (!skill) return;
+      rove(chip);
+      load(skill, 0, true);
+    });
+    chips.addEventListener("keydown", (e) => {
+      const all = [...chips.children];
+      const i = all.indexOf(e.target);
+      if (i < 0) return;
+      let next = null;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") next = all[(i + 1) % all.length];
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = all[(i - 1 + all.length) % all.length];
+      else if (e.key === "Home") next = all[0];
+      else if (e.key === "End") next = all[all.length - 1];
+      if (!next) return;
+      e.preventDefault();
+      rove(next);
+      next.focus();
+    });
+    more.addEventListener("click", () => view.skill && load(view.skill, view.offset + view.shown, true));
+    other.addEventListener("click", () => showChips(true));
+    retry.addEventListener("click", () => load(null, 0, true));
+
+    view.skills = skills.slice();
+    if (view.skills.length) showChips(false);
+    else load(null, 0, false);
+    block.focusFirst = () => {
+      const target = !retry.hidden ? retry : !chips.hidden ? chips.querySelector('[tabindex="0"]') : list.querySelector("a") || other;
+      if (target) target.focus({ preventScroll: true });
+      return Boolean(target);
+    };
+    return block;
+  }
+
+  function renderPracticeCard(item) {
+    // A div, not a section: the "nice job" card's list menu shows only on
+    // the last section of the feed.
+    const card = el("div", "practice-card");
+    card.setAttribute("role", "region");
+    card.setAttribute("aria-label", "Practice a skill");
+    const head = el("p", "solved-head");
+    const icon = document.createElement("span");
+    icon.style.display = "contents";
+    icon.innerHTML =
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
+    const close = el("button", "practice-close");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close");
+    close.title = "Close";
+    // Feather's "x" (MIT).
+    close.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+    close.addEventListener("click", () => closePractice(item));
+    head.append(icon.firstChild, el("span", "", "Practice a skill"), close);
+    const block = practiceBlock(item.slug, [], { label: false });
+    card.append(head, block);
+    card.focusFirst = () => block.focusFirst();
+    return card;
+  }
+
+  // The header button: a practice card at the end of this problem's
+  // transcript, or the one already there.
+  function openPractice() {
+    const slug = currentSlug();
+    if (!slug || !messagingRuntime()) return;
+    const items = itemsFor(state, slug);
+    let item = items.length && items[items.length - 1].kind === "practice" ? items[items.length - 1] : null;
+    if (!item) {
+      item = { kind: "practice", slug };
+      pushItem(state, slug, item);
+      noteApplied(slug);
+      render();
+    }
+    const node = nodeFor(item);
+    if (mounted) mounted.panel.view.follow = true;
+    node.scrollIntoView({ block: "nearest" });
+    // A new card asks for the skills first; its chips (or, when that fails,
+    // its "Try again") take the focus once they are there, unless the
+    // student has moved on from the card's Close button meanwhile.
+    if (!node.focusFirst()) {
+      const close = node.querySelector(".practice-close");
+      if (close) close.focus({ preventScroll: true });
+      const wait = new MutationObserver(() => {
+        const root = mounted && mounted.panel.host.shadowRoot;
+        if (!root || root.activeElement !== close) return wait.disconnect();
+        if (node.focusFirst()) wait.disconnect();
+      });
+      wait.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+      setTimeout(() => wait.disconnect(), 5000);
+    }
+  }
+
+  function closePractice(item) {
+    const items = itemsFor(state, item.slug);
+    const at = items.indexOf(item);
+    if (at >= 0) items.splice(at, 1);
+    noteApplied(item.slug);
+    render();
+    if (mounted && !mounted.panel.practice.hidden) mounted.panel.practice.focus({ preventScroll: true });
+  }
+
   function renderStaticItem(item) {
     if (item.kind === "capture") {
       const chip = el("div", "chip");
@@ -2247,6 +2582,7 @@
     }
     if (item.kind === "notice") return el("div", "notice", item.text);
     if (item.kind === "solved") return renderSolved(item);
+    if (item.kind === "practice") return renderPracticeCard(item);
     if (item.text.length <= 1200) return el("div", "user", item.text);
     const bubble = el("div", "user");
     const body = el("div", "user-text collapsed", item.text);
@@ -2345,6 +2681,9 @@
     p.model.hidden = !providerText;
     if (p.model.hidden && !p.menu.hidden) closeMenu(p, false);
     if (!p.menu.hidden) renderMenu(p);
+
+    const practiceHidden = !slug || !messagingRuntime();
+    if (p.practice.hidden !== practiceHidden) p.practice.hidden = practiceHidden;
 
     const canSend = conn.ok && Boolean(slug);
     p.input.disabled = !canSend;
@@ -3111,10 +3450,10 @@
       } else if (e.key === "Tab") {
         // The listbox sits after the composer in the page's order, so a
         // plain Tab would leave the panel: it goes on from the button
-        // instead, to the gear (Shift+Tab stays on the button).
+        // instead, to the next header button (Shift+Tab stays on the button).
         e.preventDefault();
         closeMenu(p, true);
-        if (!e.shiftKey) p.gear.focus({ preventScroll: true });
+        if (!e.shiftKey) (p.practice.hidden ? p.gear : p.practice).focus({ preventScroll: true });
       }
     });
     p.menu.addEventListener("click", (e) => {

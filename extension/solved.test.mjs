@@ -25,6 +25,7 @@ import {
   slugFromUrl,
 } from './shared/solved.js';
 import { listById } from './shared/roadmap.js';
+import { skillChoices } from './shared/practice.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -257,6 +258,63 @@ test('switching lists writes only the list choice, answers a problem tab with it
   ]) assert.deepEqual(await service.handleMessage(message, sender), { ok: false }, JSON.stringify([message, sender]));
   assert.equal(storage.writes, writes);
   assert.equal(storage.data[ACTIVE_LIST_KEY], 'sql-50');
+});
+
+test('the card carries the fixed practice skills, never the solved problem\'s own tags', async () => {
+  const card = congratulation({}, 'two-sum');
+  assert.deepEqual(card.skills, skillChoices());
+  assert.deepEqual(congratulation({}, 'valid-parentheses').skills, card.skills, 'the same chips whatever was solved');
+});
+
+test('practice suggestions answer a problem tab for the problem it names, leave out solved problems and write nothing', async () => {
+  const storage = fakeStorage({ [SOLVED_KEY]: { 'two-sum': { at: 't', count: 1 } } });
+  const service = createSolvedService({ storage, extensionOrigin: ORIGIN });
+  const skills = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'two-sum' }, tabSender());
+  assert.equal(skills.ok, true);
+  assert.deepEqual(skills.skills, skillChoices());
+  assert.deepEqual(skills.suggestions, []);
+  // On Contains Duplicate (Easy): Easy hash map problems, not Two Sum
+  // (solved), not the page's own problem.
+  const r = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'contains-duplicate', skill: 'hash-maps' }, tabSender());
+  assert.equal(r.ok, true);
+  assert.equal(r.reference, 'Easy');
+  assert.deepEqual(r.skill, { id: 'hash-maps', label: 'Hash maps' });
+  assert.equal(r.suggestions.length, 3);
+  for (const s of r.suggestions) {
+    assert.equal(s.difficulty, 'Easy');
+    assert.ok(s.slug !== 'two-sum' && s.slug !== 'contains-duplicate', s.slug);
+    assert.match(s.reason, /^Same level · /);
+  }
+  assert.equal(r.more, true);
+  const next = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'contains-duplicate', skill: 'hash-maps', offset: 3 }, tabSender());
+  assert.equal(next.offset, 3);
+  assert.ok(!next.suggestions.some((s) => r.suggestions.some((t) => t.slug === s.slug)), 'the next three are new');
+  // A problem the index does not have: every level, by popularity.
+  const unknown = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'a-brand-new-problem', skill: 'arrays' }, tabSender());
+  assert.equal(unknown.reference, null);
+  assert.equal(unknown.suggestions.length, 3);
+  assert.equal(storage.writes, 0);
+});
+
+test('practice suggestions refuse anything but a problem tab naming its problem, an unknown skill and a bad offset', async () => {
+  const storage = fakeStorage();
+  const service = createSolvedService({ storage, extensionOrigin: ORIGIN });
+  for (const [message, sender] of [
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays' }, pageSender],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays' }, { id: 'x', url: 'https://leetcode.com/problemset/', tab: { id: 1 } }],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays' }, { id: 'x', url: 'https://leetcode.com/problems/two-sum/' }],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays' }, { id: 'x', url: 'https://example.com/problems/two-sum/', tab: { id: 1 } }],
+    [{ type: 'lc-tutor:practice', skill: 'arrays' }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'Two Sum', skill: 'arrays' }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'no-such-skill' }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: '__proto__' }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 7 }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays', offset: -3 }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays', offset: 1.5 }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays', offset: '3' }, tabSender()],
+    [{ type: 'lc-tutor:practice', slug: 'two-sum', skill: 'arrays', offset: 1e9 }, tabSender()],
+  ]) assert.deepEqual(await service.handleMessage(message, sender), { ok: false }, JSON.stringify([message, sender]));
+  assert.equal(storage.writes, 0);
 });
 
 test('marking, unmarking and starring answer only the extension pages', async () => {

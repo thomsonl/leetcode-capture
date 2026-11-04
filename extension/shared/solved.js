@@ -26,10 +26,19 @@
 //       a problem page (with the card's `slug`, as for lc-tutor:accepted)
 //       the answer carries that card again, built for the new list:
 //       { ok, card }.
+//   from a content script on a problem page (the Tutor panel's "Practice a
+//   skill" picker, with the page's `slug` as for lc-tutor:accepted):
+//     { type: 'lc-tutor:practice', slug, skill?, offset? }  read only. The
+//       reference difficulty is that problem's in the bundled index (none
+//       for a problem it lacks), and that problem is never suggested.
+//       Answers { ok, skills, skill, reference, suggestions, offset, more }
+//       (see shared/practice.js); without `skill` only the list of skills
+//       matters. Nothing of it reaches the tutor.
 //
 // Pure JavaScript with no Node API (extension/shared.test.js checks that).
 
 import { catalogEntry } from './catalog.js';
+import { practiceSuggestions, referenceLevel, skillById, skillChoices } from './practice.js';
 import { LISTS, NEETCODE_150, ROADMAPS, listById, problemInList, suggestAfterSolve } from './roadmap.js';
 
 export const SOLVED_KEY = 'solvedProblems';
@@ -115,8 +124,10 @@ function brief(problem) {
 // What the Tutor panel's "nice job" card shows after `slug` was accepted,
 // built only from the active list, the catalog and the solved list:
 //   { roadmap, lists, solvedTitle, next,
-//     more: { topic, label, problem } | null, finished }
-// `lists` is every list the card's menu offers ({ id, title, size }).
+//     more: { topic, label, problem } | null, finished, skills }
+// `lists` is every list the card's menu offers ({ id, title, size }), and
+// `skills` the "Practice a skill" chips ({ id, label }, a fixed list, never
+// the solved problem's own tags).
 // `solvedTitle` is the catalog's title, or null for a problem no bundled
 // list has (the panel then uses the page's own title). `more` is null for a
 // problem the active list does not have (then the card is the agenda only),
@@ -136,7 +147,17 @@ export function congratulation(solved, slug, roadmap = NEETCODE_150) {
     next: brief(next),
     more: sameTopic.topic && other ? { topic: sameTopic.topic, label, problem: brief(other) } : null,
     finished: !next,
+    skills: skillChoices(),
   };
+}
+
+const MAX_OFFSET = 5000;
+
+// The "Practice a skill" answer for the problem page `slug`: the skills,
+// and with a known `skill` the suggestions after `offset`.
+export function practiceAnswer(solved, slug, skill, offset = 0) {
+  const result = practiceSuggestions({ skill: skillById(skill), reference: referenceLevel(slug), solved, exclude: slug, offset });
+  return { ok: true, skills: skillChoices(), ...result };
 }
 
 // The background worker's side. `storage` is { get(keys), set(items) };
@@ -201,6 +222,16 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
     });
   }
 
+  // Read only: the solved problems as stored now (after any queued write).
+  async function practice(message, sender) {
+    const slug = tabSlug(message, sender);
+    const offset = message.offset === undefined ? 0 : message.offset;
+    const skill = message.skill === undefined || message.skill === null ? null : message.skill;
+    if (!slug || !Number.isInteger(offset) || offset < 0 || offset > MAX_OFFSET) return { ok: false };
+    if (skill !== null && !skillById(skill)) return { ok: false };
+    return update(async (solved) => practiceAnswer(solved, slug, skill, offset));
+  }
+
   async function setSolved(message) {
     if (!isSlug(message.slug) || typeof message.solved !== 'boolean') return { ok: false };
     return update(async (solved) => {
@@ -228,6 +259,7 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
       try {
         if (message.type === 'lc-tutor:accepted') return await accepted(message, sender);
         if (message.type === 'lc-tutor:set-list') return await setList(message, sender);
+        if (message.type === 'lc-tutor:practice') return await practice(message, sender);
         if (message.type === 'lc-tutor:solved-set' || message.type === 'lc-tutor:star-set') {
           if (!isExtensionPage(sender)) return { ok: false };
           return message.type === 'lc-tutor:solved-set' ? await setSolved(message) : await setStarred(message);
