@@ -99,6 +99,9 @@ try {
     await options.send('Page.navigate', { url: `chrome-extension://${browser.extensionId}/settings.html` });
     await options.waitFor(`document.getElementById('connection-text').textContent === 'Not set up'`, { what: 'the options page' });
     await options.type('#local-baseUrl', modelUrl);
+    // The model is a dropdown of what the server lists; this stub lists
+    // nothing, so it is typed through "Other".
+    await options.eval(`(() => { const s = document.getElementById('local-model'); s.value = '__other__'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await options.type('#local-model', 'stub-model');
     await options.click('#save');
     await options.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save' });
@@ -220,6 +223,53 @@ try {
     await page.eval(helpers);
     await page.eval('window.__openTutor()');
     await page.waitFor(`window.__replies().length === 2`, { what: 'the replayed replies' });
+  });
+
+  await scenario('the model switcher: a switch asked for mid-reply waits for it, and the chat and the held code move to the new model', async () => {
+    // A second saved model, through the options page's own call to the worker.
+    const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+    const first = stored.tutorSettings.profiles[0];
+    check(stored.tutorSettings.profiles.length === 1 && first.model === 'stub-model', `one profile after the first save: ${JSON.stringify(stored.tutorSettings.profiles)}`);
+    const options = await browser.openPage('about:blank');
+    await options.failFetch('http://localhost:8135/*');
+    await options.send('Page.navigate', { url: `chrome-extension://${browser.extensionId}/settings.html` });
+    await options.waitFor(`document.getElementById('connection-text').textContent.startsWith('Tutor running')`, { what: 'the options page' });
+    const saved = await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:settings-save', params: { patch: {
+      profiles: [${JSON.stringify(first)}, { id: 'second', provider: 'local', model: 'stub-model-b', label: 'Second' }], activeProfile: ${JSON.stringify(first.id)} } } })`);
+    check(saved.ok, `saved: ${JSON.stringify(saved)}`);
+    options.close();
+    await front(page);
+    await page.waitFor(`window.__qa('.opt').length >= 0 && window.__q('button.model .provider').textContent === 'stub-model'`, { what: 'the switcher button' });
+    const before = model.requests.length;
+    // Long enough that a one-line change goes as a diff (a diff past 80
+    // percent of the code is sent whole).
+    await page.eval(`window.__editorCode = 'class Solution:\\n    def twoSum(self, nums, target):\\n' + Array.from({ length: 30 }, (_, i) => '        x' + i + ' = ' + i + '\\n').join('') + '        return [0, 1]\\n'`);
+    await page.eval(`window.__send('is this right now?')`);
+    await page.waitFor(`window.__replies().some((t) => t.includes('part one') && !t.includes('part three'))`, { what: 'a reply in progress', timeout: 10000 });
+    await page.eval(`window.__q('button.model').click()`);
+    await page.eval(`window.__q('.opt[data-id="second"]').click()`);
+    await page.waitFor(`window.__q('.status span').textContent === 'Switching' && window.__replies().at(-1).indexOf('part three') < 0`, { what: '"Switching" while the reply still runs', timeout: 3000 });
+    await page.waitFor(`window.__q('button.model .provider').textContent === 'Second' && window.__q('.status span').textContent === 'Connected'`, { what: 'the switch to land', timeout: 15000 });
+    const replyDone = await page.eval(`window.__replies().at(-1)`);
+    check(/part three\.$/.test(replyDone), `the running reply finished first: ${replyDone}`);
+    check(model.requests.slice(before).every((r) => r.body.model === 'stub-model'), 'the reply ran on the first model');
+    // The next message goes to the new model with the whole chat and only a diff of the code.
+    await page.eval(`window.__editorCode = window.__editorCode.replace('return [0, 1]', 'return [1, 0]')`);
+    await page.eval(`window.__send('and now?')`);
+    await page.waitFor(`window.__feed().includes('user: and now?') && window.__feed().at(-1).endsWith('part three.')`, { what: 'the reply from the new model', timeout: 10000 });
+    const next = model.requests.filter((r) => r.body.stream).at(-1).body;
+    check(next.model === 'stub-model-b', `the new model answered: ${next.model}`);
+    const chat = next.messages.filter((m) => m.role !== 'system').map((m) => m.content).join('\n');
+    check(chat.includes('why does this return nothing?') && chat.includes('is this right now?'), 'the earlier chat moved to the new model');
+    const system = next.messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    check(/return \[1, 0\]/.test(system) && /Given an array of integers/.test(system), `the current code and the statement are pinned: ${system.slice(-600)}`);
+    const last = next.messages.at(-1).content;
+    check(/return \[1, 0\]/.test(last) && !/def twoSum/.test(last.split('\n').filter((l) => !/^\s*\d/.test(l)).join('\n')), `a diff against the held code, not the whole code: ${last}`);
+    const after = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+    check(after.tutorSettings.activeProfile === 'second' && after.tutorSettings.providers.local.model === 'stub-model-b', 'the switch is saved');
+    await page.eval(`window.__q('button.model').click()`);
+    await page.screenshot(path.join(shots, 'switcher-open-dark.png'), { width: 1100, height: 760 });
+    await page.eval(`window.__q('button.model').click()`);
   });
 
   // A second tab on another problem, on the same extension (one worker, one
