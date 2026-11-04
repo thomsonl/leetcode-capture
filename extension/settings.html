@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LeetCode Capture settings</title>
   <link rel="stylesheet" href="settings.css">
+  <link rel="stylesheet" href="progress.css">
 </head>
 <body>
   <main>
@@ -12,57 +13,67 @@
       <img src="icons/icon-48.png" width="32" height="32" alt="">
       <div>
         <h1>LeetCode Capture</h1>
-        <p class="sub">Tutor settings</p>
+        <p class="sub" id="page-sub">Tutor settings</p>
       </div>
       <p id="connection" class="connection" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting</span></p>
     </header>
 
-    <div id="offline" class="notice warn" role="alert" hidden></div>
+    <div class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" class="tab" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="true">Settings</button>
+      <button type="button" class="tab" role="tab" id="tab-progress" aria-controls="panel-progress" aria-selected="false" tabindex="-1">Progress</button>
+    </div>
 
-    <form id="form" novalidate>
-      <section class="card" aria-labelledby="model-heading">
-        <h2 id="model-heading">Tutor model</h2>
-        <p class="help">Choose what answers when you submit code or ask a question in the Tutor tab. A local model or an API key runs right in the browser; the Claude and ChatGPT subscriptions need the helper app.</p>
-        <fieldset id="providers" class="providers">
-          <legend class="sr-only">Provider</legend>
-        </fieldset>
-        <div class="actions">
-          <button type="button" id="test" class="btn">Test connection</button>
-          <span id="test-result" class="result" role="status" aria-live="polite"></span>
+    <div id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
+      <div id="offline" class="notice warn" role="alert" hidden></div>
+
+      <form id="form" novalidate>
+        <section class="card" aria-labelledby="model-heading">
+          <h2 id="model-heading">Tutor model</h2>
+          <p class="help">Choose what answers when you submit code or ask a question in the Tutor tab. A local model or an API key runs right in the browser; the Claude and ChatGPT subscriptions need the helper app.</p>
+          <fieldset id="providers" class="providers">
+            <legend class="sr-only">Provider</legend>
+          </fieldset>
+          <div class="actions">
+            <button type="button" id="test" class="btn">Test connection</button>
+            <span id="test-result" class="result" role="status" aria-live="polite"></span>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="models-heading">
+          <h2 id="models-heading">Models in the Tutor tab</h2>
+          <p class="help">The model menu in the Tutor tab's header lists these, so you can switch with one click while you work. The default is what the tutor uses now; the provider settings above (server, key, where it runs) apply to every model of that provider. Changes take effect when you save.</p>
+          <div id="profiles" class="profiles" role="radiogroup" aria-label="Default model"></div>
+          <div class="add-profile" id="add-profile"></div>
+          <p id="profiles-note" class="hint" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="card" id="helper-card" aria-labelledby="helper-heading" hidden>
+          <div class="helper-head">
+            <h2 id="helper-heading">Helper</h2>
+            <p id="helper-state" class="connection" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="helper-state-text">Checking</span></p>
+          </div>
+          <p class="help">The Claude and ChatGPT subscriptions run through a small helper app on your computer, which needs Node. Once it is installed, the extension starts the tutor when you open a LeetCode problem and stops it 30 seconds after you close the last one.</p>
+          <div id="helper-body"></div>
+          <p id="helper-error" class="result" data-kind="error" role="alert" hidden></p>
+        </section>
+
+        <section class="card" aria-labelledby="behavior-heading">
+          <h2 id="behavior-heading">Behavior</h2>
+          <div id="behavior"></div>
+        </section>
+
+        <div class="savebar">
+          <p id="save-result" class="result" role="status" aria-live="polite"></p>
+          <button type="submit" id="save" class="btn primary">Save</button>
         </div>
-      </section>
+      </form>
 
-      <section class="card" aria-labelledby="models-heading">
-        <h2 id="models-heading">Models in the Tutor tab</h2>
-        <p class="help">The model menu in the Tutor tab's header lists these, so you can switch with one click while you work. The default is what the tutor uses now; the provider settings above (server, key, where it runs) apply to every model of that provider. Changes take effect when you save.</p>
-        <div id="profiles" class="profiles" role="radiogroup" aria-label="Default model"></div>
-        <div class="add-profile" id="add-profile"></div>
-        <p id="profiles-note" class="hint" role="status" aria-live="polite"></p>
-      </section>
+      <p id="foot" class="foot"></p>
+    </div>
 
-      <section class="card" id="helper-card" aria-labelledby="helper-heading" hidden>
-        <div class="helper-head">
-          <h2 id="helper-heading">Helper</h2>
-          <p id="helper-state" class="connection" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="helper-state-text">Checking</span></p>
-        </div>
-        <p class="help">The Claude and ChatGPT subscriptions run through a small helper app on your computer, which needs Node. Once it is installed, the extension starts the tutor when you open a LeetCode problem and stops it 30 seconds after you close the last one.</p>
-        <div id="helper-body"></div>
-        <p id="helper-error" class="result" data-kind="error" role="alert" hidden></p>
-      </section>
-
-      <section class="card" aria-labelledby="behavior-heading">
-        <h2 id="behavior-heading">Behavior</h2>
-        <div id="behavior"></div>
-      </section>
-
-      <div class="savebar">
-        <p id="save-result" class="result" role="status" aria-live="polite"></p>
-        <button type="submit" id="save" class="btn primary">Save</button>
-      </div>
-    </form>
-
-    <p id="foot" class="foot"></p>
+    <div id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" hidden></div>
   </main>
   <script src="settings.js"></script>
+  <script type="module" src="progress.js"></script>
 </body>
 </html>

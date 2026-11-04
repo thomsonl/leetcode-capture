@@ -1,0 +1,219 @@
+/* LeetCode Capture options page: the tab bar and the Progress tab.
+ *
+ * The roadmap sits on its own dark, dotted canvas in both themes' style
+ * (lighter in the light theme), with rounded purple-blue topic nodes like
+ * neetcode.io's roadmap. Difficulty colors are LeetCode's green, orange and
+ * red, darker on white so each keeps at least 4.5:1. */
+
+:root {
+  --easy: #0e8a3a;
+  --medium: #b35300;
+  --hard: #d32f2f;
+  --star: #c98a00;
+  --canvas: #f6f6fa;
+  --dots: rgba(40, 40, 80, 0.13);
+  --edge: rgba(70, 70, 110, 0.32);
+  --edge-lit: #6c63ff;
+  --node-a: #6366f1;
+  --node-b: #4f46e5;
+  --node-line: rgba(255, 255, 255, 0.16);
+  --node-shadow: 0 1px 2px rgba(30, 27, 75, 0.18), 0 4px 12px rgba(79, 70, 229, 0.18);
+  --next: #f59e0b;
+  --next-text: #1a1a1a;
+  --row-next: rgba(245, 158, 11, 0.1);
+  --solved: #16a34a;
+  --backdrop: rgba(0, 0, 0, 0.32);
+  --drawer-shadow: -8px 0 32px rgba(0, 0, 0, 0.14);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --easy: #2cbb5d;
+    --medium: #ffa116;
+    --hard: #f8615c;
+    --star: #ffc01e;
+    --canvas: #141416;
+    --dots: rgba(255, 255, 255, 0.09);
+    --edge: rgba(255, 255, 255, 0.24);
+    --edge-lit: #8b84ff;
+    --node-a: #6c66f2;
+    --node-b: #5048e0;
+    --node-line: rgba(255, 255, 255, 0.14);
+    --node-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.35);
+    --next: #fbbf24;
+    --row-next: rgba(251, 191, 36, 0.08);
+    --solved: #2cbb5d;
+    --backdrop: rgba(0, 0, 0, 0.55);
+    --drawer-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* ---- the tab bar ---------------------------------------------------------- */
+
+.tabs { display: flex; gap: 24px; margin: -4px 0 20px; border-bottom: 1px solid var(--line); }
+.tab {
+  position: relative; height: 36px; margin: 0 0 -1px; padding: 0; border: 0; border-bottom: 2px solid transparent;
+  background: none; color: var(--muted); font: 500 14px/20px inherit; font-family: inherit; cursor: pointer;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
+.tab:focus-visible { outline-offset: -2px; border-radius: 4px 4px 0 0; }
+
+/* The Progress tab takes a wider page for the graph; Settings keeps its
+   reading width. */
+body[data-tab="progress"] main { max-width: 1120px; }
+body[data-tab="progress"] #connection { display: none; }
+[role="tabpanel"][hidden] { display: none; }
+
+/* ---- summary ---------------------------------------------------------------- */
+
+.summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.summary-head .help { margin-bottom: 12px; max-width: 560px; }
+.total { margin: 0; flex: none; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+.total-done { color: var(--text); font-size: 24px; line-height: 28px; font-weight: 600; }
+
+.bar { display: block; height: 6px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 3px; background: var(--solved); }
+
+.summary-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; margin-top: 14px; }
+.levels { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0; padding: 0; list-style: none; }
+.levels li { display: flex; align-items: baseline; gap: 6px; }
+.level-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.next-up { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin: 0; min-width: 0; }
+.next-up.done { color: var(--green-text); }
+.next-label { color: var(--muted); }
+.next-up a { color: var(--focus); text-decoration: none; font-weight: 500; }
+.next-up a:hover { text-decoration: underline; }
+.next-in { color: var(--muted); }
+.next-up .linkbtn { text-decoration: none; }
+.next-up .linkbtn:hover { text-decoration: underline; }
+#summary .result { margin-top: 8px; min-height: 0; }
+
+.diff { font-size: 13px; line-height: 20px; font-weight: 500; }
+.diff[data-level="Easy"] { color: var(--easy); }
+.diff[data-level="Medium"] { color: var(--medium); }
+.diff[data-level="Hard"] { color: var(--hard); }
+
+/* ---- the roadmap -------------------------------------------------------------- */
+
+.card.roadmap { padding: 0; overflow: hidden; }
+.canvas {
+  overflow-x: auto; overflow-y: hidden;
+  background-color: var(--canvas);
+  background-image: radial-gradient(circle, var(--dots) 1px, transparent 1.5px);
+  background-size: 20px 20px; background-position: 10px 10px;
+  border-radius: 7px; overscroll-behavior-x: contain;
+}
+.graph { position: relative; margin: 0 auto; }
+.edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 2; stroke-linecap: round; }
+.edge.lit { stroke: var(--edge-lit); }
+
+.node {
+  position: absolute; display: flex; flex-direction: column; justify-content: center; gap: 8px;
+  padding: 0 14px; border: 1px solid var(--node-line); border-radius: 12px;
+  background: linear-gradient(180deg, var(--node-a), var(--node-b));
+  box-shadow: var(--node-shadow); color: #fff; font: inherit; text-align: left; cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+.node:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.node:active { transform: none; }
+.node:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.node-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 18px; font-weight: 600; text-align: center; }
+.node-meter { display: flex; align-items: center; gap: 8px; }
+.node-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.24); overflow: hidden; }
+.node-fill { display: block; height: 100%; border-radius: 3px; background: #4ade80; }
+.node-count { flex: none; font-size: 12px; line-height: 16px; font-weight: 500; color: rgba(255, 255, 255, 0.88); font-variant-numeric: tabular-nums; }
+.node-badge {
+  display: none; position: absolute; top: -10px; right: 12px; height: 20px; padding: 0 8px; border-radius: 10px;
+  background: var(--next); color: var(--next-text); font-size: 11px; line-height: 20px; font-weight: 700; letter-spacing: 0.02em;
+}
+.node[data-next] { box-shadow: 0 0 0 2px var(--canvas), 0 0 0 4px var(--next), 0 0 22px 2px color-mix(in srgb, var(--next) 40%, transparent); }
+.node[data-next] .node-badge { display: block; }
+.node[data-complete] .node-count::before { content: "\2713"; margin-right: 4px; color: #4ade80; font-weight: 700; }
+.graph[data-size="compact"] .node { padding: 0 10px; gap: 7px; border-radius: 10px; }
+.graph[data-size="compact"] .node-title { font-size: 13px; line-height: 17px; }
+
+/* ---- the side panel ------------------------------------------------------------- */
+
+/* While the panel is open the page does not scroll; progress.js pads the
+   body by the scrollbar's width then, so nothing behind it moves. */
+html.drawer-open { overflow: hidden; }
+.backdrop { position: fixed; inset: 0; z-index: 10; background: var(--backdrop); }
+.backdrop[hidden], .drawer[hidden] { display: none; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 11; width: min(560px, 100%); overflow-y: auto;
+  background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--drawer-shadow);
+  overscroll-behavior: contain;
+}
+.drawer-head {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 20px 20px 12px; background: var(--surface);
+}
+.drawer-head h2 { margin: 0; font-size: 20px; line-height: 28px; outline: none; }
+.drawer-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.drawer .close { flex: none; width: 32px; height: 32px; margin: -2px -6px 0 0; }
+.drawer-body { padding: 0 20px 24px; }
+.drawer h3 { margin: 20px 0 8px; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.drawer .hint { font-size: 14px; line-height: 21px; }
+
+.prereqs { display: flex; flex-wrap: wrap; gap: 8px; }
+.prereq {
+  display: inline-flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: transparent; color: var(--text); font: 500 13px/20px inherit; font-family: inherit; cursor: pointer;
+}
+.prereq:hover { background: var(--fill); }
+.prereq-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+.problems { width: 100%; margin-top: 20px; border-collapse: collapse; table-layout: fixed; }
+.problems th {
+  height: 32px; padding: 0 8px; border-bottom: 1px solid var(--line); text-align: left;
+  color: var(--muted); font-size: 12px; line-height: 16px; font-weight: 500;
+}
+.problems td { height: 44px; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.problems tr:last-child td { border-bottom: 0; }
+.problems .col-status { width: 64px; text-align: center; }
+.problems .col-star { width: 52px; text-align: center; }
+.problems .col-diff { width: 92px; }
+.problems th.col-status, .problems th.col-star { text-align: center; }
+.problems tr[data-next] td { background: var(--row-next); }
+.problems tr[data-next] td:first-child { box-shadow: inset 3px 0 0 var(--next); }
+
+.mark {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0;
+  border: 1.5px solid var(--line-strong); border-radius: 50%; background: transparent; color: transparent; cursor: pointer; vertical-align: middle;
+}
+.mark:hover { border-color: var(--solved); color: color-mix(in srgb, var(--solved) 55%, transparent); }
+.mark[aria-pressed="true"] { border-color: var(--solved); background: var(--solved); color: #fff; }
+.star {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; vertical-align: middle;
+}
+.star:hover { background: var(--fill); color: var(--text); }
+.star[aria-pressed="true"] { color: var(--star); }
+.star[aria-pressed="true"] path { fill: currentColor; }
+
+.col-title a { display: inline; color: var(--text); text-decoration: none; font-weight: 500; overflow-wrap: anywhere; }
+.col-title a:hover { color: var(--focus); text-decoration: underline; }
+.col-title .nowrap { white-space: nowrap; }
+.col-title a svg { margin-left: 4px; color: var(--muted); vertical-align: -1px; }
+.next-pill {
+  display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 9px; background: var(--next); color: var(--next-text);
+  font-size: 11px; line-height: 18px; font-weight: 700; vertical-align: 1px;
+}
+
+@media (max-width: 520px) {
+  .summary-head { flex-direction: column; gap: 0; }
+  .total { order: -1; margin-bottom: 4px; }
+  .drawer-head { padding: 16px 16px 12px; }
+  .drawer-body { padding: 0 16px 20px; }
+  .problems th, .problems td { padding-left: 4px; padding-right: 4px; }
+  .problems .col-status { width: 40px; }
+  .problems .col-star { width: 40px; }
+  .problems .col-diff { width: 72px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node { transition: none; }
+  .node:hover { transform: none; }
+}
