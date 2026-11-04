@@ -403,11 +403,21 @@ const pickAddModel = async (page, name) => {
 };
 const keyOn = async (page, selector, key) => {
   await page.eval(`document.querySelector(${JSON.stringify(selector)}).focus()`);
-  const codes = { Enter: 13, Escape: 27 };
+  const codes = { Enter: 13, Escape: 27, ArrowDown: 40, ArrowUp: 38 };
   for (const type of ['keyDown', 'keyUp']) {
     await page.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: codes[key], ...(key === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}) });
   }
 };
+
+// A real mouse click (press and release at the element's middle), so focus
+// moves and blur fires as for a user; page.click only calls click().
+const mouseClick = async (page, selector) => {
+  const c = await page.eval(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await page.send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, button: 'left', clickCount: 1 });
+  }
+};
+const focusedId = (page) => page.eval(`document.activeElement ? document.activeElement.id : null`);
 
 {
   const model = await stubServer();
@@ -480,6 +490,40 @@ const keyOn = async (page, selector, key) => {
     const again = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
     assert.equal(again.tutorSettings.profiles.length, 2, 'picking a model already saved makes it the default, no duplicate');
     assert.equal(again.tutorSettings.profiles.find((p) => p.id === again.tutorSettings.activeProfile).label, 'Qwen');
+
+    // A name being typed is kept when another row's rename starts, and by Save.
+    await mouseClick(page, `#profile-${qwen}-rename`);
+    await page.type(`#profile-${qwen}-label`, 'Qwen 3');
+    await mouseClick(page, `#profile-${gemma}-rename`);
+    assert.equal(await focusedId(page), `profile-${gemma}-label`, 'the other row\'s rename opened with one click');
+    assert.equal((await profileRows(page)).find((r) => r.id === qwen).name, 'Qwen 3', 'the first name was kept');
+    await page.type(`#profile-${gemma}-label`, 'Gemma 4');
+    await mouseClick(page, '#save');
+    await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved') && !document.querySelector('#profiles input[type=text]')`, { what: 'the save with a rename open', timeout: 20000 });
+    const named = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+    assert.deepEqual(named.tutorSettings.profiles.map((p) => p.label).sort(), ['Gemma 4', 'Qwen 3']);
+    // Tab out of a rename keeps it too.
+    await mouseClick(page, `#profile-${gemma}-rename`);
+    await page.type(`#profile-${gemma}-label`, 'Gemma four');
+    await page.eval(`document.getElementById('add-provider').focus()`);
+    assert.equal((await profileRows(page)).find((r) => r.id === gemma).name, 'Gemma four', 'leaving the field keeps the name');
+    assert.equal(await focusedId(page), 'add-provider', 'and focus stays where it went');
+
+    // The keyboard keeps its place when a choice redraws the list or the cards.
+    const order = (await profileRows(page)).map((r) => r.id);
+    await keyOn(page, `#profile-${order[0]}-radio`, 'ArrowDown');
+    assert.equal(await focusedId(page), `profile-${order[1]}-radio`, 'an arrow on the default radios moves focus with the choice');
+    assert.equal((await profileRows(page)).find((r) => r.isDefault).id, order[1]);
+    const providerBefore = await page.eval(`document.querySelector('input[name=provider]:checked').id`);
+    await keyOn(page, `#${providerBefore}`, 'ArrowDown');
+    const providerAfter = await page.eval(`({ focused: document.activeElement.id, checked: document.querySelector('input[name=provider]:checked').id })`);
+    assert.notEqual(providerAfter.checked, providerBefore);
+    assert.equal(providerAfter.focused, providerAfter.checked, 'an arrow on the provider radios keeps focus on the chosen one');
+    await keyOn(page, `#${providerAfter.checked}`, 'ArrowUp');
+    await mouseClick(page, `#profile-${order[0]}-remove`);
+    assert.equal(await focusedId(page), `profile-${order[1]}-radio`, 'removing a row focuses the row that took its place');
+    await mouseClick(page, `#profile-${order[1]}-remove`);
+    assert.equal(await focusedId(page), 'add-provider', 'removing the last row focuses the add row');
   });
   model.server.close();
 }

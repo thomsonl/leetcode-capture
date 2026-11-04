@@ -670,6 +670,7 @@
     const radio = h("input", {
       type: "radio",
       name: "provider",
+      id: `provider-${id}-radio`,
       value: id,
       checked: selected === id,
       disabled: providerLocked && helper.settings.provider !== id,
@@ -751,7 +752,38 @@
     foot.appendChild(document.createTextNode(", readable only by you. API keys never leave your computer except to the provider you choose."));
   }
 
+  // Runs `draw`, which rebuilds part of the page, and puts the focus back on
+  // the element with the same id (and a text field's selection), so a
+  // keyboard user is not dropped to the top of the page: arrows in a radio
+  // group check the next radio, whose change handler redraws the group.
+  function keepingFocus(draw) {
+    const was = document.activeElement;
+    const id = was && was !== document.body ? was.id : "";
+    let selection = null;
+    try {
+      if (id && typeof was.selectionStart === "number") selection = [was.selectionStart, was.selectionEnd, was.selectionDirection];
+    } catch {
+      selection = null;
+    }
+    draw();
+    if (!id || (was.isConnected && document.activeElement === was)) return;
+    const again = document.getElementById(id);
+    if (!again || again.disabled) return;
+    again.focus({ preventScroll: true });
+    if (selection) {
+      try {
+        again.setSelectionRange(...selection);
+      } catch {
+        // not a text field
+      }
+    }
+  }
+
   function render() {
+    keepingFocus(drawAll);
+  }
+
+  function drawAll() {
     const fieldset = $("providers");
     for (const node of [...fieldset.children]) if (node.tagName !== "LEGEND") node.remove();
     for (const id of ORDER) if (catalog[id]) fieldset.appendChild(providerCard(id));
@@ -832,6 +864,7 @@
   }
 
   function loadDraft(view) {
+    renaming = null;
     draftProfiles = (view.profiles || []).map((p) => ({ ...p }));
     draftActive = view.activeProfile || null;
     const active = draftProfiles.find((p) => p.id === draftActive);
@@ -870,20 +903,23 @@
     else if ($(`profile-${id}-radio`)) $(`profile-${id}-radio`).focus();
   }
 
+  // Focus goes to the row that took the removed one's place (or the one
+  // before it when it was the last), or to the add row when none is left.
   function removeProfile(id) {
     const i = draftProfiles.findIndex((p) => p.id === id);
     if (i < 0) return;
     const [gone] = draftProfiles.splice(i, 1);
     profilesNote(null, `Removed ${profileName(gone)}. Save to apply.`);
+    const next = draftProfiles[Math.min(i, draftProfiles.length - 1)];
     if (draftActive === id) {
-      const next = draftProfiles[Math.min(i, draftProfiles.length - 1)];
       draftActive = null;
-      if (next) {
-        chooseDefault(next.id);
-        return;
-      }
+      if (next) chooseDefault(next.id);
+      else renderProfiles();
+    } else {
+      renderProfiles();
     }
-    renderProfiles();
+    const target = next ? $(`profile-${next.id}-radio`) : $("add-provider");
+    if (target) target.focus();
   }
 
   // `paths` are the icon's path data (Feather icons, MIT), drawn as strokes.
@@ -924,6 +960,19 @@
         placeholder: profile.model || defaultModelOf(profile.provider) || "Name",
         maxlength: "60",
         "aria-label": `Name for ${name}`,
+        // Leaving the field keeps what was typed, as Enter does. Only this row
+        // is redrawn, so a button pressed in another row still gets its click.
+        // A window losing focus leaves the field focused and changes nothing.
+        onblur: (e) => {
+          if (renaming !== profile.id || document.activeElement === input) return;
+          const to = e.relatedTarget;
+          commitRename(input);
+          const row = input.closest(".profile");
+          if (!row || !row.isConnected) return;
+          const fresh = profileRow(profile, draftProfiles.indexOf(profile));
+          row.replaceWith(fresh);
+          if (!to || fresh.contains(to) || row.contains(to)) $(`profile-${profile.id}-rename`).focus();
+        },
         onkeydown: (e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -946,6 +995,7 @@
     } else {
       actions.append(
         iconButton(`profile-${profile.id}-rename`, `Rename ${name}`, ["M12 20h9", "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"], () => {
+          commitRename();
           renaming = profile.id;
           renderProfiles();
           const input = $(`profile-${profile.id}-label`);
@@ -967,6 +1017,19 @@
     renderProfiles();
     const again = $(`profile-${id}-rename`);
     if (again) again.focus();
+  }
+
+  // Keeps the name typed in an open rename field, if any, and closes it (the
+  // caller redraws). Returns whether one was open. `field` is the field
+  // itself when it may be out of the page already.
+  function commitRename(field = null) {
+    if (!renaming) return false;
+    const id = renaming;
+    renaming = null;
+    const input = field || $(`profile-${id}-label`);
+    const profile = draftProfiles.find((p) => p.id === id);
+    if (input && profile) profile.label = input.value.trim().slice(0, 60) || null;
+    return true;
   }
 
   // The add row: a provider, a model (the local provider's is the same
@@ -1042,10 +1105,12 @@
   }
 
   function renderProfiles() {
-    const list = $("profiles");
-    list.textContent = "";
-    draftProfiles.forEach((profile, i) => list.appendChild(profileRow(profile, i)));
-    renderAddRow();
+    keepingFocus(() => {
+      const list = $("profiles");
+      list.textContent = "";
+      draftProfiles.forEach((profile, i) => list.appendChild(profileRow(profile, i)));
+      renderAddRow();
+    });
   }
 
   // The list and default to save: the default follows the provider card
@@ -1227,6 +1292,8 @@
 
   async function save(event) {
     event.preventDefault();
+    // A name still being typed is part of what is saved.
+    if (commitRename()) renderProfiles();
     const inBrowser = runtimeOf(selected) === "extension";
     const pattern = inBrowser ? originPatternFor(selected) : null;
     const allowed = inBrowser ? requestPermission(pattern) : Promise.resolve(true);
