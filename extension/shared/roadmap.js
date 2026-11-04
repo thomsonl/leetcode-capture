@@ -435,6 +435,134 @@ export const GRIND_75 = defineList({
   ],
 });
 
+// LeetCode's own Top 100 Liked study plan (plan top-100-liked), with its
+// groups exactly as LeetCode's GraphQL gave them on 2026-11-04 (so Binary Tree
+// Maximum Path Sum sits under Binary Search, as LeetCode has it), checked
+// against e2e/leetcode-study-plans.txt by roadmap.test.mjs.
+export const TOP_100_LIKED = defineList({
+  id: 'top-100-liked',
+  title: 'Top 100 Liked',
+  description: 'LeetCode\'s 100 most liked problems, by topic.',
+  groupNoun: 'topic',
+  groups: [
+  ['backtracking', 'Backtracking', `
+    letter-combinations-of-a-phone-number
+    generate-parentheses
+    combination-sum
+    permutations
+    n-queens
+    subsets
+    word-search
+    palindrome-partitioning`],
+  ['binary-search', 'Binary Search', `
+    median-of-two-sorted-arrays
+    search-in-rotated-sorted-array
+    find-first-and-last-position-of-element-in-sorted-array
+    search-insert-position
+    search-a-2d-matrix
+    binary-tree-maximum-path-sum
+    find-minimum-in-rotated-sorted-array`],
+  ['binary-tree', 'Binary Tree', `
+    binary-tree-inorder-traversal
+    validate-binary-search-tree
+    symmetric-tree
+    binary-tree-level-order-traversal
+    maximum-depth-of-binary-tree
+    construct-binary-tree-from-preorder-and-inorder-traversal
+    convert-sorted-array-to-binary-search-tree
+    flatten-binary-tree-to-linked-list
+    binary-tree-right-side-view
+    invert-binary-tree
+    kth-smallest-element-in-a-bst
+    lowest-common-ancestor-of-a-binary-tree
+    path-sum-iii
+    diameter-of-binary-tree`],
+  ['dynamic-programming', 'Dynamic Programming', `
+    longest-palindromic-substring
+    longest-valid-parentheses
+    unique-paths
+    minimum-path-sum
+    climbing-stairs
+    edit-distance
+    pascals-triangle
+    word-break
+    maximum-product-subarray
+    house-robber
+    perfect-squares
+    longest-increasing-subsequence
+    coin-change
+    partition-equal-subset-sum
+    longest-common-subsequence`],
+  ['graph', 'Graph', `
+    number-of-islands
+    course-schedule
+    rotting-oranges`],
+  ['greedy', 'Greedy', `
+    jump-game-ii
+    jump-game
+    best-time-to-buy-and-sell-stock
+    partition-labels`],
+  ['hashing', 'Hashing', `
+    two-sum
+    group-anagrams
+    longest-consecutive-sequence
+    subarray-sum-equals-k`],
+  ['heap', 'Heap', `
+    kth-largest-element-in-an-array
+    find-median-from-data-stream
+    top-k-frequent-elements`],
+  ['linked-lists', 'Linked Lists', `
+    add-two-numbers
+    remove-nth-node-from-end-of-list
+    merge-two-sorted-lists
+    merge-k-sorted-lists
+    swap-nodes-in-pairs
+    reverse-nodes-in-k-group
+    copy-list-with-random-pointer
+    linked-list-cycle
+    linked-list-cycle-ii
+    lru-cache
+    sort-list
+    intersection-of-two-linked-lists
+    reverse-linked-list
+    palindrome-linked-list`],
+  ['matrix', 'Matrix', `
+    rotate-image
+    spiral-matrix
+    set-matrix-zeroes
+    search-a-2d-matrix-ii`],
+  ['sliding-window', 'Sliding Window', `
+    longest-substring-without-repeating-characters
+    minimum-window-substring
+    sliding-window-maximum
+    find-all-anagrams-in-a-string`],
+  ['stack', 'Stack', `
+    valid-parentheses
+    largest-rectangle-in-histogram
+    min-stack
+    decode-string
+    daily-temperatures`],
+  ['two-pointers', 'Two Pointers', `
+    container-with-most-water
+    3sum
+    trapping-rain-water
+    move-zeroes`],
+  ['trie', 'Trie', `
+    implement-trie-prefix-tree`],
+  ['misc', 'Misc', `
+    next-permutation
+    first-missing-positive
+    maximum-subarray
+    merge-intervals
+    sort-colors
+    single-number
+    majority-element
+    rotate-array
+    product-of-array-except-self
+    find-the-duplicate-number`],
+  ],
+});
+
 // LeetCode's own Top Interview 150 study plan, with its sections, as
 // LeetCode's GraphQL (studyPlanV2Detail, plan top-interview-150) gave them on
 // 2026-11-04: e2e/leetcode-study-plans.txt, which roadmap.test.mjs compares.
@@ -689,7 +817,7 @@ export const SQL_50 = defineList({
 });
 
 // Every list, in the order the Progress tab offers them.
-export const LISTS = [NEETCODE_150, BLIND_75, GRIND_75, TOP_INTERVIEW_150, SQL_50];
+export const LISTS = [NEETCODE_150, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50];
 export const ROADMAPS = Object.fromEntries(LISTS.map((list) => [list.id, list]));
 export const DEFAULT_LIST_ID = NEETCODE_150.id;
 

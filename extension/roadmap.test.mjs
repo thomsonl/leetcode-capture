@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { NEETCODE_150, BLIND_75, GRIND_75, TOP_INTERVIEW_150, SQL_50, LISTS, ROADMAPS, DEFAULT_LIST_ID, listById, problemInList, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
+import { NEETCODE_150, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50, LISTS, ROADMAPS, DEFAULT_LIST_ID, listById, problemInList, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
 import { CATALOG, catalogEntry } from './shared/catalog.js';
 import { listSlugs, OUT } from './scripts/list-slugs.mjs';
 
@@ -84,10 +84,10 @@ test('suggestAfterSolve counts the problem just solved', () => {
 
 // ---- every list ------------------------------------------------------------
 
-const SIZES = { 'neetcode-150': [150, 18], 'blind-75': [75, 10], 'grind-75': [75, 8], 'top-interview-150': [150, 23], 'sql-50': [50, 7] };
+const SIZES = { 'neetcode-150': [150, 18], 'blind-75': [75, 10], 'grind-75': [75, 8], 'top-100-liked': [100, 15], 'top-interview-150': [150, 23], 'sql-50': [50, 7] };
 
 test('the lists, in the selector order, with their sizes and group counts', () => {
-  assert.deepEqual(LISTS.map((l) => l.id), ['neetcode-150', 'blind-75', 'grind-75', 'top-interview-150', 'sql-50']);
+  assert.deepEqual(LISTS.map((l) => l.id), ['neetcode-150', 'blind-75', 'grind-75', 'top-100-liked', 'top-interview-150', 'sql-50']);
   assert.equal(DEFAULT_LIST_ID, 'neetcode-150');
   for (const list of LISTS) {
     const [size, groups] = SIZES[list.id];
@@ -118,11 +118,12 @@ test('the publishers\' groups, as they name them', () => {
   assert.equal(GRIND_75.topics[0].problems[0].slug, 'two-sum');
   assert.equal(TOP_INTERVIEW_150.topics[0].problems[0].slug, 'merge-sorted-array');
   assert.equal(SQL_50.topics[0].problems[0].slug, 'recyclable-and-low-fat-products');
+  assert.deepEqual(TOP_100_LIKED.topics.map((t) => t.title), ['Backtracking', 'Binary Search', 'Binary Tree', 'Dynamic Programming', 'Graph', 'Greedy', 'Hashing', 'Heap', 'Linked Lists', 'Matrix', 'Sliding Window', 'Stack', 'Two Pointers', 'Trie', 'Misc']);
 });
 
 test('LeetCode\'s study plans match LeetCode\'s own data: sections, their order, the problems in order and their difficulty', () => {
   const plans = snapshot('leetcode-study-plans.txt');
-  for (const [planId, list] of [['top-interview-150', TOP_INTERVIEW_150], ['top-sql-50', SQL_50]]) {
+  for (const [planId, list] of [['top-100-liked', TOP_100_LIKED], ['top-interview-150', TOP_INTERVIEW_150], ['top-sql-50', SQL_50]]) {
     const plan = plans[planId];
     assert.deepEqual(list.topics.map((t) => t.title), plan.map((g) => g.title), list.id);
     list.topics.forEach((t, i) => {
@@ -179,7 +180,7 @@ test('the shared problems: Blind 75 sits almost wholly inside NeetCode 150, and 
 });
 
 test('a list without lines unlocks every group and moves on group by group in its order', () => {
-  for (const list of [BLIND_75, GRIND_75, TOP_INTERVIEW_150, SQL_50]) {
+  for (const list of [BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50]) {
     assert.equal(unlockedTopics(list, []).size, list.topics.length, list.id);
     const first = list.topics[0].problems;
     assert.deepEqual(nextOnRoadmap(list, [], { count: 1 }).map((p) => p.slug), [first[0].slug], list.id);

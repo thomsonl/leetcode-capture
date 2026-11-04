@@ -502,6 +502,188 @@
       ]
     },
     {
+      "id": "top-100-liked",
+      "title": "Top 100 Liked",
+      "size": 100,
+      "groups": [
+        {
+          "title": "Backtracking",
+          "slugs": [
+            "letter-combinations-of-a-phone-number",
+            "generate-parentheses",
+            "combination-sum",
+            "permutations",
+            "n-queens",
+            "subsets",
+            "word-search",
+            "palindrome-partitioning"
+          ]
+        },
+        {
+          "title": "Binary Search",
+          "slugs": [
+            "median-of-two-sorted-arrays",
+            "search-in-rotated-sorted-array",
+            "find-first-and-last-position-of-element-in-sorted-array",
+            "search-insert-position",
+            "search-a-2d-matrix",
+            "binary-tree-maximum-path-sum",
+            "find-minimum-in-rotated-sorted-array"
+          ]
+        },
+        {
+          "title": "Binary Tree",
+          "slugs": [
+            "binary-tree-inorder-traversal",
+            "validate-binary-search-tree",
+            "symmetric-tree",
+            "binary-tree-level-order-traversal",
+            "maximum-depth-of-binary-tree",
+            "construct-binary-tree-from-preorder-and-inorder-traversal",
+            "convert-sorted-array-to-binary-search-tree",
+            "flatten-binary-tree-to-linked-list",
+            "binary-tree-right-side-view",
+            "invert-binary-tree",
+            "kth-smallest-element-in-a-bst",
+            "lowest-common-ancestor-of-a-binary-tree",
+            "path-sum-iii",
+            "diameter-of-binary-tree"
+          ]
+        },
+        {
+          "title": "Dynamic Programming",
+          "slugs": [
+            "longest-palindromic-substring",
+            "longest-valid-parentheses",
+            "unique-paths",
+            "minimum-path-sum",
+            "climbing-stairs",
+            "edit-distance",
+            "pascals-triangle",
+            "word-break",
+            "maximum-product-subarray",
+            "house-robber",
+            "perfect-squares",
+            "longest-increasing-subsequence",
+            "coin-change",
+            "partition-equal-subset-sum",
+            "longest-common-subsequence"
+          ]
+        },
+        {
+          "title": "Graph",
+          "slugs": [
+            "number-of-islands",
+            "course-schedule",
+            "rotting-oranges"
+          ]
+        },
+        {
+          "title": "Greedy",
+          "slugs": [
+            "jump-game-ii",
+            "jump-game",
+            "best-time-to-buy-and-sell-stock",
+            "partition-labels"
+          ]
+        },
+        {
+          "title": "Hashing",
+          "slugs": [
+            "two-sum",
+            "group-anagrams",
+            "longest-consecutive-sequence",
+            "subarray-sum-equals-k"
+          ]
+        },
+        {
+          "title": "Heap",
+          "slugs": [
+            "kth-largest-element-in-an-array",
+            "find-median-from-data-stream",
+            "top-k-frequent-elements"
+          ]
+        },
+        {
+          "title": "Linked Lists",
+          "slugs": [
+            "add-two-numbers",
+            "remove-nth-node-from-end-of-list",
+            "merge-two-sorted-lists",
+            "merge-k-sorted-lists",
+            "swap-nodes-in-pairs",
+            "reverse-nodes-in-k-group",
+            "copy-list-with-random-pointer",
+            "linked-list-cycle",
+            "linked-list-cycle-ii",
+            "lru-cache",
+            "sort-list",
+            "intersection-of-two-linked-lists",
+            "reverse-linked-list",
+            "palindrome-linked-list"
+          ]
+        },
+        {
+          "title": "Matrix",
+          "slugs": [
+            "rotate-image",
+            "spiral-matrix",
+            "set-matrix-zeroes",
+            "search-a-2d-matrix-ii"
+          ]
+        },
+        {
+          "title": "Sliding Window",
+          "slugs": [
+            "longest-substring-without-repeating-characters",
+            "minimum-window-substring",
+            "sliding-window-maximum",
+            "find-all-anagrams-in-a-string"
+          ]
+        },
+        {
+          "title": "Stack",
+          "slugs": [
+            "valid-parentheses",
+            "largest-rectangle-in-histogram",
+            "min-stack",
+            "decode-string",
+            "daily-temperatures"
+          ]
+        },
+        {
+          "title": "Two Pointers",
+          "slugs": [
+            "container-with-most-water",
+            "3sum",
+            "trapping-rain-water",
+            "move-zeroes"
+          ]
+        },
+        {
+          "title": "Trie",
+          "slugs": [
+            "implement-trie-prefix-tree"
+          ]
+        },
+        {
+          "title": "Misc",
+          "slugs": [
+            "next-permutation",
+            "first-missing-positive",
+            "maximum-subarray",
+            "merge-intervals",
+            "sort-colors",
+            "single-number",
+            "majority-element",
+            "rotate-array",
+            "product-of-array-except-self",
+            "find-the-duplicate-number"
+          ]
+        }
+      ]
+    },
+    {
       "id": "top-interview-150",
       "title": "Top Interview 150",
       "size": 150,
@@ -896,6 +1078,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -906,6 +1089,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -915,7 +1099,8 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
-        "blind-75"
+        "blind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -935,6 +1120,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -954,6 +1140,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -985,6 +1172,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -996,6 +1184,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1006,6 +1195,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1017,6 +1207,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1028,6 +1219,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1056,6 +1248,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1064,7 +1257,8 @@
       "title": "Sliding Window Maximum",
       "difficulty": "Hard",
       "lists": [
-        "neetcode-150"
+        "neetcode-150",
+        "top-100-liked"
       ]
     },
     {
@@ -1075,6 +1269,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1085,6 +1280,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1104,6 +1300,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1112,7 +1309,8 @@
       "title": "Daily Temperatures",
       "difficulty": "Medium",
       "lists": [
-        "neetcode-150"
+        "neetcode-150",
+        "top-100-liked"
       ]
     },
     {
@@ -1129,7 +1327,8 @@
       "difficulty": "Hard",
       "lists": [
         "neetcode-150",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1147,6 +1346,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1165,6 +1365,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1176,6 +1377,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1194,6 +1396,7 @@
       "difficulty": "Hard",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1204,7 +1407,8 @@
       "lists": [
         "neetcode-150",
         "blind-75",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1215,6 +1419,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1226,6 +1431,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1245,6 +1451,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1254,6 +1461,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1263,6 +1471,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1271,7 +1480,8 @@
       "title": "Find the Duplicate Number",
       "difficulty": "Medium",
       "lists": [
-        "neetcode-150"
+        "neetcode-150",
+        "top-100-liked"
       ]
     },
     {
@@ -1281,6 +1491,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1292,6 +1503,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1301,6 +1513,7 @@
       "difficulty": "Hard",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1312,6 +1525,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1323,6 +1537,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1332,7 +1547,8 @@
       "difficulty": "Easy",
       "lists": [
         "neetcode-150",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1381,6 +1597,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1391,6 +1608,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1410,6 +1628,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1421,6 +1640,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1432,6 +1652,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1442,6 +1663,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1486,6 +1708,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1514,6 +1737,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1523,7 +1747,8 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1533,6 +1758,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1543,6 +1769,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1570,6 +1797,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1578,7 +1806,8 @@
       "title": "Palindrome Partitioning",
       "difficulty": "Medium",
       "lists": [
-        "neetcode-150"
+        "neetcode-150",
+        "top-100-liked"
       ]
     },
     {
@@ -1588,6 +1817,7 @@
       "lists": [
         "neetcode-150",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1596,7 +1826,8 @@
       "title": "N-Queens",
       "difficulty": "Hard",
       "lists": [
-        "neetcode-150"
+        "neetcode-150",
+        "top-100-liked"
       ]
     },
     {
@@ -1607,6 +1838,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1638,6 +1870,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1674,7 +1907,8 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1703,6 +1937,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1808,6 +2043,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1826,6 +2062,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1846,6 +2083,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1875,6 +2113,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1884,7 +2123,8 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
-        "blind-75"
+        "blind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1895,6 +2135,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1905,6 +2146,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -1914,7 +2156,8 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1924,7 +2167,8 @@
       "lists": [
         "neetcode-150",
         "blind-75",
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1933,7 +2177,8 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
-        "blind-75"
+        "blind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -1991,6 +2236,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2018,6 +2264,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2028,6 +2275,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2037,6 +2285,7 @@
       "difficulty": "Medium",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2070,7 +2319,8 @@
       "title": "Partition Labels",
       "difficulty": "Medium",
       "lists": [
-        "neetcode-150"
+        "neetcode-150",
+        "top-100-liked"
       ]
     },
     {
@@ -2100,6 +2350,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2144,6 +2395,7 @@
       "difficulty": "Easy",
       "lists": [
         "neetcode-150",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2209,6 +2461,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2220,6 +2473,7 @@
         "neetcode-150",
         "blind-75",
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2230,6 +2484,7 @@
       "lists": [
         "neetcode-150",
         "blind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2331,6 +2586,7 @@
       "difficulty": "Easy",
       "lists": [
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2365,6 +2621,7 @@
       "difficulty": "Medium",
       "lists": [
         "grind-75",
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2381,7 +2638,8 @@
       "title": "Sort Colors",
       "difficulty": "Medium",
       "lists": [
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -2397,7 +2655,8 @@
       "title": "Find All Anagrams in a String",
       "difficulty": "Medium",
       "lists": [
-        "grind-75"
+        "grind-75",
+        "top-100-liked"
       ]
     },
     {
@@ -2462,6 +2721,7 @@
       "title": "Rotate Array",
       "difficulty": "Medium",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2678,6 +2938,7 @@
       "title": "Symmetric Tree",
       "difficulty": "Easy",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2702,6 +2963,7 @@
       "title": "Flatten Binary Tree to Linked List",
       "difficulty": "Medium",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2806,6 +3068,7 @@
       "title": "Convert Sorted Array to Binary Search Tree",
       "difficulty": "Easy",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2814,6 +3077,7 @@
       "title": "Sort List",
       "difficulty": "Medium",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2838,6 +3102,7 @@
       "title": "Search Insert Position",
       "difficulty": "Easy",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2854,6 +3119,7 @@
       "title": "Find First and Last Position of Element in Sorted Array",
       "difficulty": "Medium",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -2934,6 +3200,7 @@
       "title": "Minimum Path Sum",
       "difficulty": "Medium",
       "lists": [
+        "top-100-liked",
         "top-interview-150"
       ]
     },
@@ -3367,6 +3634,126 @@
       "difficulty": "Easy",
       "lists": [
         "sql-50"
+      ]
+    },
+    {
+      "slug": "binary-tree-inorder-traversal",
+      "title": "Binary Tree Inorder Traversal",
+      "difficulty": "Easy",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "path-sum-iii",
+      "title": "Path Sum III",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "longest-valid-parentheses",
+      "title": "Longest Valid Parentheses",
+      "difficulty": "Hard",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "pascals-triangle",
+      "title": "Pascal's Triangle",
+      "difficulty": "Easy",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "perfect-squares",
+      "title": "Perfect Squares",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "subarray-sum-equals-k",
+      "title": "Subarray Sum Equals K",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "swap-nodes-in-pairs",
+      "title": "Swap Nodes in Pairs",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "linked-list-cycle-ii",
+      "title": "Linked List Cycle II",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "intersection-of-two-linked-lists",
+      "title": "Intersection of Two Linked Lists",
+      "difficulty": "Easy",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "palindrome-linked-list",
+      "title": "Palindrome Linked List",
+      "difficulty": "Easy",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "search-a-2d-matrix-ii",
+      "title": "Search a 2D Matrix II",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "decode-string",
+      "title": "Decode String",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "move-zeroes",
+      "title": "Move Zeroes",
+      "difficulty": "Easy",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "next-permutation",
+      "title": "Next Permutation",
+      "difficulty": "Medium",
+      "lists": [
+        "top-100-liked"
+      ]
+    },
+    {
+      "slug": "first-missing-positive",
+      "title": "First Missing Positive",
+      "difficulty": "Hard",
+      "lists": [
+        "top-100-liked"
       ]
     }
   ]

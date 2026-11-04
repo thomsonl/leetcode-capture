@@ -310,6 +310,22 @@ second-highest-salary|Second Highest Salary|M
 group-sold-products-by-the-date|Group Sold Products By The Date|E
 list-the-products-ordered-in-a-period|List the Products Ordered in a Period|E
 find-users-with-valid-e-mails|Find Users With Valid E-Mails|E
+# Top 100 Liked
+binary-tree-inorder-traversal|Binary Tree Inorder Traversal|E
+path-sum-iii|Path Sum III|M
+longest-valid-parentheses|Longest Valid Parentheses|H
+pascals-triangle|Pascal's Triangle|E
+perfect-squares|Perfect Squares|M
+subarray-sum-equals-k|Subarray Sum Equals K|M
+swap-nodes-in-pairs|Swap Nodes in Pairs|M
+linked-list-cycle-ii|Linked List Cycle II|M
+intersection-of-two-linked-lists|Intersection of Two Linked Lists|E
+palindrome-linked-list|Palindrome Linked List|E
+search-a-2d-matrix-ii|Search a 2D Matrix II|M
+decode-string|Decode String|M
+move-zeroes|Move Zeroes|E
+next-permutation|Next Permutation|M
+first-missing-positive|First Missing Positive|H
 `;
 
 function parse(source) {

@@ -16,6 +16,7 @@ import {
   ACTIVE_LIST_KEY,
   congratulation,
   createSolvedService,
+  isListId,
   isSlug,
   markSolved,
   normalizeSolved,
@@ -23,6 +24,7 @@ import {
   recordAccepted,
   slugFromUrl,
 } from './shared/solved.js';
+import { listById } from './shared/roadmap.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -123,7 +125,12 @@ test('the card follows the list it is given: its next problem, its group, its la
   assert.equal(sql.solvedTitle, 'Two Sum');
   assert.equal(sql.more, null);
   assert.equal(sql.next.slug, 'recyclable-and-low-fat-products');
-  assert.deepEqual(blind.lists.map((l) => `${l.id}:${l.size}`), ['neetcode-150:150', 'blind-75:75', 'grind-75:75', 'top-interview-150:150', 'sql-50:50']);
+  assert.deepEqual(blind.lists.map((l) => `${l.id}:${l.size}`), ['neetcode-150:150', 'blind-75:75', 'grind-75:75', 'top-100-liked:100', 'top-interview-150:150', 'sql-50:50']);
+  // A list added to the picker is a list the card's menu and the worker know.
+  const liked = congratulation({}, 'move-zeroes', listById('top-100-liked'));
+  assert.deepEqual(liked.roadmap, { id: 'top-100-liked', title: 'Top 100 Liked' });
+  assert.equal(liked.more.label, 'More Two Pointers problems');
+  assert.ok(isListId('top-100-liked'));
   assert.equal(blind.lists[1].title, 'Blind 75');
 });
 
