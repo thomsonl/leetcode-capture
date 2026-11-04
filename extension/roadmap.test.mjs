@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { NEETCODE_150, NEETCODE_250, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50, LISTS, ROADMAPS, DEFAULT_LIST_ID, listById, problemInList, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
 import { CATALOG, catalogEntry } from './shared/catalog.js';
-import { listSlugs, OUT } from './scripts/list-slugs.mjs';
+import vm from 'node:vm';
+import { checkSnippet, listSlugs, OUT } from './scripts/list-slugs.mjs';
 
 const R = NEETCODE_150;
 
@@ -261,4 +262,28 @@ test('an unknown or damaged list id means NeetCode 150', () => {
 
 test('extension/e2e/list-slugs.json matches the catalog (regenerate with node extension/scripts/list-slugs.mjs)', () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(OUT, 'utf8')), listSlugs());
+});
+
+test('the console check asks LeetCode for every slug and reports only the ones that differ', async () => {
+  const data = listSlugs();
+  const requests = [];
+  // A stand-in for LeetCode's GraphQL: knows every slug but one, and spells
+  // one title differently.
+  const fetch = async (url, init) => {
+    requests.push({ url, init });
+    const answer = {};
+    for (const [, alias, slug] of JSON.parse(init.body).query.matchAll(/(q\d+): question\(titleSlug: "([^"]+)"\)/g)) {
+      const p = data.problems.find((x) => x.slug === slug);
+      if (slug === 'two-sum') answer[alias] = null;
+      else answer[alias] = { titleSlug: slug, title: slug === 'move-zeroes' ? 'Move Zeros' : p.title, difficulty: p.difficulty };
+    }
+    return { json: async () => ({ data: answer }) };
+  };
+  const logs = [];
+  const problems = await vm.runInNewContext(checkSnippet(data), { fetch, document: { cookie: 'a=b; csrftoken=tok' }, console: { log: (m) => logs.push(m), table: () => {} } });
+  // Objects from the script's own realm: compared as JSON.
+  assert.deepEqual(JSON.parse(JSON.stringify(problems)), [{ slug: 'two-sum', problem: 'unknown slug' }, { slug: 'move-zeroes', expected: 'Move Zeroes (Easy)', leetcode: 'Move Zeros (Easy)' }]);
+  assert.equal(requests.length, Math.ceil(data.problems.length / 25));
+  assert.ok(requests.every((r) => r.url === '/graphql/' && r.init.headers['x-csrftoken'] === 'tok'));
+  assert.equal(logs[0], `${data.problems.length} slugs checked, 2 differ`);
 });
