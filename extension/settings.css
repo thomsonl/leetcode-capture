@@ -54,7 +54,7 @@ main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
 .page-head img { border-radius: 8px; }
 h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; }
 .sub { margin: 0; color: var(--muted); }
-.connection { margin: 0 0 0 auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; line-height: 16px; white-space: nowrap; }
+.connection { margin: 0 0 0 auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; line-height: 18px; white-space: nowrap; }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .connection[data-ok] .dot { background: var(--green); }
 .connection[data-ok] { color: var(--green-text); }
@@ -100,7 +100,7 @@ select {
 select:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
 input::placeholder { color: var(--muted); }
 input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
-.hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 16px; }
+.hint { margin: 0; color: var(--muted); font-size: 13px; line-height: 18px; }
 .hint.locked { color: var(--text); }
 .hint:empty { display: none; }
 .hint code.nowrap { display: inline-block; margin-top: 4px; white-space: nowrap; max-width: 100%; overflow-x: auto; vertical-align: top; }
@@ -131,7 +131,7 @@ input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 12px 0; background: linear-gradient(to top, var(--page) 70%, transparent); }
 .savebar .result { flex: 1; text-align: right; }
 
-.foot { color: var(--muted); font-size: 12px; line-height: 16px; }
+.foot { color: var(--muted); font-size: 13px; line-height: 18px; }
 
 /* The Helper card stays usable: it is how a missing helper gets set up. */
 form[data-disabled] .card:not(#helper-card), form[data-disabled] .savebar { opacity: 0.55; pointer-events: none; }
@@ -161,7 +161,7 @@ form[data-disabled] .card:not(#helper-card), form[data-disabled] .savebar { opac
 .profile-text { flex: 1; min-width: 0; display: grid; }
 .profile-name, .profile-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile-name { font-weight: 500; }
-.profile-meta { color: var(--muted); font-size: 12px; line-height: 16px; }
+.profile-meta { color: var(--muted); font-size: 13px; line-height: 18px; }
 .profile-text input[type="text"] { height: 28px; }
 .profile-actions { flex: none; display: flex; align-items: center; gap: 2px; }
 .iconbtn { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }

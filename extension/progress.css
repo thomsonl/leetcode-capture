@@ -81,8 +81,8 @@ body[data-tab="progress"] #connection { display: none; }
 .list-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .list-line { display: flex; flex-direction: column; }
 .list-name { font-weight: 600; }
-.list-size { color: var(--muted); font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
-.list-desc { color: var(--muted); font-size: 12px; line-height: 17px; }
+.list-size { color: var(--muted); font-size: 13px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.list-desc { color: var(--muted); font-size: 13px; line-height: 18px; }
 
 /* ---- summary ---------------------------------------------------------------- */
 
@@ -184,7 +184,7 @@ body[data-tab="progress"] #connection { display: none; }
 .group-level[hidden] { display: none; }
 .group-level-bar { display: block; height: 3px; border-radius: 2px; overflow: hidden; }
 .group-level-fill { display: block; height: 100%; border-radius: 2px; }
-.group-level-text { display: block; font-size: 11px; line-height: 14px; font-weight: 500; color: rgba(255, 255, 255, 0.86); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.group-level-text { display: block; font-size: 12px; line-height: 15px; font-weight: 500; color: rgba(255, 255, 255, 0.86); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .group-level-text::first-letter { font-weight: 700; }
 .group-level[data-level="Easy"] .group-level-bar { background: rgba(134, 239, 172, 0.3); }
 .group-level[data-level="Easy"] .group-level-text::first-letter { color: #86efac; }

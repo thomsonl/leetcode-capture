@@ -1247,7 +1247,7 @@
        name cut with an ellipsis when the pane is narrow, then a chevron.
        It opens a listbox of the saved models. */
     button.model {
-      flex: 0 1 auto; min-width: 0; width: auto; height: auto; gap: 4px; justify-content: flex-start;
+      flex: 0 1 auto; min-width: 0; width: auto; height: var(--sel-height, auto); gap: 4px; justify-content: flex-start;
       padding: var(--sel-pad, 2px 6px); border-radius: var(--sel-radius, 4px); color: var(--sel-color, var(--muted));
       font: var(--sel-weight, 400) var(--sel-size, 14px) / var(--sel-line, 20px) var(--font);
     }
@@ -1570,6 +1570,11 @@
     set("--sel-weight", cs && cs.fontWeight, cs && /^\d+$/.test(cs.fontWeight));
     const pad = cs ? `${cs.paddingTop} ${cs.paddingRight} ${cs.paddingBottom} ${cs.paddingLeft}` : "";
     set("--sel-pad", pad, cs && [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].every((v) => px(v) && parseFloat(v) <= 8));
+    // LeetCode's button is shorter than its padding plus line height (its
+    // content, a text node and a chevron, is under the line height), so the
+    // switcher takes the measured height too or it ends up a pixel taller.
+    const height = button ? button.getBoundingClientRect().height : 0;
+    set("--sel-height", `${height}px`, height >= 16 && height <= 32);
     set("--sel-radius", cs && cs.borderTopLeftRadius, cs && px(cs.borderTopLeftRadius) && parseFloat(cs.borderTopLeftRadius) <= 8);
   }
 
