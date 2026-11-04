@@ -656,7 +656,7 @@ export const BLIND_75 = defineList({
 export const GRIND_75 = defineList({
   id: 'grind-75',
   title: 'Grind 75',
-  description: 'Yangshun Tay\'s updated Blind 75, in eight weekly sets.',
+  description: 'Yangshun Tay\'s updated Blind 75, in eight weekly sets or by subject.',
   groupNoun: 'week',
   groups: [
   ['week-1', 'Week 1', `

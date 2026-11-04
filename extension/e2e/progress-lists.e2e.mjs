@@ -3,10 +3,11 @@
 // run default, every list with its size and description, mouse and
 // keyboard, stored in storage.local through the worker, never touching the
 // solved problems, kept across a reload, followed when another page changes
-// it) and the grouped layout every list without a roadmap graph gets (group
-// cards in the list's order with counts and difficulty bars, the Next group,
-// the side panel, marking and unmarking, the keyboard, light and dark, and
-// widths from 400 px).
+// it), NeetCode 250 on the NeetCode roadmap, the grouped layout every list
+// without a roadmap graph gets (group cards in the list's order with counts
+// and difficulty bars, the Next group, the side panel, marking and
+// unmarking, the keyboard, light and dark, and widths from 400 px) and
+// Grind 75's switch between its weeks and subjects.
 //
 // Run with:  node extension/e2e/progress-lists.e2e.mjs
 // Screenshots land in $LC_E2E_SHOTS (default /tmp/lc-lists-shots).
@@ -15,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch } from './cdp.mjs';
-import { BLIND_75, GRIND_75, LISTS, SQL_50, TOP_INTERVIEW_150, nextOnRoadmap, progress } from '../shared/roadmap.js';
+import { BLIND_75, GRIND_75, LISTS, NEETCODE_250, SQL_50, TOP_100_LIKED, TOP_INTERVIEW_150, nextOnRoadmap, progress } from '../shared/roadmap.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(here, '..');
@@ -86,11 +87,33 @@ try {
       check(o.name === LISTS[i].title && o.size === `${LISTS[i].size} problems` && o.desc === LISTS[i].description && o.described === o.desc, JSON.stringify(o));
       check(o.checked === (i === 0) && o.selected === (i === 0), `checked: ${JSON.stringify(o)}`);
     }
-    check(/NeetCode 150 extends it/.test(m.options[1].desc), 'the Blind 75 note');
+    check(/NeetCode 150 extends it/.test(m.options.find((o) => o.id === 'blind-75').desc), 'the Blind 75 note');
+    check(!m.options.some((o) => /\b150\b/.test(o.name) && o.id !== 'neetcode-150' && o.id !== 'top-interview-150'), 'no other 150 list');
     check(m.nodes === 18 && m.sub === 'Your NeetCode 150 progress' && m.title === 'NeetCode 150', JSON.stringify(m));
     check((await stored()).activeProgressList === undefined, 'nothing stored before a choice');
     await page.screenshot(path.join(shots, 'picker-neetcode-dark.png'), { width: 1280, height: 700, scheme: 'dark' });
   });
+
+  // Four cards a row, then two, then one: seven lists never leave a row of
+  // one under a row of three, and every card in a row has the same height.
+  const pickerRows = () => page.eval(`(() => {
+    const cards = [...document.querySelectorAll('.list-option')];
+    const rows = new Map();
+    for (const c of cards) { const r = c.getBoundingClientRect(); const top = Math.round(r.top); rows.set(top, [...(rows.get(top) || []), Math.round(r.height)]); }
+    return { counts: [...rows.values()].map((r) => r.length), even: [...rows.values()].every((r) => new Set(r).size === 1) };
+  })()`);
+  for (const [width, counts] of [[1280, '4,3'], [720, '2,2,2,1'], [400, '1,1,1,1,1,1,1']]) {
+    await scenario(`the list picker at ${width} px: rows of ${counts.split(',')[0]}, even heights`, async () => {
+      await page.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      await sleep(200);
+      const m = await pickerRows();
+      check(m.counts.join() === counts && m.even, `${width}: ${JSON.stringify(m)}`);
+      await page.screenshot(path.join(shots, `picker-${width}-dark.png`), { width, height: width === 400 ? 1300 : 700, scheme: 'dark' });
+      await page.screenshot(path.join(shots, `picker-${width}-light.png`), { width, height: width === 400 ? 1300 : 700, scheme: 'light' });
+      await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+    });
+  }
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
 
   await scenario('choosing Blind 75 with the mouse: grouped layout, summary, Next group; stored, solved problems untouched', async () => {
     const before = await stored();
@@ -231,6 +254,70 @@ try {
     await page.screenshot(path.join(shots, 'grind-dark.png'), { width: 1280, height: 1000, scheme: 'dark' });
   });
 
+  await scenario('Grind 75 by subject: the switch, one card per subject, Next where the weekly order puts it, remembered, no "Comes after"', async () => {
+    const before = await stored();
+    let m = await page.eval(`({ bar: !document.getElementById('view-bar').hidden, legend: document.querySelector('.view-switch legend').textContent, segments: [...document.querySelectorAll('.segment')].map((s) => s.textContent + (s.querySelector('input').checked ? '*' : '')) })`);
+    check(m.bar && m.legend === 'Group by' && m.segments.join() === 'Week*,Subject', JSON.stringify(m));
+    await page.eval(`document.querySelector('.segment[data-view="subject"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === ${GRIND_75.subjects.length}`, { what: 'the subjects' });
+    const next = nextOnRoadmap(GRIND_75, Object.keys(seed))[0];
+    const subject = GRIND_75.subjects.find((t) => t.id === next.subject);
+    m = await page.eval(`({
+      titles: [...document.querySelectorAll('.group-title')].map((n) => n.textContent),
+      counts: [...document.querySelectorAll('.group')].map((g) => g.dataset.topic + ':' + g.querySelector('.node-count').textContent),
+      nextCards: [...document.querySelectorAll('.group[data-next]')].map((g) => g.dataset.topic),
+      next: document.querySelector('.next-up').textContent,
+      help: document.querySelector('#summary .help').textContent,
+      heading: document.getElementById('roadmap-heading').textContent,
+      label: document.querySelector('.group').getAttribute('aria-label'),
+      saved: localStorage.getItem('lc-progress-view'),
+    })`);
+    check(m.titles.join() === GRIND_75.subjects.map((t) => t.title).join(), `titles: ${m.titles}`);
+    const want = progress({ topics: GRIND_75.subjects }, Object.keys(seed)).topics.map((t) => `${t.id}:${t.solved} / ${t.total}`);
+    check(m.counts.join() === want.join(), `counts: ${m.counts}`);
+    check(m.nextCards.join() === next.subject && m.next === `Next up${next.title}${next.difficulty}in${subject.title}`, JSON.stringify(m));
+    check(m.help.startsWith(`${GRIND_75.subjects.length} subjects of 75 problems`) && /week by week/.test(m.help) && m.heading === 'Grind 75 subjects', JSON.stringify(m));
+    check(m.label.startsWith(`Arrays & Hashing, subject 1 of ${GRIND_75.subjects.length},`), m.label);
+    check(m.saved === '{"grind-75":"subject"}', `remembered: ${m.saved}`);
+    check(JSON.stringify(await stored()) === JSON.stringify(before), 'the switch wrote to storage.local');
+    await page.screenshot(path.join(shots, 'grind-subjects-dark.png'), { width: 1280, height: 1300, scheme: 'dark' });
+    await page.screenshot(path.join(shots, 'grind-subjects-light.png'), { width: 1280, height: 1300, scheme: 'light' });
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+    // The Next card opens on its problems, with no group order to show.
+    await page.eval(`document.querySelector('.next-up .linkbtn').click()`);
+    await page.waitFor(`!document.getElementById('drawer').hidden`, { what: 'the subject panel' });
+    m = await page.eval(`({ title: document.getElementById('drawer-title').textContent, h3: document.querySelectorAll('#drawer h3').length, prereqs: document.querySelectorAll('#drawer .prereq').length, rows: [...document.querySelectorAll('#drawer tbody tr')].map((tr) => tr.dataset.slug), next: [...document.querySelectorAll('#drawer tr[data-next]')].map((tr) => tr.dataset.slug) })`);
+    check(m.title.startsWith(subject.title) && m.h3 === 0 && m.prereqs === 0, JSON.stringify(m));
+    check(m.rows.join() === subject.problems.map((p) => p.slug).join() && m.next.join() === next.slug, JSON.stringify(m));
+    await page.screenshot(path.join(shots, 'grind-subject-drawer-dark.png'), { width: 1280, height: 900, scheme: 'dark' });
+    await key(page, 'Escape');
+    // The keyboard moves the switch like any radio group.
+    await page.eval(`document.querySelector('.segment input:checked').focus()`);
+    await key(page, 'ArrowLeft');
+    await page.waitFor(`document.querySelectorAll('.group').length === 8`, { what: 'the weeks again' });
+    check((await page.eval(`localStorage.getItem('lc-progress-view')`)) === '{"grind-75":"list"}', 'remembered weeks');
+    await key(page, 'ArrowRight');
+    await page.waitFor(`document.querySelectorAll('.group').length === ${GRIND_75.subjects.length}`, { what: 'the subjects again' });
+    // Remembered across a reload; another list has no switch; back to Grind 75 keeps it.
+    await open();
+    check((await page.eval(`document.querySelectorAll('.group').length`)) === GRIND_75.subjects.length, 'subjects after a reload');
+    await page.eval(`document.querySelector('.list-option[data-list="blind-75"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === 10`, { what: 'Blind 75' });
+    check(await page.eval(`document.getElementById('view-bar').hidden`), 'Blind 75 has no switch');
+    await page.eval(`document.querySelector('.list-option[data-list="grind-75"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === ${GRIND_75.subjects.length}`, { what: 'Grind 75 by subject' });
+    for (const width of [400, 720]) {
+      await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await sleep(200);
+      const fit = await page.eval(`(() => { const bar = document.getElementById('view-bar').getBoundingClientRect(); const seg = document.querySelector('.segments').getBoundingClientRect(); return { page: document.scrollingElement.scrollWidth - window.innerWidth, inside: seg.right <= bar.right && seg.left >= bar.left }; })()`);
+      check(fit.page <= 0 && fit.inside, `switch at ${width}: ${JSON.stringify(fit)}`);
+      await page.screenshot(path.join(shots, `grind-subjects-${width}-dark.png`), { width, height: 1100, scheme: 'dark' });
+    }
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await page.eval(`document.querySelector('.segment[data-view="list"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === 8`, { what: 'the weeks' });
+  });
+
   await scenario('the choice survives a reload, and a change made elsewhere is followed at once', async () => {
     await open();
     let m = await page.eval(`({ checked: document.querySelector('.list-option input:checked').value, groups: document.querySelectorAll('.group').length, nodes: document.querySelectorAll('.node').length })`);
@@ -253,6 +340,41 @@ try {
     await page.screenshot(path.join(shots, 'top-interview-dark.png'), { width: 1280, height: 1500, scheme: 'dark' });
     await page.screenshot(path.join(shots, 'top-interview-light.png'), { width: 1280, height: 1500, scheme: 'light' });
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+  });
+
+  await scenario('Top 100 Liked: LeetCode\'s 15 groups in its order', async () => {
+    await page.eval(`document.querySelector('.list-option[data-list="top-100-liked"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_100_LIKED.topics.length}`, { what: 'Top 100 Liked' });
+    const m = await page.eval(`({ titles: [...document.querySelectorAll('.group-title')].map((n) => n.textContent), total: document.querySelector('.total').textContent })`);
+    const all = progress(TOP_100_LIKED, Object.keys(seed));
+    check(m.titles.join() === TOP_100_LIKED.topics.map((t) => t.title).join() && m.total === `${all.solved} / 100 solved`, JSON.stringify(m));
+    await page.screenshot(path.join(shots, 'top-100-liked-dark.png'), { width: 1280, height: 1300, scheme: 'dark' });
+    await page.eval(`document.querySelector('.list-option[data-list="top-interview-150"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
+  });
+
+  await scenario('NeetCode 250: the NeetCode roadmap with its own counts, nothing cut', async () => {
+    await page.eval(`document.querySelector('.list-option[data-list="neetcode-250"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.node').length === 18 && document.querySelectorAll('.edge').length > 0`, { what: 'the NeetCode 250 graph' });
+    const all = progress(NEETCODE_250, Object.keys(seed));
+    const m = await page.eval(`({
+      counts: [...document.querySelectorAll('.node')].map((n) => n.dataset.topic + ':' + n.querySelector('.node-count').textContent),
+      total: document.querySelector('.total').textContent,
+      help: document.querySelector('#summary .help').textContent,
+      cut: [...document.querySelectorAll('.node-title, .node-count')].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent),
+      bar: document.getElementById('view-bar').hidden,
+      next: document.querySelector('.next-up').textContent,
+    })`);
+    const want = Object.fromEntries(all.topics.map((t) => [t.id, `${t.solved} / ${t.total}`]));
+    check(m.counts.every((c) => { const [id, text] = c.split(':'); return want[id] === text; }), `counts: ${m.counts}`);
+    check(m.total === `${all.solved} / 250 solved` && /250 problems by topic/.test(m.help) && m.cut.length === 0 && m.bar, JSON.stringify(m));
+    const next = nextOnRoadmap(NEETCODE_250, Object.keys(seed))[0];
+    check(m.next.startsWith(`Next up${next.title}`), m.next);
+    await page.screenshot(path.join(shots, 'neetcode-250-dark.png'), { width: 1280, height: 1400, scheme: 'dark' });
+    await page.screenshot(path.join(shots, 'neetcode-250-light.png'), { width: 1280, height: 1400, scheme: 'light' });
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+    await page.eval(`document.querySelector('.list-option[data-list="top-interview-150"]').click()`);
+    await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
   });
 
   for (const width of [400, 600, 900]) {

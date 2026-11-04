@@ -5,8 +5,9 @@
 // picture of that list: NeetCode 150 and NeetCode 250 as their roadmap graph
 // (one node per topic with its solved count and the prerequisite lines
 // between them, the same topics for both), every other list as a grid of its
-// own groups in the publisher's order. Each topic
-// or group opens a side panel with its problems. Solved problems come from
+// own groups in the publisher's order (Grind 75, whose groups are weeks,
+// with a switch to show the same problems by subject). Each topic or group
+// opens a side panel with its problems. Solved problems come from
 // storage.local (`solvedProblems`, written by the background worker when
 // LeetCode accepts a submission, see shared/solved.js) and count in every
 // list; the status mark, the star and the list choice ask the worker to
@@ -69,6 +70,20 @@ let returnFocus = null; // what gets focus back when it closes
 let metrics = null;
 let built = false;
 let notice = '';
+// Weeks or subjects, for a list that has subjects (Grind 75). Remembered per
+// list in this browser's localStorage, a convenience only: without it the
+// list's own groups show.
+const VIEW_KEY = 'lc-progress-view';
+let views = readViews();
+
+function readViews() {
+  try {
+    const value = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
 
 function h(tag, attrs, ...children) {
   const node = document.createElement(tag);
@@ -121,8 +136,14 @@ function bar(done, total, label) {
   return h('span', { class: 'bar', role: 'progressbar', 'aria-label': label, 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': String(done) }, fill);
 }
 
+// The groups on screen: the list's own, or its subjects when that view is on.
+const bySubject = () => Boolean(ROADMAP.subjects) && views[ROADMAP.id] === 'subject';
+const shownGroups = () => (bySubject() ? ROADMAP.subjects : ROADMAP.topics);
+const groupOf = (problem) => (bySubject() ? problem.subject : problem.topic);
+const shownProgress = () => progress({ topics: shownGroups() }, solvedSet());
+
 function topicById(id) {
-  return ROADMAP.topics.find((t) => t.id === id);
+  return shownGroups().find((t) => t.id === id);
 }
 
 function solvedSet() {
@@ -188,7 +209,7 @@ function wireTabs() {
 
 const isGraph = () => ROADMAP.kind === 'graph';
 // What the list calls one of its groups: topic, category, week or section.
-const noun = () => ROADMAP.groupNoun || 'group';
+const noun = () => (bySubject() ? 'subject' : ROADMAP.groupNoun || 'group');
 const nouns = (word) => (word.endsWith('y') ? `${word.slice(0, -1)}ies` : `${word}s`);
 const plural = (n, word) => `${n} ${n === 1 ? word : nouns(word)}`;
 
@@ -212,6 +233,7 @@ function build() {
       'section',
       { class: 'card roadmap', 'aria-labelledby': 'roadmap-heading' },
       h('h2', { class: 'sr-only', id: 'roadmap-heading' }),
+      h('div', { class: 'view-bar', id: 'view-bar', hidden: true }),
       h('div', { class: 'canvas', id: 'canvas' })
     ),
     h('p', { class: 'foot', id: 'progress-foot' })
@@ -291,7 +313,62 @@ async function chooseList(id) {
   }
 }
 
+// "Group by": the list's own groups or subjects, as native radios drawn as
+// one segmented control. Only for a list that has subjects.
+function renderViewBar() {
+  const bar = $('view-bar');
+  bar.hidden = !ROADMAP.subjects;
+  if (!ROADMAP.subjects) return;
+  const own = ROADMAP.groupNoun || 'group';
+  const options = [
+    ['list', own[0].toUpperCase() + own.slice(1)],
+    ['subject', 'Subject'],
+  ];
+  if (bar.dataset.list !== ROADMAP.id) {
+    bar.dataset.list = ROADMAP.id;
+    bar.textContent = '';
+    bar.appendChild(
+      h(
+        'fieldset',
+        { class: 'view-switch' },
+        h('legend', { text: 'Group by' }),
+        h(
+          'span',
+          { class: 'segments' },
+          ...options.map(([value, label]) =>
+            h(
+              'label',
+              { class: 'segment', 'data-view': value },
+              h('input', { type: 'radio', name: 'progress-view', value, onchange: (e) => e.currentTarget.checked && chooseView(value) }),
+              h('span', { text: label })
+            )
+          )
+        )
+      )
+    );
+  }
+  const current = bySubject() ? 'subject' : 'list';
+  for (const input of bar.querySelectorAll('input')) {
+    const on = input.value === current;
+    if (input.checked !== on) input.checked = on;
+    input.closest('.segment').toggleAttribute('data-selected', on);
+  }
+}
+
+function chooseView(value) {
+  views = { ...views, [ROADMAP.id]: value };
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify(views));
+  } catch {
+    // Not remembered; this page still shows it.
+  }
+  if (openTopic) closeDrawer({ restore: false });
+  $('canvas').textContent = '';
+  render();
+}
+
 function renderView() {
+  renderViewBar();
   const canvas = $('canvas');
   canvas.dataset.kind = ROADMAP.kind;
   $('roadmap-heading').textContent = isGraph() ? 'Topics' : `${ROADMAP.title} ${nouns(noun())}`;
@@ -305,9 +382,9 @@ function renderView() {
     }
     renderGraph();
   } else {
-    if (!$('groups')) {
+    if (!$('groups') || $('groups').dataset.view !== (bySubject() ? 'subject' : 'list')) {
       canvas.textContent = '';
-      const groups = h('div', { class: 'groups', id: 'groups', role: 'group', 'aria-label': `${ROADMAP.title} ${nouns(noun())}` });
+      const groups = h('div', { class: 'groups', id: 'groups', role: 'group', 'aria-label': `${ROADMAP.title} ${nouns(noun())}`, 'data-view': bySubject() ? 'subject' : 'list' });
       groups.addEventListener('keydown', groupKeys);
       canvas.appendChild(groups);
     }
@@ -343,7 +420,9 @@ function renderSummary() {
           class: 'help',
           text: isGraph()
             ? `The roadmap of ${ROADMAP.size} problems by topic. Start at the top; each line leads to a topic that builds on the one above it.`
-            : `${plural(ROADMAP.topics.length, noun())} of ${ROADMAP.size} problems, in the order the list gives them. Work through them in order; the one marked Next is the first you have not finished.`,
+            : bySubject()
+              ? `${plural(shownGroups().length, noun())} of ${ROADMAP.size} problems, each under one subject. The one marked Next is still the first you have not solved in the list's order, ${ROADMAP.groupNoun} by ${ROADMAP.groupNoun}.`
+              : `${plural(ROADMAP.topics.length, noun())} of ${ROADMAP.size} problems, in the order the list gives them. Work through them in order; the one marked Next is the first you have not finished.`,
         })
       ),
       h('p', { class: 'total' }, h('span', { class: 'total-done', text: String(all.solved) }), h('span', { class: 'total-of', text: ` / ${all.total} solved` }))
@@ -365,7 +444,7 @@ function renderSummary() {
             h('a', { href: problemUrl(next.slug), target: '_blank', rel: 'noopener noreferrer', text: next.title }),
             difficulty(next.difficulty),
             h('span', { class: 'next-in', text: 'in' }),
-            h('button', { type: 'button', class: 'linkbtn', onclick: (e) => openDrawer(next.topic, e.currentTarget), text: topicById(next.topic).title })
+            h('button', { type: 'button', class: 'linkbtn', onclick: (e) => openDrawer(groupOf(next), e.currentTarget), text: topicById(groupOf(next)).title })
           )
         : h('p', { class: 'next-up done', text: `You have solved every problem on ${ROADMAP.title}.` })
     ),
@@ -495,10 +574,11 @@ function graphKeys(event) {
 // by difficulty (each part filled as far as it is solved).
 function renderGroups() {
   const box = $('groups');
-  const all = progress(ROADMAP, solvedSet());
+  const groups = shownGroups();
+  const all = shownProgress();
   const next = nextProblem();
   const existing = new Map([...box.querySelectorAll('.group')].map((n) => [n.dataset.topic, n]));
-  ROADMAP.topics.forEach((topic, i) => {
+  groups.forEach((topic, i) => {
     const stats = all.topics[i];
     let card = existing.get(topic.id);
     if (!card) {
@@ -529,13 +609,13 @@ function renderGroups() {
     }
     card.querySelector('.node-fill').style.width = `${percent(stats.solved, stats.total)}%`;
     card.querySelector('.node-count').textContent = `${stats.solved} / ${stats.total}`;
-    const isNext = Boolean(next && next.topic === topic.id);
+    const isNext = Boolean(next && groupOf(next) === topic.id);
     card.toggleAttribute('data-next', isNext);
     card.toggleAttribute('data-complete', stats.complete);
     card.toggleAttribute('data-started', stats.solved > 0);
     card.setAttribute(
       'aria-label',
-      `${topic.title}, ${noun()} ${i + 1} of ${ROADMAP.topics.length}, ${stats.solved} of ${stats.total} solved${stats.complete ? ', complete' : ''}${isNext ? ', recommended next' : ''}. ${levels.join(', ')}`
+      `${topic.title}, ${noun()} ${i + 1} of ${groups.length}, ${stats.solved} of ${stats.total} solved${stats.complete ? ', complete' : ''}${isNext ? ', recommended next' : ''}. ${levels.join(', ')}`
     );
   });
 }
@@ -642,16 +722,17 @@ function problemLink(p) {
 function renderDrawer() {
   const drawer = $('drawer');
   const topic = topicById(openTopic);
-  const stats = progress(ROADMAP, solvedSet()).topics.find((t) => t.id === topic.id);
+  const stats = shownProgress().topics.find((t) => t.id === topic.id);
   const next = nextProblem();
   // Keep focus on the same control across a redraw (a mark, a star).
   const active = document.activeElement;
   const keep = active && drawer.contains(active) ? { slug: active.dataset.slug, role: active.dataset.role, topic: active.dataset.prereq, title: active.id === 'drawer-title' } : null;
   // A graph's topic lists the topics that lead to it; a group lists the one
-  // before it in the list's order.
+  // before it in the list's order; a subject has no order of its own, so it
+  // lists neither.
   const place = ROADMAP.topics.indexOf(topic);
   const prereqs = isGraph() ? ROADMAP.edges.filter(([, to]) => to === topic.id).map(([from]) => topicById(from)) : ROADMAP.topics.slice(Math.max(0, place - 1), place);
-  const all = progress(ROADMAP, solvedSet()).topics;
+  const all = shownProgress().topics;
 
   drawer.textContent = '';
   const head = h(
@@ -662,24 +743,27 @@ function renderDrawer() {
   );
   const body = h('div', { class: 'drawer-body' });
   body.appendChild(bar(stats.solved, stats.total, `${topic.title} solved`));
-  body.appendChild(h('h3', { text: isGraph() ? 'Prerequisites' : 'Comes after' }));
-  body.appendChild(
-    prereqs.length
-      ? h(
-          'div',
-          { class: 'prereqs' },
-          ...prereqs.map((p) => {
-            const s = all.find((t) => t.id === p.id);
-            return h(
-              'button',
-              { type: 'button', class: 'prereq', 'data-prereq': p.id, onclick: () => switchTopic(p.id) },
-              h('span', { class: 'prereq-title', text: p.title }),
-              h('span', { class: 'prereq-count', text: `${s.solved} / ${s.total}` })
-            );
-          })
-        )
-      : h('p', { class: 'hint', text: isGraph() ? 'None. This is where the roadmap starts.' : `Nothing. This is where ${ROADMAP.title} starts.` })
-  );
+  if (!bySubject()) {
+    body.appendChild(h('h3', { text: isGraph() ? 'Prerequisites' : 'Comes after' }));
+    body.appendChild(
+      prereqs.length
+        ? h(
+            'div',
+            { class: 'prereqs' },
+            ...prereqs.map((p) => {
+              const s = all.find((t) => t.id === p.id);
+              return h(
+                'button',
+                { type: 'button', class: 'prereq', 'data-prereq': p.id, onclick: () => switchTopic(p.id) },
+                h('span', { class: 'prereq-title', text: p.title }),
+                h('span', { class: 'prereq-count', text: `${s.solved} / ${s.total}` })
+              );
+
+            })
+          )
+        : h('p', { class: 'hint', text: isGraph() ? 'None. This is where the roadmap starts.' : `Nothing. This is where ${ROADMAP.title} starts.` })
+    );
+  }
   const rows = topic.problems.map((p) => {
     const record = solved[p.slug];
     const isNext = Boolean(next && next.slug === p.slug);

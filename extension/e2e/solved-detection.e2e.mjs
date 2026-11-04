@@ -23,6 +23,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionCopy, launch } from './cdp.mjs';
+import { LISTS } from '../shared/roadmap.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(here, '..');
@@ -245,7 +246,7 @@ try {
     const m = await lastCard();
     check(m.select === 'neetcode-150', `first run default: ${m.select}`);
     check(m.label === 'Working on', `menu label: ${m.label}`);
-    check(JSON.stringify(m.options) === JSON.stringify(['neetcode-150:NeetCode 150', 'blind-75:Blind 75', 'grind-75:Grind 75', 'top-interview-150:Top Interview 150', 'sql-50:SQL 50']), `options: ${m.options}`);
+    check(JSON.stringify(m.options) === JSON.stringify(LISTS.map((l) => `${l.id}:${l.title}`)) && m.options.length === 7, `options: ${m.options}`);
     await browser.serviceWorkerEval(`chrome.storage.local.set({ activeProgressList: 'blind-75' })`);
     check((await page.eval(`window.__pollFetch(7004)`)) === 'Accepted', 'poll');
     await page.waitFor(`window.__cards().length === 3`, { what: 'the third card' });

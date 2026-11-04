@@ -69,7 +69,10 @@ body[data-tab="progress"] #connection { display: none; }
 
 .list-picker { margin: 0; padding: 0; border: 0; min-width: 0; }
 .list-picker legend { margin: 0 0 12px; padding: 0; font-size: 16px; line-height: 24px; font-weight: 600; }
-.list-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: 8px; }
+/* Four columns, two, or one, never three: seven or eight lists then fill
+   their rows evenly (4 + 3 or 4 + 4, then pairs) at every width. */
+.list-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 999px) { .list-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .list-option {
   display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
 }
@@ -116,6 +119,22 @@ body[data-tab="progress"] #connection { display: none; }
 /* ---- the roadmap -------------------------------------------------------------- */
 
 .card.roadmap { padding: 0; overflow: hidden; }
+
+/* "Group by" weeks or subjects, above the cards, for a list that has both. */
+.view-bar { display: flex; justify-content: flex-end; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.view-bar[hidden] { display: none; }
+.view-bar:not([hidden]) + .canvas { border-top-left-radius: 0; border-top-right-radius: 0; }
+.view-switch { display: flex; align-items: center; margin: 0; padding: 0; border: 0; min-width: 0; }
+.view-switch legend { float: left; margin: 0 10px 0 0; padding: 0; color: var(--muted); font-size: 13px; line-height: 34px; }
+.segments { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.segment {
+  position: relative; display: inline-flex; align-items: center; height: 28px; padding: 0 14px; border-radius: 6px;
+  color: var(--muted); font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer;
+}
+.segment:hover { background: var(--fill); color: var(--text); }
+.segment input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.segment[data-selected] { background: var(--node-b); color: #fff; }
+.segment:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .canvas {
   overflow-x: auto; overflow-y: hidden;
   background-color: var(--canvas);
@@ -278,6 +297,10 @@ html.drawer-open { overflow: hidden; }
 @media (max-width: 520px) {
   .groups { gap: 18px 12px; padding: 24px 16px 16px; }
   .list-options { grid-template-columns: minmax(0, 1fr); }
+  /* One card a row: the size goes on the name's line, so seven lists take
+     less of a phone's height. */
+  .list-line { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .list-size { flex: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
