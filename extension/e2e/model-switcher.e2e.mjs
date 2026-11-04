@@ -149,7 +149,8 @@ try {
       const lang = getComputedStyle(document.getElementById('lang-button'));
       const head = window.__q('.head').getBoundingClientRect();
       const r = b.getBoundingClientRect();
-      const gear = window.__q('button.gear').getBoundingClientRect();
+      // The next header button: "Practice a skill" with an extension runtime.
+      const gear = (window.__q('button.practice-open:not([hidden])') || window.__q('button.gear')).getBoundingClientRect();
       const chev = b.querySelector('svg').getBoundingClientRect();
       const name = b.querySelector('.provider').getBoundingClientRect();
       return {
@@ -166,7 +167,7 @@ try {
     check(m.title === 'The tutor uses gpt-oss:20b (Local model). Click to switch.', `title: ${m.title}`);
     check(m.style === m.lang, `style ${m.style} vs the language selector ${m.lang}`);
     check(Math.abs(m.mid) <= 0.5 && m.height === 24, `centered in the 32px row: ${JSON.stringify(m)}`);
-    check(m.gap === 4, `gap to the gear: ${m.gap}`);
+    check(m.gap === 4, `gap to the next header button: ${m.gap}`);
     check(m.chev.w === 12 && m.chev.gap === 4 && Math.abs(m.chev.mid) <= 0.5, `chevron: ${JSON.stringify(m.chev)}`);
     await page.screenshot(path.join(SHOTS, '01-button-dark.png'), { width: 1100, height: 760 });
   });
@@ -225,14 +226,14 @@ try {
     check((await page.eval(`window.__root().activeElement === window.__q('button.model')`)), 'focus back on the button');
     check((await page.eval(`window.__q('button.model').getAttribute('aria-expanded')`)) === 'false', 'collapsed');
     // Enter on the button opens it too; Tab closes without choosing and goes
-    // on to the gear, inside the panel (the listbox comes after the composer
+    // on to the next header button, inside the panel (the listbox comes after the composer
     // in the page, so a plain Tab would leave the Tutor panel).
     await key('Enter');
     check(!(await page.eval(`window.__q('.menu').hidden`)), 'Enter opens');
     await key('ArrowDown');
     await key('Tab');
     check(await page.eval(`window.__q('.menu').hidden`), 'Tab closes');
-    check(await page.eval(`window.__root().activeElement === window.__q('button.gear')`), `Tab goes on to the gear: ${await focused()}`);
+    check(await page.eval(`window.__root().activeElement === (window.__q('button.practice-open:not([hidden])') || window.__q('button.gear'))`), `Tab goes on to the next header button: ${await focused()}`);
     check((await page.eval(`window.__q('button.model').textContent`)) === 'gpt-oss:20b', 'nothing was chosen');
     // Shift+Tab closes and stays on the button.
     await page.eval(`window.__q('button.model').focus()`);
