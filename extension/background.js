@@ -141,7 +141,7 @@ const solved = createSolvedService({
   extensionOrigin: new URL(api.runtime.getURL("")).origin,
   log: (text) => console.warn(`[leetcode-capture] ${text}`),
 });
-const SOLVED_MESSAGES = new Set(["lc-tutor:accepted", "lc-tutor:solved-set", "lc-tutor:star-set"]);
+const SOLVED_MESSAGES = new Set(["lc-tutor:accepted", "lc-tutor:solved-set", "lc-tutor:star-set", "lc-tutor:set-list"]);
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== api.runtime.id) return undefined;

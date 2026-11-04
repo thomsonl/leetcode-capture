@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NEETCODE_150, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
+import fs from 'node:fs';
+import { NEETCODE_150, BLIND_75, GRIND_75, TOP_INTERVIEW_150, SQL_50, LISTS, ROADMAPS, DEFAULT_LIST_ID, listById, problemInList, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
+import { CATALOG, catalogEntry } from './shared/catalog.js';
+import { listSlugs, OUT } from './scripts/list-slugs.mjs';
 
 const R = NEETCODE_150;
 const all = R.topics.flatMap((t) => t.problems);
@@ -63,4 +66,124 @@ test('suggestAfterSolve counts the problem just solved', () => {
   assert.equal(s.sameTopic.topic.id, 'arrays-hashing');
   assert.ok(!s.sameTopic.problems.some((p) => p.slug === 'contains-duplicate'));
   assert.equal(problemUrl('two-sum'), 'https://leetcode.com/problems/two-sum/');
+});
+
+// ---- every list ------------------------------------------------------------
+
+const SIZES = { 'neetcode-150': [150, 18], 'blind-75': [75, 10], 'grind-75': [75, 8], 'top-interview-150': [150, 23], 'sql-50': [50, 7] };
+
+test('the lists, in the selector order, with their sizes and group counts', () => {
+  assert.deepEqual(LISTS.map((l) => l.id), ['neetcode-150', 'blind-75', 'grind-75', 'top-interview-150', 'sql-50']);
+  assert.equal(DEFAULT_LIST_ID, 'neetcode-150');
+  for (const list of LISTS) {
+    const [size, groups] = SIZES[list.id];
+    const slugs = list.topics.flatMap((t) => t.problems.map((p) => p.slug));
+    assert.equal(list.size, size, list.id);
+    assert.equal(slugs.length, size, list.id);
+    assert.equal(new Set(slugs).size, size, `${list.id} has a problem twice`);
+    assert.equal(list.topics.length, groups, list.id);
+    assert.equal(new Set(list.topics.map((t) => t.id)).size, groups, `${list.id} group ids`);
+    assert.ok(list.title && list.description && list.groupNoun, list.id);
+    assert.ok(!/[\u2013\u2014]/.test(list.description), `${list.id}: no en or em dash`);
+    for (const t of list.topics) {
+      assert.ok(t.problems.length > 0, `${list.id}/${t.id} is empty`);
+      for (const p of t.problems) {
+        assert.match(p.slug, /^[a-z0-9]+(-[a-z0-9]+)*$/);
+        assert.equal(p.topic, t.id);
+      }
+    }
+    assert.equal(list.kind, list.id === 'neetcode-150' ? 'graph' : 'groups', list.id);
+  }
+});
+
+test('the publishers\' groups, as they name them', () => {
+  assert.deepEqual(BLIND_75.topics.map((t) => t.title), ['Array', 'Binary', 'Dynamic Programming', 'Graph', 'Interval', 'Linked List', 'Matrix', 'String', 'Tree', 'Heap']);
+  assert.deepEqual(GRIND_75.topics.map((t) => t.title), ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6', 'Week 7', 'Week 8']);
+  assert.deepEqual(TOP_INTERVIEW_150.topics.map((t) => t.title), ['Array / String', 'Two Pointers', 'Sliding Window', 'Matrix', 'Hashmap', 'Intervals', 'Stack', 'Linked List', 'Binary Tree General', 'Binary Tree BFS', 'Binary Search Tree', 'Graph General', 'Graph BFS', 'Trie', 'Backtracking', 'Divide & Conquer', "Kadane's Algorithm", 'Binary Search', 'Heap', 'Bit Manipulation', 'Math', '1D DP', 'Multidimensional DP']);
+  assert.deepEqual(SQL_50.topics.map((t) => t.title), ['Select', 'Basic Joins', 'Basic Aggregate Functions', 'Sorting and Grouping', 'Advanced Select and Joins', 'Subqueries', 'Advanced String Functions / Regex / Clause']);
+  assert.equal(GRIND_75.topics[0].problems[0].slug, 'two-sum');
+  assert.equal(TOP_INTERVIEW_150.topics[0].problems[0].slug, 'merge-sorted-array');
+  assert.equal(SQL_50.topics[0].problems[0].slug, 'recyclable-and-low-fat-products');
+});
+
+test('only NeetCode 150 has prerequisite lines, and they join its own topics', () => {
+  for (const list of LISTS) {
+    const ids = new Set(list.topics.map((t) => t.id));
+    if (list.id !== 'neetcode-150') assert.deepEqual(list.edges, [], list.id);
+    for (const [a, b] of list.edges) assert.ok(ids.has(a) && ids.has(b), `${list.id}: ${a} -> ${b}`);
+  }
+});
+
+test('one catalog: every listed slug is in it, every entry is used, and lists share its title and difficulty', () => {
+  const used = new Set();
+  for (const list of LISTS) {
+    for (const p of list.topics.flatMap((t) => t.problems)) {
+      const entry = catalogEntry(p.slug);
+      assert.ok(entry, `${list.id}: ${p.slug} has no catalog entry`);
+      assert.equal(p.title, entry.title);
+      assert.equal(p.difficulty, entry.difficulty);
+      used.add(p.slug);
+    }
+  }
+  for (const [slug, e] of CATALOG) {
+    assert.ok(used.has(slug), `${slug} is in the catalog but on no list`);
+    assert.match(slug, /^[a-z0-9]+(-[a-z0-9]+)*$/);
+    assert.ok(['Easy', 'Medium', 'Hard'].includes(e.difficulty), slug);
+    assert.ok(e.title && e.title === e.title.trim() && !/[\u2013\u2014]/.test(e.title), slug);
+  }
+  assert.equal(catalogEntry('not-a-problem'), null);
+});
+
+test('the shared problems: Blind 75 sits almost wholly inside NeetCode 150, and a solve counts in every list', () => {
+  const nc = new Set(NEETCODE_150.topics.flatMap((t) => t.problems.map((p) => p.slug)));
+  const outside = BLIND_75.topics.flatMap((t) => t.problems).filter((p) => !nc.has(p.slug)).map((p) => p.slug);
+  assert.deepEqual(outside, ['combination-sum-iv']);
+  for (const list of LISTS.filter((l) => l.id !== 'sql-50')) assert.equal(progress(list, ['two-sum', 'climbing-stairs']).solved, 2, list.id);
+  assert.equal(progress(SQL_50, ['two-sum', 'big-countries']).solved, 1);
+  // The five titles LeetCode spells differently from NeetCode's site.
+  assert.equal(catalogEntry('merge-k-sorted-lists').title, 'Merge k Sorted Lists');
+  assert.equal(catalogEntry('copy-list-with-random-pointer').title, 'Copy List with Random Pointer');
+  assert.equal(catalogEntry('find-median-from-data-stream').title, 'Find Median from Data Stream');
+});
+
+test('a list without lines unlocks every group and moves on group by group in its order', () => {
+  for (const list of [BLIND_75, GRIND_75, TOP_INTERVIEW_150, SQL_50]) {
+    assert.equal(unlockedTopics(list, []).size, list.topics.length, list.id);
+    const first = list.topics[0].problems;
+    assert.deepEqual(nextOnRoadmap(list, [], { count: 1 }).map((p) => p.slug), [first[0].slug], list.id);
+    // Finishing the first group but its last problem keeps it next.
+    const almost = first.slice(0, -1).map((p) => p.slug);
+    assert.equal(nextOnRoadmap(list, almost)[0].slug, first.at(-1).slug, list.id);
+    // Finishing it moves to the second group, even with later ones started.
+    const done = [...first.map((p) => p.slug), list.topics[2].problems[0].slug];
+    assert.equal(nextOnRoadmap(list, done)[0].topic, list.topics[1].id, list.id);
+    const all = list.topics.flatMap((t) => t.problems.map((p) => p.slug));
+    assert.deepEqual(nextOnRoadmap(list, all), [], list.id);
+    assert.equal(progress(list, all).solved, list.size);
+  }
+});
+
+test('per list progress, more of a group and the suggestion after a solve', () => {
+  const g = progress(GRIND_75, ['two-sum', 'first-bad-version', 'big-countries']);
+  assert.equal(g.solved, 2);
+  assert.deepEqual(g.topics.slice(0, 2).map((t) => [t.id, t.solved, t.total]), [['week-1', 1, 13], ['week-2', 1, 12]]);
+  const more = moreOfTopic(SQL_50, [], 'big-countries', { count: 2 });
+  assert.equal(more.topic.title, 'Select');
+  assert.ok(more.problems.every((p) => p.slug !== 'big-countries' && p.difficulty === 'Easy'));
+  const s = suggestAfterSolve(BLIND_75, [], 'two-sum');
+  assert.deepEqual(s.roadmap, { id: 'blind-75', title: 'Blind 75' });
+  assert.equal(s.agenda[0].slug, 'best-time-to-buy-and-sell-stock');
+  assert.equal(problemInList(SQL_50, 'two-sum'), null);
+  assert.equal(problemInList(GRIND_75, 'two-sum').topic, 'week-1');
+});
+
+test('an unknown or damaged list id means NeetCode 150', () => {
+  assert.equal(listById('grind-75'), GRIND_75);
+  for (const bad of [undefined, null, '', 'nope', 'toString', '__proto__', 7, {}]) assert.equal(listById(bad), NEETCODE_150, String(bad));
+  assert.equal(ROADMAPS['blind-75'], BLIND_75);
+  assert.deepEqual(NEETCODE_150.aliases, ['Blind 150']);
+});
+
+test('extension/e2e/list-slugs.json matches the catalog (regenerate with node extension/scripts/list-slugs.mjs)', () => {
+  assert.deepEqual(JSON.parse(fs.readFileSync(OUT, 'utf8')), listSlugs());
 });

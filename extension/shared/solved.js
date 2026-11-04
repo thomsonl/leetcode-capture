@@ -7,6 +7,9 @@
 //     count  how many accepted submissions were seen for it (0 when it was
 //            only marked by hand on the Progress tab)
 //   starredProblems: { [slug]: true }  the Progress tab's stars
+//   activeProgressList: list id      the list the student works on (see
+//     shared/roadmap.js LISTS); missing or unknown means NeetCode 150.
+//     Changing it never touches the solved problems.
 //
 // Messages the background worker answers through createSolvedService:
 //   from a content script on leetcode.com/problems/<slug>/...:
@@ -16,13 +19,23 @@
 //   from the extension's own pages (the Progress tab):
 //     { type: 'lc-tutor:solved-set', slug, solved }  mark or unmark by hand
 //     { type: 'lc-tutor:star-set', slug, starred }
+//   from either (the Progress tab's list selector, the card's list menu):
+//     { type: 'lc-tutor:set-list', list }  work on another list. From a
+//       problem page the answer carries that page's card again, built for
+//       the new list: { ok, card }.
 //
 // Pure JavaScript with no Node API (extension/shared.test.js checks that).
 
-import { NEETCODE_150, suggestAfterSolve } from './roadmap.js';
+import { catalogEntry } from './catalog.js';
+import { LISTS, NEETCODE_150, ROADMAPS, listById, problemInList, suggestAfterSolve } from './roadmap.js';
 
 export const SOLVED_KEY = 'solvedProblems';
 export const STARRED_KEY = 'starredProblems';
+export const ACTIVE_LIST_KEY = 'activeProgressList';
+
+export function isListId(value) {
+  return typeof value === 'string' && Object.hasOwn(ROADMAPS, value);
+}
 
 // LeetCode's own slugs: lowercase letters and digits joined by single
 // hyphens ("two-sum", "3sum", "powx-n").
@@ -97,27 +110,28 @@ function brief(problem) {
 }
 
 // What the Tutor panel's "nice job" card shows after `slug` was accepted,
-// built only from the roadmap and the solved list:
-//   { roadmap, solvedTitle, next, more: { topic, problem } | null, finished }
-// `solvedTitle` is null for a problem that is not on the roadmap (the panel
-// then uses the page's own title), and `more` is null then too, or when the
-// topic has nothing left that `next` does not already suggest.
+// built only from the active list, the catalog and the solved list:
+//   { roadmap, lists, solvedTitle, next,
+//     more: { topic, label, problem } | null, finished }
+// `lists` is every list the card's menu offers ({ id, title, size }).
+// `solvedTitle` is the catalog's title, or null for a problem no bundled
+// list has (the panel then uses the page's own title). `more` is null for a
+// problem the active list does not have (then the card is the agenda only),
+// or when its topic has nothing left that `next` does not already suggest.
 export function congratulation(solved, slug, roadmap = NEETCODE_150) {
   const done = solvedSlugs(solved);
   const suggestion = suggestAfterSolve(roadmap, done, slug, { count: 2 });
   const next = suggestion.agenda[0] || null;
   const sameTopic = suggestion.sameTopic;
   const other = sameTopic.problems.find((p) => !next || p.slug !== next.slug) || null;
-  let solvedTitle = null;
-  for (const topic of roadmap.topics) {
-    const hit = topic.problems.find((p) => p.slug === slug);
-    if (hit) solvedTitle = hit.title;
-  }
+  const entry = problemInList(roadmap, slug) || catalogEntry(slug);
+  const label = sameTopic.topic && (roadmap.groupNoun === 'week' ? `More from ${sameTopic.topic.title}` : `More ${sameTopic.topic.title} problems`);
   return {
     roadmap: suggestion.roadmap,
-    solvedTitle,
+    lists: LISTS.map((list) => ({ id: list.id, title: list.title, size: list.size })),
+    solvedTitle: entry ? entry.title : null,
     next: brief(next),
-    more: sameTopic.topic && other ? { topic: sameTopic.topic, problem: brief(other) } : null,
+    more: sameTopic.topic && other ? { topic: sameTopic.topic, label, problem: brief(other) } : null,
     finished: !next,
   };
 }
@@ -129,8 +143,8 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
   let chain = Promise.resolve();
   function update(fn) {
     const run = chain.then(async () => {
-      const stored = (await storage.get([SOLVED_KEY, STARRED_KEY])) || {};
-      return fn(normalizeSolved(stored[SOLVED_KEY]), normalizeStarred(stored[STARRED_KEY]));
+      const stored = (await storage.get([SOLVED_KEY, STARRED_KEY, ACTIVE_LIST_KEY])) || {};
+      return fn(normalizeSolved(stored[SOLVED_KEY]), normalizeStarred(stored[STARRED_KEY]), listById(stored[ACTIVE_LIST_KEY]));
     });
     chain = run.catch(() => {});
     return run;
@@ -153,10 +167,21 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
     if (seen.includes(key)) return { ok: true, recorded: false, card: null };
     seen.push(key);
     if (seen.length > MAX_SEEN) seen.shift();
-    return update(async (solved) => {
+    return update(async (solved, _starred, list) => {
       const next = recordAccepted(solved, slug, now());
       await storage.set({ [SOLVED_KEY]: next });
-      return { ok: true, recorded: true, card: congratulation(next, slug) };
+      return { ok: true, recorded: true, card: congratulation(next, slug, list) };
+    });
+  }
+
+  // Only the list choice is written; the solved problems stay as they are.
+  async function setList(message, sender) {
+    const page = isExtensionPage(sender);
+    const slug = page ? null : slugFromUrl(sender && sender.url);
+    if (!isListId(message.list) || (!page && !(slug && sender.tab))) return { ok: false };
+    return update(async (solved) => {
+      await storage.set({ [ACTIVE_LIST_KEY]: message.list });
+      return slug ? { ok: true, card: congratulation(solved, slug, listById(message.list)) } : { ok: true };
     });
   }
 
@@ -186,6 +211,7 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
       if (!message || typeof message !== 'object') return undefined;
       try {
         if (message.type === 'lc-tutor:accepted') return await accepted(message, sender);
+        if (message.type === 'lc-tutor:set-list') return await setList(message, sender);
         if (message.type === 'lc-tutor:solved-set' || message.type === 'lc-tutor:star-set') {
           if (!isExtensionPage(sender)) return { ok: false };
           return message.type === 'lc-tutor:solved-set' ? await setSolved(message) : await setStarred(message);

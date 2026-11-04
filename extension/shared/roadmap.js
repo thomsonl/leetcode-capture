@@ -1,221 +1,40 @@
-// The NeetCode 150 roadmap as data, plus the pure logic the progress tab and
-// the next-problem suggestions share. No Node or browser APIs, so the options
+// The problem lists the Progress tab and the next-problem suggestions follow,
+// plus the pure logic they share. No Node or browser APIs, so the options
 // page, the background worker and the companion can all import it.
 //
-// A problem is { slug, title, difficulty: "Easy"|"Medium"|"Hard", topic }.
+// A list is { id, title, short, aliases, description, kind, topics, edges }:
+//   topics  its groups in the publisher's order, each { id, title, problems }
+//           where a problem is { slug, title, difficulty, topic } (title and
+//           difficulty come from the one shared catalog, shared/catalog.js)
+//   edges   prerequisite lines [from, to] between topics; only NeetCode 150
+//           has them (kind 'graph'), every other list is drawn as ordered
+//           groups (kind 'groups') and its next group is simply the first one
+//           not finished
 // The slug is LeetCode's own (leetcode.com/problems/<slug>/), which is also
-// what the extension already reads from the page address.
+// what the extension reads from the page address, so a problem solved once
+// counts in every list.
 
-const DIFFICULTY = { E: 'Easy', M: 'Medium', H: 'Hard' };
+import { CATALOG } from './catalog.js';
 
-// One line per problem: slug | title | E, M or H. Order is NeetCode's order.
-const SOURCE = {
-  'arrays-hashing': [
-    'Arrays & Hashing',
-    `contains-duplicate|Contains Duplicate|E
-valid-anagram|Valid Anagram|E
-two-sum|Two Sum|E
-group-anagrams|Group Anagrams|M
-top-k-frequent-elements|Top K Frequent Elements|M
-encode-and-decode-strings|Encode and Decode Strings|M
-product-of-array-except-self|Product of Array Except Self|M
-valid-sudoku|Valid Sudoku|M
-longest-consecutive-sequence|Longest Consecutive Sequence|M`,
-  ],
-  'two-pointers': [
-    'Two Pointers',
-    `valid-palindrome|Valid Palindrome|E
-two-sum-ii-input-array-is-sorted|Two Sum II - Input Array Is Sorted|M
-3sum|3Sum|M
-container-with-most-water|Container With Most Water|M
-trapping-rain-water|Trapping Rain Water|H`,
-  ],
-  'sliding-window': [
-    'Sliding Window',
-    `best-time-to-buy-and-sell-stock|Best Time to Buy and Sell Stock|E
-longest-substring-without-repeating-characters|Longest Substring Without Repeating Characters|M
-longest-repeating-character-replacement|Longest Repeating Character Replacement|M
-permutation-in-string|Permutation in String|M
-minimum-window-substring|Minimum Window Substring|H
-sliding-window-maximum|Sliding Window Maximum|H`,
-  ],
-  stack: [
-    'Stack',
-    `valid-parentheses|Valid Parentheses|E
-min-stack|Min Stack|M
-evaluate-reverse-polish-notation|Evaluate Reverse Polish Notation|M
-generate-parentheses|Generate Parentheses|M
-daily-temperatures|Daily Temperatures|M
-car-fleet|Car Fleet|M
-largest-rectangle-in-histogram|Largest Rectangle in Histogram|H`,
-  ],
-  'binary-search': [
-    'Binary Search',
-    `binary-search|Binary Search|E
-search-a-2d-matrix|Search a 2D Matrix|M
-koko-eating-bananas|Koko Eating Bananas|M
-find-minimum-in-rotated-sorted-array|Find Minimum in Rotated Sorted Array|M
-search-in-rotated-sorted-array|Search in Rotated Sorted Array|M
-time-based-key-value-store|Time Based Key-Value Store|M
-median-of-two-sorted-arrays|Median of Two Sorted Arrays|H`,
-  ],
-  'linked-list': [
-    'Linked List',
-    `reverse-linked-list|Reverse Linked List|E
-merge-two-sorted-lists|Merge Two Sorted Lists|E
-linked-list-cycle|Linked List Cycle|E
-reorder-list|Reorder List|M
-remove-nth-node-from-end-of-list|Remove Nth Node From End of List|M
-copy-list-with-random-pointer|Copy List With Random Pointer|M
-add-two-numbers|Add Two Numbers|M
-find-the-duplicate-number|Find the Duplicate Number|M
-lru-cache|LRU Cache|M
-merge-k-sorted-lists|Merge K Sorted Lists|H
-reverse-nodes-in-k-group|Reverse Nodes in k-Group|H`,
-  ],
-  trees: [
-    'Trees',
-    `invert-binary-tree|Invert Binary Tree|E
-maximum-depth-of-binary-tree|Maximum Depth of Binary Tree|E
-diameter-of-binary-tree|Diameter of Binary Tree|E
-balanced-binary-tree|Balanced Binary Tree|E
-same-tree|Same Tree|E
-subtree-of-another-tree|Subtree of Another Tree|E
-lowest-common-ancestor-of-a-binary-search-tree|Lowest Common Ancestor of a Binary Search Tree|M
-binary-tree-level-order-traversal|Binary Tree Level Order Traversal|M
-binary-tree-right-side-view|Binary Tree Right Side View|M
-count-good-nodes-in-binary-tree|Count Good Nodes in Binary Tree|M
-validate-binary-search-tree|Validate Binary Search Tree|M
-kth-smallest-element-in-a-bst|Kth Smallest Element in a BST|M
-construct-binary-tree-from-preorder-and-inorder-traversal|Construct Binary Tree From Preorder and Inorder Traversal|M
-binary-tree-maximum-path-sum|Binary Tree Maximum Path Sum|H
-serialize-and-deserialize-binary-tree|Serialize and Deserialize Binary Tree|H`,
-  ],
-  heap: [
-    'Heap / Priority Queue',
-    `kth-largest-element-in-a-stream|Kth Largest Element in a Stream|E
-last-stone-weight|Last Stone Weight|E
-k-closest-points-to-origin|K Closest Points to Origin|M
-kth-largest-element-in-an-array|Kth Largest Element in an Array|M
-task-scheduler|Task Scheduler|M
-design-twitter|Design Twitter|M
-find-median-from-data-stream|Find Median From Data Stream|H`,
-  ],
-  backtracking: [
-    'Backtracking',
-    `subsets|Subsets|M
-combination-sum|Combination Sum|M
-permutations|Permutations|M
-subsets-ii|Subsets II|M
-combination-sum-ii|Combination Sum II|M
-word-search|Word Search|M
-palindrome-partitioning|Palindrome Partitioning|M
-letter-combinations-of-a-phone-number|Letter Combinations of a Phone Number|M
-n-queens|N-Queens|H`,
-  ],
-  tries: [
-    'Tries',
-    `implement-trie-prefix-tree|Implement Trie (Prefix Tree)|M
-design-add-and-search-words-data-structure|Design Add and Search Words Data Structure|M
-word-search-ii|Word Search II|H`,
-  ],
-  graphs: [
-    'Graphs',
-    `number-of-islands|Number of Islands|M
-max-area-of-island|Max Area of Island|M
-clone-graph|Clone Graph|M
-walls-and-gates|Walls and Gates|M
-rotting-oranges|Rotting Oranges|M
-pacific-atlantic-water-flow|Pacific Atlantic Water Flow|M
-surrounded-regions|Surrounded Regions|M
-course-schedule|Course Schedule|M
-course-schedule-ii|Course Schedule II|M
-graph-valid-tree|Graph Valid Tree|M
-number-of-connected-components-in-an-undirected-graph|Number of Connected Components in an Undirected Graph|M
-redundant-connection|Redundant Connection|M
-word-ladder|Word Ladder|H`,
-  ],
-  'advanced-graphs': [
-    'Advanced Graphs',
-    `reconstruct-itinerary|Reconstruct Itinerary|H
-min-cost-to-connect-all-points|Min Cost to Connect All Points|M
-network-delay-time|Network Delay Time|M
-swim-in-rising-water|Swim in Rising Water|H
-alien-dictionary|Alien Dictionary|H
-cheapest-flights-within-k-stops|Cheapest Flights Within K Stops|M`,
-  ],
-  'dp-1d': [
-    '1-D Dynamic Programming',
-    `climbing-stairs|Climbing Stairs|E
-min-cost-climbing-stairs|Min Cost Climbing Stairs|E
-house-robber|House Robber|M
-house-robber-ii|House Robber II|M
-longest-palindromic-substring|Longest Palindromic Substring|M
-palindromic-substrings|Palindromic Substrings|M
-decode-ways|Decode Ways|M
-coin-change|Coin Change|M
-maximum-product-subarray|Maximum Product Subarray|M
-word-break|Word Break|M
-longest-increasing-subsequence|Longest Increasing Subsequence|M
-partition-equal-subset-sum|Partition Equal Subset Sum|M`,
-  ],
-  'dp-2d': [
-    '2-D Dynamic Programming',
-    `unique-paths|Unique Paths|M
-longest-common-subsequence|Longest Common Subsequence|M
-best-time-to-buy-and-sell-stock-with-cooldown|Best Time to Buy and Sell Stock With Cooldown|M
-coin-change-ii|Coin Change II|M
-target-sum|Target Sum|M
-interleaving-string|Interleaving String|M
-longest-increasing-path-in-a-matrix|Longest Increasing Path in a Matrix|H
-distinct-subsequences|Distinct Subsequences|H
-edit-distance|Edit Distance|M
-burst-balloons|Burst Balloons|H
-regular-expression-matching|Regular Expression Matching|H`,
-  ],
-  greedy: [
-    'Greedy',
-    `maximum-subarray|Maximum Subarray|M
-jump-game|Jump Game|M
-jump-game-ii|Jump Game II|M
-gas-station|Gas Station|M
-hand-of-straights|Hand of Straights|M
-merge-triplets-to-form-target-triplet|Merge Triplets to Form Target Triplet|M
-partition-labels|Partition Labels|M
-valid-parenthesis-string|Valid Parenthesis String|M`,
-  ],
-  intervals: [
-    'Intervals',
-    `insert-interval|Insert Interval|M
-merge-intervals|Merge Intervals|M
-non-overlapping-intervals|Non-overlapping Intervals|M
-meeting-rooms|Meeting Rooms|E
-meeting-rooms-ii|Meeting Rooms II|M
-minimum-interval-to-include-each-query|Minimum Interval to Include Each Query|H`,
-  ],
-  'bit-manipulation': [
-    'Bit Manipulation',
-    `single-number|Single Number|E
-number-of-1-bits|Number of 1 Bits|E
-counting-bits|Counting Bits|E
-reverse-bits|Reverse Bits|E
-missing-number|Missing Number|E
-sum-of-two-integers|Sum of Two Integers|M
-reverse-integer|Reverse Integer|M`,
-  ],
-  'math-geometry': [
-    'Math & Geometry',
-    `rotate-image|Rotate Image|M
-spiral-matrix|Spiral Matrix|M
-set-matrix-zeroes|Set Matrix Zeroes|M
-happy-number|Happy Number|E
-plus-one|Plus One|E
-powx-n|Pow(x, n)|M
-multiply-strings|Multiply Strings|M
-detect-squares|Detect Squares|M`,
-  ],
-};
+// Each group: [id, title, slugs], the slugs one per line in the list's order.
+function defineList({ id, title, short, aliases = [], description, groupNoun, groups, edges = [] }) {
+  const topics = groups.map(([topicId, topicTitle, slugs]) => ({
+    id: topicId,
+    title: topicTitle,
+    problems: slugs
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((slug) => {
+        const entry = CATALOG.get(slug);
+        if (!entry) throw new Error(`${id}: ${slug} is not in the catalog`);
+        return { slug, title: entry.title, difficulty: entry.difficulty, topic: topicId };
+      }),
+  }));
+  const size = topics.reduce((n, t) => n + t.problems.length, 0);
+  return { id, title, short: short || title, aliases, description, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges };
+}
 
+// NeetCode 150, in NeetCode's order, with its roadmap's prerequisite lines.
 // The roadmap's own prerequisite lines: [from, to].
 const EDGES = [
   ['arrays-hashing', 'two-pointers'],
@@ -241,21 +60,636 @@ const EDGES = [
   ['bit-manipulation', 'math-geometry'],
 ];
 
-export const NEETCODE_150 = {
+export const NEETCODE_150 = defineList({
   id: 'neetcode-150',
   title: 'NeetCode 150',
-  topics: Object.entries(SOURCE).map(([id, [title, lines]]) => ({
-    id,
-    title,
-    problems: lines.split('\n').map((line) => {
-      const [slug, name, d] = line.split('|');
-      return { slug, title: name, difficulty: DIFFICULTY[d], topic: id };
-    }),
-  })),
+  aliases: ['Blind 150'],
+  description: 'The expanded Blind 75, also called Blind 150: 150 problems by topic, on a roadmap of prerequisites.',
+  groupNoun: 'topic',
   edges: EDGES,
-};
+  groups: [
+  ['arrays-hashing', 'Arrays & Hashing', `
+    contains-duplicate
+    valid-anagram
+    two-sum
+    group-anagrams
+    top-k-frequent-elements
+    encode-and-decode-strings
+    product-of-array-except-self
+    valid-sudoku
+    longest-consecutive-sequence`],
+  ['two-pointers', 'Two Pointers', `
+    valid-palindrome
+    two-sum-ii-input-array-is-sorted
+    3sum
+    container-with-most-water
+    trapping-rain-water`],
+  ['sliding-window', 'Sliding Window', `
+    best-time-to-buy-and-sell-stock
+    longest-substring-without-repeating-characters
+    longest-repeating-character-replacement
+    permutation-in-string
+    minimum-window-substring
+    sliding-window-maximum`],
+  ['stack', 'Stack', `
+    valid-parentheses
+    min-stack
+    evaluate-reverse-polish-notation
+    generate-parentheses
+    daily-temperatures
+    car-fleet
+    largest-rectangle-in-histogram`],
+  ['binary-search', 'Binary Search', `
+    binary-search
+    search-a-2d-matrix
+    koko-eating-bananas
+    find-minimum-in-rotated-sorted-array
+    search-in-rotated-sorted-array
+    time-based-key-value-store
+    median-of-two-sorted-arrays`],
+  ['linked-list', 'Linked List', `
+    reverse-linked-list
+    merge-two-sorted-lists
+    linked-list-cycle
+    reorder-list
+    remove-nth-node-from-end-of-list
+    copy-list-with-random-pointer
+    add-two-numbers
+    find-the-duplicate-number
+    lru-cache
+    merge-k-sorted-lists
+    reverse-nodes-in-k-group`],
+  ['trees', 'Trees', `
+    invert-binary-tree
+    maximum-depth-of-binary-tree
+    diameter-of-binary-tree
+    balanced-binary-tree
+    same-tree
+    subtree-of-another-tree
+    lowest-common-ancestor-of-a-binary-search-tree
+    binary-tree-level-order-traversal
+    binary-tree-right-side-view
+    count-good-nodes-in-binary-tree
+    validate-binary-search-tree
+    kth-smallest-element-in-a-bst
+    construct-binary-tree-from-preorder-and-inorder-traversal
+    binary-tree-maximum-path-sum
+    serialize-and-deserialize-binary-tree`],
+  ['heap', 'Heap / Priority Queue', `
+    kth-largest-element-in-a-stream
+    last-stone-weight
+    k-closest-points-to-origin
+    kth-largest-element-in-an-array
+    task-scheduler
+    design-twitter
+    find-median-from-data-stream`],
+  ['backtracking', 'Backtracking', `
+    subsets
+    combination-sum
+    permutations
+    subsets-ii
+    combination-sum-ii
+    word-search
+    palindrome-partitioning
+    letter-combinations-of-a-phone-number
+    n-queens`],
+  ['tries', 'Tries', `
+    implement-trie-prefix-tree
+    design-add-and-search-words-data-structure
+    word-search-ii`],
+  ['graphs', 'Graphs', `
+    number-of-islands
+    max-area-of-island
+    clone-graph
+    walls-and-gates
+    rotting-oranges
+    pacific-atlantic-water-flow
+    surrounded-regions
+    course-schedule
+    course-schedule-ii
+    graph-valid-tree
+    number-of-connected-components-in-an-undirected-graph
+    redundant-connection
+    word-ladder`],
+  ['advanced-graphs', 'Advanced Graphs', `
+    reconstruct-itinerary
+    min-cost-to-connect-all-points
+    network-delay-time
+    swim-in-rising-water
+    alien-dictionary
+    cheapest-flights-within-k-stops`],
+  ['dp-1d', '1-D Dynamic Programming', `
+    climbing-stairs
+    min-cost-climbing-stairs
+    house-robber
+    house-robber-ii
+    longest-palindromic-substring
+    palindromic-substrings
+    decode-ways
+    coin-change
+    maximum-product-subarray
+    word-break
+    longest-increasing-subsequence
+    partition-equal-subset-sum`],
+  ['dp-2d', '2-D Dynamic Programming', `
+    unique-paths
+    longest-common-subsequence
+    best-time-to-buy-and-sell-stock-with-cooldown
+    coin-change-ii
+    target-sum
+    interleaving-string
+    longest-increasing-path-in-a-matrix
+    distinct-subsequences
+    edit-distance
+    burst-balloons
+    regular-expression-matching`],
+  ['greedy', 'Greedy', `
+    maximum-subarray
+    jump-game
+    jump-game-ii
+    gas-station
+    hand-of-straights
+    merge-triplets-to-form-target-triplet
+    partition-labels
+    valid-parenthesis-string`],
+  ['intervals', 'Intervals', `
+    insert-interval
+    merge-intervals
+    non-overlapping-intervals
+    meeting-rooms
+    meeting-rooms-ii
+    minimum-interval-to-include-each-query`],
+  ['bit-manipulation', 'Bit Manipulation', `
+    single-number
+    number-of-1-bits
+    counting-bits
+    reverse-bits
+    missing-number
+    sum-of-two-integers
+    reverse-integer`],
+  ['math-geometry', 'Math & Geometry', `
+    rotate-image
+    spiral-matrix
+    set-matrix-zeroes
+    happy-number
+    plus-one
+    powx-n
+    multiply-strings
+    detect-squares`],
+  ],
+});
 
-export const ROADMAPS = { [NEETCODE_150.id]: NEETCODE_150 };
+// The original Blind 75 (the 2018 Blind post), in its usual categories.
+// Merge k Sorted Lists is listed under both Linked List and Heap there; it is
+// kept once, under Linked List, so the list has 75 distinct problems.
+export const BLIND_75 = defineList({
+  id: 'blind-75',
+  title: 'Blind 75',
+  description: 'The original 75 problems from Blind, by category. NeetCode 150 extends it.',
+  groupNoun: 'category',
+  groups: [
+  ['array', 'Array', `
+    two-sum
+    best-time-to-buy-and-sell-stock
+    contains-duplicate
+    product-of-array-except-self
+    maximum-subarray
+    maximum-product-subarray
+    find-minimum-in-rotated-sorted-array
+    search-in-rotated-sorted-array
+    3sum
+    container-with-most-water`],
+  ['binary', 'Binary', `
+    sum-of-two-integers
+    number-of-1-bits
+    counting-bits
+    missing-number
+    reverse-bits`],
+  ['dynamic-programming', 'Dynamic Programming', `
+    climbing-stairs
+    coin-change
+    longest-increasing-subsequence
+    longest-common-subsequence
+    word-break
+    combination-sum-iv
+    house-robber
+    house-robber-ii
+    decode-ways
+    unique-paths
+    jump-game`],
+  ['graph', 'Graph', `
+    clone-graph
+    course-schedule
+    pacific-atlantic-water-flow
+    number-of-islands
+    longest-consecutive-sequence
+    alien-dictionary
+    graph-valid-tree
+    number-of-connected-components-in-an-undirected-graph`],
+  ['interval', 'Interval', `
+    insert-interval
+    merge-intervals
+    non-overlapping-intervals
+    meeting-rooms
+    meeting-rooms-ii`],
+  ['linked-list', 'Linked List', `
+    reverse-linked-list
+    linked-list-cycle
+    merge-two-sorted-lists
+    merge-k-sorted-lists
+    remove-nth-node-from-end-of-list
+    reorder-list`],
+  ['matrix', 'Matrix', `
+    set-matrix-zeroes
+    spiral-matrix
+    rotate-image
+    word-search`],
+  ['string', 'String', `
+    longest-substring-without-repeating-characters
+    longest-repeating-character-replacement
+    minimum-window-substring
+    valid-anagram
+    group-anagrams
+    valid-parentheses
+    valid-palindrome
+    longest-palindromic-substring
+    palindromic-substrings
+    encode-and-decode-strings`],
+  ['tree', 'Tree', `
+    maximum-depth-of-binary-tree
+    same-tree
+    invert-binary-tree
+    binary-tree-maximum-path-sum
+    binary-tree-level-order-traversal
+    serialize-and-deserialize-binary-tree
+    subtree-of-another-tree
+    construct-binary-tree-from-preorder-and-inorder-traversal
+    validate-binary-search-tree
+    kth-smallest-element-in-a-bst
+    lowest-common-ancestor-of-a-binary-search-tree
+    implement-trie-prefix-tree
+    design-add-and-search-words-data-structure
+    word-search-ii`],
+  ['heap', 'Heap', `
+    top-k-frequent-elements
+    find-median-from-data-stream`],
+  ],
+});
+
+// Grind 75 (Yangshun Tay, techinterviewhandbook.org/grind75) in its default
+// schedule: 8 weeks at 8 hours a week, in its order.
+export const GRIND_75 = defineList({
+  id: 'grind-75',
+  title: 'Grind 75',
+  description: 'Yangshun Tay\'s Grind 75, the updated Blind 75, in its default eight week schedule.',
+  groupNoun: 'week',
+  groups: [
+  ['week-1', 'Week 1', `
+    two-sum
+    valid-parentheses
+    merge-two-sorted-lists
+    best-time-to-buy-and-sell-stock
+    valid-palindrome
+    invert-binary-tree
+    valid-anagram
+    binary-search
+    flood-fill
+    lowest-common-ancestor-of-a-binary-search-tree
+    balanced-binary-tree
+    linked-list-cycle
+    implement-queue-using-stacks`],
+  ['week-2', 'Week 2', `
+    first-bad-version
+    ransom-note
+    climbing-stairs
+    longest-palindrome
+    reverse-linked-list
+    majority-element
+    add-binary
+    diameter-of-binary-tree
+    middle-of-the-linked-list
+    maximum-depth-of-binary-tree
+    contains-duplicate
+    maximum-subarray`],
+  ['week-3', 'Week 3', `
+    insert-interval
+    01-matrix
+    k-closest-points-to-origin
+    longest-substring-without-repeating-characters
+    3sum
+    binary-tree-level-order-traversal
+    clone-graph
+    evaluate-reverse-polish-notation`],
+  ['week-4', 'Week 4', `
+    course-schedule
+    implement-trie-prefix-tree
+    coin-change
+    product-of-array-except-self
+    min-stack
+    validate-binary-search-tree
+    number-of-islands
+    rotting-oranges`],
+  ['week-5', 'Week 5', `
+    search-in-rotated-sorted-array
+    combination-sum
+    permutations
+    merge-intervals
+    lowest-common-ancestor-of-a-binary-tree
+    time-based-key-value-store
+    accounts-merge
+    sort-colors`],
+  ['week-6', 'Week 6', `
+    word-break
+    partition-equal-subset-sum
+    string-to-integer-atoi
+    spiral-matrix
+    subsets
+    binary-tree-right-side-view
+    longest-palindromic-substring
+    unique-paths
+    construct-binary-tree-from-preorder-and-inorder-traversal`],
+  ['week-7', 'Week 7', `
+    container-with-most-water
+    letter-combinations-of-a-phone-number
+    word-search
+    find-all-anagrams-in-a-string
+    minimum-height-trees
+    task-scheduler
+    lru-cache
+    kth-smallest-element-in-a-bst`],
+  ['week-8', 'Week 8', `
+    minimum-window-substring
+    serialize-and-deserialize-binary-tree
+    trapping-rain-water
+    find-median-from-data-stream
+    word-ladder
+    basic-calculator
+    maximum-profit-in-job-scheduling
+    merge-k-sorted-lists
+    largest-rectangle-in-histogram`],
+  ],
+});
+
+// LeetCode's own Top Interview 150 study plan, with its sections.
+export const TOP_INTERVIEW_150 = defineList({
+  id: 'top-interview-150',
+  title: 'Top Interview 150',
+  description: 'LeetCode\'s own Top Interview 150 study plan, section by section.',
+  groupNoun: 'section',
+  groups: [
+  ['array-string', 'Array / String', `
+    merge-sorted-array
+    remove-element
+    remove-duplicates-from-sorted-array
+    remove-duplicates-from-sorted-array-ii
+    majority-element
+    rotate-array
+    best-time-to-buy-and-sell-stock
+    best-time-to-buy-and-sell-stock-ii
+    jump-game
+    jump-game-ii
+    h-index
+    insert-delete-getrandom-o1
+    product-of-array-except-self
+    gas-station
+    candy
+    trapping-rain-water
+    roman-to-integer
+    integer-to-roman
+    length-of-last-word
+    longest-common-prefix
+    reverse-words-in-a-string
+    zigzag-conversion
+    find-the-index-of-the-first-occurrence-in-a-string
+    text-justification`],
+  ['two-pointers', 'Two Pointers', `
+    valid-palindrome
+    is-subsequence
+    two-sum-ii-input-array-is-sorted
+    container-with-most-water
+    3sum`],
+  ['sliding-window', 'Sliding Window', `
+    minimum-size-subarray-sum
+    longest-substring-without-repeating-characters
+    substring-with-concatenation-of-all-words
+    minimum-window-substring`],
+  ['matrix', 'Matrix', `
+    valid-sudoku
+    spiral-matrix
+    rotate-image
+    set-matrix-zeroes
+    game-of-life`],
+  ['hashmap', 'Hashmap', `
+    ransom-note
+    isomorphic-strings
+    word-pattern
+    valid-anagram
+    group-anagrams
+    two-sum
+    happy-number
+    contains-duplicate-ii
+    longest-consecutive-sequence`],
+  ['intervals', 'Intervals', `
+    summary-ranges
+    merge-intervals
+    insert-interval
+    minimum-number-of-arrows-to-burst-balloons`],
+  ['stack', 'Stack', `
+    valid-parentheses
+    simplify-path
+    min-stack
+    evaluate-reverse-polish-notation
+    basic-calculator`],
+  ['linked-list', 'Linked List', `
+    linked-list-cycle
+    add-two-numbers
+    merge-two-sorted-lists
+    copy-list-with-random-pointer
+    reverse-linked-list-ii
+    reverse-nodes-in-k-group
+    remove-nth-node-from-end-of-list
+    remove-duplicates-from-sorted-list-ii
+    rotate-list
+    partition-list
+    lru-cache`],
+  ['binary-tree-general', 'Binary Tree General', `
+    maximum-depth-of-binary-tree
+    same-tree
+    invert-binary-tree
+    symmetric-tree
+    construct-binary-tree-from-preorder-and-inorder-traversal
+    construct-binary-tree-from-inorder-and-postorder-traversal
+    populating-next-right-pointers-in-each-node-ii
+    flatten-binary-tree-to-linked-list
+    path-sum
+    sum-root-to-leaf-numbers
+    binary-tree-maximum-path-sum
+    binary-search-tree-iterator
+    count-complete-tree-nodes
+    lowest-common-ancestor-of-a-binary-tree`],
+  ['binary-tree-bfs', 'Binary Tree BFS', `
+    binary-tree-right-side-view
+    average-of-levels-in-binary-tree
+    binary-tree-level-order-traversal
+    binary-tree-zigzag-level-order-traversal`],
+  ['binary-search-tree', 'Binary Search Tree', `
+    minimum-absolute-difference-in-bst
+    kth-smallest-element-in-a-bst
+    validate-binary-search-tree`],
+  ['graph-general', 'Graph General', `
+    number-of-islands
+    surrounded-regions
+    clone-graph
+    evaluate-division
+    course-schedule
+    course-schedule-ii`],
+  ['graph-bfs', 'Graph BFS', `
+    snakes-and-ladders
+    minimum-genetic-mutation
+    word-ladder`],
+  ['trie', 'Trie', `
+    implement-trie-prefix-tree
+    design-add-and-search-words-data-structure
+    word-search-ii`],
+  ['backtracking', 'Backtracking', `
+    letter-combinations-of-a-phone-number
+    combinations
+    permutations
+    combination-sum
+    n-queens-ii
+    generate-parentheses
+    word-search`],
+  ['divide-conquer', 'Divide & Conquer', `
+    convert-sorted-array-to-binary-search-tree
+    sort-list
+    construct-quad-tree
+    merge-k-sorted-lists`],
+  ['kadane', "Kadane's Algorithm", `
+    maximum-subarray
+    maximum-sum-circular-subarray`],
+  ['binary-search', 'Binary Search', `
+    search-insert-position
+    search-a-2d-matrix
+    find-peak-element
+    search-in-rotated-sorted-array
+    find-first-and-last-position-of-element-in-sorted-array
+    find-minimum-in-rotated-sorted-array
+    median-of-two-sorted-arrays`],
+  ['heap', 'Heap', `
+    kth-largest-element-in-an-array
+    ipo
+    find-k-pairs-with-smallest-sums
+    find-median-from-data-stream`],
+  ['bit-manipulation', 'Bit Manipulation', `
+    add-binary
+    reverse-bits
+    number-of-1-bits
+    single-number
+    single-number-ii
+    bitwise-and-of-numbers-range`],
+  ['math', 'Math', `
+    palindrome-number
+    plus-one
+    factorial-trailing-zeroes
+    sqrtx
+    powx-n
+    max-points-on-a-line`],
+  ['dp-1d', '1D DP', `
+    climbing-stairs
+    house-robber
+    word-break
+    coin-change
+    longest-increasing-subsequence`],
+  ['dp-multi', 'Multidimensional DP', `
+    triangle
+    minimum-path-sum
+    unique-paths-ii
+    longest-palindromic-substring
+    interleaving-string
+    edit-distance
+    best-time-to-buy-and-sell-stock-iii
+    best-time-to-buy-and-sell-stock-iv
+    maximal-square`],
+  ],
+});
+
+// LeetCode's own SQL 50 study plan (database problems), with its sections.
+export const SQL_50 = defineList({
+  id: 'sql-50',
+  title: 'SQL 50',
+  description: 'LeetCode\'s SQL 50 study plan: database problems, section by section.',
+  groupNoun: 'section',
+  groups: [
+  ['select', 'Select', `
+    recyclable-and-low-fat-products
+    find-customer-referee
+    big-countries
+    article-views-i
+    invalid-tweets`],
+  ['basic-joins', 'Basic Joins', `
+    replace-employee-id-with-the-unique-identifier
+    product-sales-analysis-i
+    customer-who-visited-but-did-not-make-any-transactions
+    rising-temperature
+    average-time-of-process-per-machine
+    employee-bonus
+    students-and-examinations
+    managers-with-at-least-5-direct-reports
+    confirmation-rate`],
+  ['basic-aggregate', 'Basic Aggregate Functions', `
+    not-boring-movies
+    average-selling-price
+    project-employees-i
+    percentage-of-users-attended-a-contest
+    queries-quality-and-percentage
+    monthly-transactions-i
+    immediate-food-delivery-ii
+    game-play-analysis-iv`],
+  ['sorting-grouping', 'Sorting and Grouping', `
+    number-of-unique-subjects-taught-by-each-teacher
+    user-activity-for-the-past-30-days-i
+    product-sales-analysis-iii
+    classes-more-than-5-students
+    find-followers-count
+    biggest-single-number
+    customers-who-bought-all-products`],
+  ['advanced-select-joins', 'Advanced Select and Joins', `
+    the-number-of-employees-which-report-to-each-employee
+    primary-department-for-each-employee
+    triangle-judgement
+    consecutive-numbers
+    product-price-at-a-given-date
+    last-person-to-fit-in-the-bus
+    count-salary-categories`],
+  ['subqueries', 'Subqueries', `
+    employees-whose-manager-left-the-company
+    exchange-seats
+    movie-rating
+    restaurant-growth
+    friend-requests-ii-who-has-the-most-friends
+    investments-in-2016
+    department-top-three-salaries`],
+  ['advanced-string', 'Advanced String Functions / Regex / Clause', `
+    fix-names-in-a-table
+    patients-with-a-condition
+    delete-duplicate-emails
+    second-highest-salary
+    group-sold-products-by-the-date
+    list-the-products-ordered-in-a-period
+    find-users-with-valid-e-mails`],
+  ],
+});
+
+// Every list, in the order the Progress tab offers them.
+export const LISTS = [NEETCODE_150, BLIND_75, GRIND_75, TOP_INTERVIEW_150, SQL_50];
+export const ROADMAPS = Object.fromEntries(LISTS.map((list) => [list.id, list]));
+export const DEFAULT_LIST_ID = NEETCODE_150.id;
+
+// The list with this id; anything unknown (an old or damaged stored value)
+// means the default, NeetCode 150.
+export function listById(id) {
+  return (typeof id === 'string' && Object.hasOwn(ROADMAPS, id) && ROADMAPS[id]) || NEETCODE_150;
+}
 
 export function problemUrl(slug) {
   return `https://leetcode.com/problems/${slug}/`;
@@ -265,6 +699,11 @@ function index(roadmap) {
   const bySlug = new Map();
   for (const topic of roadmap.topics) for (const p of topic.problems) bySlug.set(p.slug, p);
   return bySlug;
+}
+
+// The problem as this list has it, or null when it is not on the list.
+export function problemInList(roadmap, slug) {
+  return index(roadmap).get(slug) || null;
 }
 
 // Solved and total counts per topic and overall. `solved` is any iterable of
@@ -283,7 +722,8 @@ export function progress(roadmap, solved) {
 
 // A topic is unlocked when every topic that points to it has at least one
 // problem solved (the roadmap is a guide, not a gate: nothing is blocked,
-// this only orders the suggestions).
+// this only orders the suggestions). A list without edges has every group
+// unlocked, so its order alone decides.
 export function unlockedTopics(roadmap, solved) {
   const done = new Set(solved);
   const started = new Set(roadmap.topics.filter((t) => t.problems.some((p) => done.has(p.slug))).map((t) => t.id));
@@ -294,7 +734,7 @@ export function unlockedTopics(roadmap, solved) {
   );
 }
 
-// What to do next, in NeetCode's order: the first unsolved problems of the
+// What to do next, in the list's order: the first unsolved problems of the
 // earliest topic that is unlocked and not finished.
 export function nextOnRoadmap(roadmap, solved, { count = 1 } = {}) {
   const done = new Set(solved);

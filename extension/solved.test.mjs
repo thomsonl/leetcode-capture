@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   SOLVED_KEY,
   STARRED_KEY,
+  ACTIVE_LIST_KEY,
   congratulation,
   createSolvedService,
   isSlug,
@@ -95,11 +96,35 @@ test('the card suggests the next roadmap problem and a different one of the same
   assert.equal(card.finished, false);
 });
 
-test('a problem off the roadmap gets only the agenda', () => {
+test('a problem off the active list gets only the agenda, with the catalog title when there is one', () => {
   const card = congratulation({ 'add-binary': { at: 't', count: 1 } }, 'add-binary');
-  assert.equal(card.solvedTitle, null);
+  assert.equal(card.solvedTitle, 'Add Binary', 'on other lists, so the catalog has it');
   assert.equal(card.more, null);
   assert.equal(card.next.slug, 'contains-duplicate');
+  const unknown = congratulation({}, 'not-on-any-list');
+  assert.equal(unknown.solvedTitle, null);
+  assert.equal(unknown.more, null);
+  assert.equal(unknown.next.slug, 'contains-duplicate');
+});
+
+test('the card follows the list it is given: its next problem, its group, its label, and every list for the menu', async () => {
+  const { BLIND_75, GRIND_75, SQL_50 } = await import('./shared/roadmap.js');
+  const blind = congratulation({ 'two-sum': { at: 't', count: 1 } }, 'two-sum', BLIND_75);
+  assert.deepEqual(blind.roadmap, { id: 'blind-75', title: 'Blind 75' });
+  assert.equal(blind.next.slug, 'best-time-to-buy-and-sell-stock');
+  assert.equal(blind.more.topic.title, 'Array');
+  assert.equal(blind.more.label, 'More Array problems');
+  assert.notEqual(blind.more.problem.slug, blind.next.slug);
+  const grind = congratulation({}, 'flood-fill', GRIND_75);
+  assert.equal(grind.next.slug, 'two-sum');
+  assert.equal(grind.more.label, 'More from Week 1');
+  // Two Sum is not on SQL 50: the agenda only, and the catalog's title.
+  const sql = congratulation({}, 'two-sum', SQL_50);
+  assert.equal(sql.solvedTitle, 'Two Sum');
+  assert.equal(sql.more, null);
+  assert.equal(sql.next.slug, 'recyclable-and-low-fat-products');
+  assert.deepEqual(blind.lists.map((l) => `${l.id}:${l.size}`), ['neetcode-150:150', 'blind-75:75', 'grind-75:75', 'top-interview-150:150', 'sql-50:50']);
+  assert.equal(blind.lists[1].title, 'Blind 75');
 });
 
 test('a finished topic has no topic suggestion, and a finished roadmap says so', async () => {
@@ -169,6 +194,48 @@ test('an accepted message from anywhere but a problem tab, or with a bad id, is 
   ];
   for (const [message, sender] of refused) assert.deepEqual(await service.handleMessage(message, sender), { ok: false }, JSON.stringify([message, sender]));
   assert.equal(storage.writes, 0);
+});
+
+test('the card after an accepted submission follows the stored list; no stored or a bad one means NeetCode 150', async () => {
+  const storage = fakeStorage({ [ACTIVE_LIST_KEY]: 'grind-75' });
+  const service = createSolvedService({ storage, extensionOrigin: ORIGIN, now: () => 'now' });
+  const a = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '301' }, tabSender());
+  assert.equal(a.card.roadmap.title, 'Grind 75');
+  assert.equal(a.card.next.slug, 'valid-parentheses');
+  assert.equal(a.card.more.label, 'More from Week 1');
+  storage.data[ACTIVE_LIST_KEY] = 'no-such-list';
+  const b = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '302' }, tabSender());
+  assert.equal(b.card.roadmap.title, 'NeetCode 150');
+  delete storage.data[ACTIVE_LIST_KEY];
+  const c = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '303' }, tabSender());
+  assert.equal(c.card.roadmap.title, 'NeetCode 150');
+});
+
+test('switching lists writes only the list choice, answers a problem tab with its card again, and refuses junk', async () => {
+  const solved = { 'two-sum': { at: 't', count: 2 }, '3sum': { at: 't', count: 0, manual: true } };
+  const storage = fakeStorage({ [SOLVED_KEY]: solved, [STARRED_KEY]: { 'lru-cache': true } });
+  const service = createSolvedService({ storage, extensionOrigin: ORIGIN });
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:set-list', list: 'blind-75' }, pageSender), { ok: true });
+  assert.equal(storage.data[ACTIVE_LIST_KEY], 'blind-75');
+  const fromTab = await service.handleMessage({ type: 'lc-tutor:set-list', list: 'sql-50' }, tabSender());
+  assert.equal(fromTab.ok, true);
+  assert.equal(fromTab.card.roadmap.title, 'SQL 50');
+  assert.equal(fromTab.card.solvedTitle, 'Two Sum');
+  assert.equal(fromTab.card.more, null);
+  assert.equal(storage.data[ACTIVE_LIST_KEY], 'sql-50');
+  assert.deepEqual(storage.data[SOLVED_KEY], solved, 'the solved problems are untouched');
+  assert.deepEqual(storage.data[STARRED_KEY], { 'lru-cache': true });
+  const writes = storage.writes;
+  for (const [message, sender] of [
+    [{ type: 'lc-tutor:set-list', list: 'nope' }, pageSender],
+    [{ type: 'lc-tutor:set-list', list: '__proto__' }, pageSender],
+    [{ type: 'lc-tutor:set-list' }, pageSender],
+    [{ type: 'lc-tutor:set-list', list: 'blind-75' }, { id: 'x', url: 'https://leetcode.com/problemset/', tab: { id: 1 } }],
+    [{ type: 'lc-tutor:set-list', list: 'blind-75' }, { id: 'x', url: 'https://example.com/problems/two-sum/', tab: { id: 1 } }],
+    [{ type: 'lc-tutor:set-list', list: 'blind-75' }, { id: 'x', url: 'https://leetcode.com/problems/two-sum/' }],
+  ]) assert.deepEqual(await service.handleMessage(message, sender), { ok: false }, JSON.stringify([message, sender]));
+  assert.equal(storage.writes, writes);
+  assert.equal(storage.data[ACTIVE_LIST_KEY], 'sql-50');
 });
 
 test('marking, unmarking and starring answer only the extension pages', async () => {
