@@ -64,7 +64,7 @@ export const NEETCODE_150 = defineList({
   id: 'neetcode-150',
   title: 'NeetCode 150',
   aliases: ['Blind 150'],
-  description: 'The expanded Blind 75, also called Blind 150: 150 problems by topic, on a roadmap of prerequisites.',
+  description: 'The expanded Blind 75, also called Blind 150, by topic on a roadmap.',
   groupNoun: 'topic',
   edges: EDGES,
   groups: [
@@ -245,7 +245,7 @@ export const NEETCODE_150 = defineList({
 export const BLIND_75 = defineList({
   id: 'blind-75',
   title: 'Blind 75',
-  description: 'The original 75 problems from Blind, by category. NeetCode 150 extends it.',
+  description: 'The original 75 from Blind, by category. NeetCode 150 extends it.',
   groupNoun: 'category',
   groups: [
   ['array', 'Array', `
@@ -341,7 +341,7 @@ export const BLIND_75 = defineList({
 export const GRIND_75 = defineList({
   id: 'grind-75',
   title: 'Grind 75',
-  description: 'Yangshun Tay\'s Grind 75, the updated Blind 75, in its default eight week schedule.',
+  description: 'Yangshun Tay\'s updated Blind 75, in eight weekly sets.',
   groupNoun: 'week',
   groups: [
   ['week-1', 'Week 1', `
@@ -434,7 +434,7 @@ export const GRIND_75 = defineList({
 export const TOP_INTERVIEW_150 = defineList({
   id: 'top-interview-150',
   title: 'Top Interview 150',
-  description: 'LeetCode\'s own Top Interview 150 study plan, section by section.',
+  description: 'LeetCode\'s own interview study plan, section by section.',
   groupNoun: 'section',
   groups: [
   ['array-string', 'Array / String', `
@@ -617,7 +617,7 @@ export const TOP_INTERVIEW_150 = defineList({
 export const SQL_50 = defineList({
   id: 'sql-50',
   title: 'SQL 50',
-  description: 'LeetCode\'s SQL 50 study plan: database problems, section by section.',
+  description: 'LeetCode\'s study plan for database problems.',
   groupNoun: 'section',
   groups: [
   ['select', 'Select', `

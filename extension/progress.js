@@ -1,21 +1,23 @@
 // LeetCode Capture - the options page's Progress tab and its tab bar.
 //
-// A picture of the NeetCode 150 roadmap (shared/roadmap.js): one node per
-// topic with its solved count, the prerequisite lines between them, and a
-// side panel per topic with its prerequisites and problems. It changes no
-// setting. Solved problems come from storage.local (`solvedProblems`, written
-// by the background worker when LeetCode accepts a submission, see
-// shared/solved.js); the status mark and the star in a topic's table ask the
-// worker to change them, so every write goes through its one queue. Nothing
-// here leaves the browser.
+// A "Working on" choice of problem list (shared/roadmap.js LISTS, kept in
+// storage.local `activeProgressList`, NeetCode 150 when unset), then a
+// picture of that list: NeetCode 150 as its roadmap graph (one node per topic
+// with its solved count and the prerequisite lines between them), every
+// other list as a grid of its own groups in the publisher's order. Each topic
+// or group opens a side panel with its problems. Solved problems come from
+// storage.local (`solvedProblems`, written by the background worker when
+// LeetCode accepts a submission, see shared/solved.js) and count in every
+// list; the status mark, the star and the list choice ask the worker to
+// change them, so every write goes through its one queue. Nothing here
+// leaves the browser.
 //
 // All text is inserted with textContent / createElement, never innerHTML.
 
-import { NEETCODE_150, nextOnRoadmap, problemUrl, progress } from './shared/roadmap.js';
-import { SOLVED_KEY, STARRED_KEY, normalizeSolved, normalizeStarred } from './shared/solved.js';
+import { DEFAULT_LIST_ID, LISTS, listById, nextOnRoadmap, problemUrl, progress } from './shared/roadmap.js';
+import { ACTIVE_LIST_KEY, SOLVED_KEY, STARRED_KEY, normalizeSolved, normalizeStarred } from './shared/solved.js';
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
-const ROADMAP = NEETCODE_150;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
 
@@ -57,6 +59,8 @@ const graphHeight = (m) => 7 * m.step[1] + m.node[1] + 2 * m.pad;
 
 const LEVELS = ['Easy', 'Medium', 'Hard'];
 
+let activeId = DEFAULT_LIST_ID;
+let ROADMAP = listById(activeId); // the list being worked on
 let solved = {};
 let starred = {};
 let openTopic = null; // the topic whose side panel is open
@@ -137,7 +141,7 @@ function formatDate(iso) {
 // ---- the tab bar -----------------------------------------------------------
 
 const TABS = ['settings', 'progress'];
-const SUBTITLES = { settings: 'Tutor settings', progress: 'Your NeetCode 150 progress' };
+const subtitle = (name) => (name === 'progress' ? `Your ${ROADMAP.title} progress` : 'Tutor settings');
 
 function selectTab(name, { focus = false, push = true } = {}) {
   for (const tab of TABS) {
@@ -149,14 +153,14 @@ function selectTab(name, { focus = false, push = true } = {}) {
     if (on && focus) button.focus();
   }
   document.body.dataset.tab = name;
-  $('page-sub').textContent = SUBTITLES[name];
+  $('page-sub').textContent = subtitle(name);
   if (push) {
     const url = name === 'progress' ? '#progress' : `${location.pathname}${location.search}`;
     history.replaceState(null, '', url);
   }
   if (name === 'progress') {
     if (!built) build();
-    else layoutGraph();
+    else layoutView();
   } else if (openTopic) {
     closeDrawer({ restore: false });
   }
@@ -181,34 +185,137 @@ function wireTabs() {
 
 // ---- the tab's content -----------------------------------------------------
 
+const isGraph = () => ROADMAP.kind === 'graph';
+// What the list calls one of its groups: topic, category, week or section.
+const noun = () => ROADMAP.groupNoun || 'group';
+const nouns = (word) => (word.endsWith('y') ? `${word.slice(0, -1)}ies` : `${word}s`);
+const plural = (n, word) => `${n} ${n === 1 ? word : nouns(word)}`;
+
 function build() {
   built = true;
   const panel = $('panel-progress');
   panel.textContent = '';
   panel.append(
+    h(
+      'section',
+      { class: 'card lists', 'aria-labelledby': 'lists-heading' },
+      h(
+        'fieldset',
+        { class: 'list-picker', id: 'list-picker' },
+        h('legend', { id: 'lists-heading', text: 'Working on' }),
+        h('div', { class: 'list-options' })
+      )
+    ),
     h('section', { class: 'card summary', id: 'summary', 'aria-labelledby': 'summary-heading' }),
     h(
       'section',
       { class: 'card roadmap', 'aria-labelledby': 'roadmap-heading' },
-      h('h2', { class: 'sr-only', id: 'roadmap-heading', text: 'Topics' }),
-      h('div', { class: 'canvas', id: 'canvas' }, h('div', { class: 'graph', id: 'graph', role: 'group', 'aria-label': `${ROADMAP.title} topics` }))
+      h('h2', { class: 'sr-only', id: 'roadmap-heading' }),
+      h('div', { class: 'canvas', id: 'canvas' })
     ),
-    h('p', { class: 'foot', text: 'Solved problems are kept in this browser only. A problem counts as solved when LeetCode accepts your submission with the extension installed; click a status mark in a topic to change it.' })
+    h('p', { class: 'foot', id: 'progress-foot' })
   );
   const backdrop = h('div', { class: 'backdrop', id: 'backdrop', hidden: true, onclick: () => closeDrawer() });
   const drawer = h('aside', { class: 'drawer', id: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'drawer-title', hidden: true });
   drawer.addEventListener('keydown', drawerKeys);
   document.body.append(backdrop, drawer);
-  $('graph').addEventListener('keydown', graphKeys);
-  new ResizeObserver(() => layoutGraph()).observe($('canvas'));
+  new ResizeObserver(() => layoutView()).observe($('canvas'));
+  renderPicker();
   render();
 }
 
 function render() {
   if (!built) return;
+  renderPicker();
   renderSummary();
-  renderGraph();
+  renderView();
   if (openTopic) renderDrawer();
+}
+
+// ---- the list choice -------------------------------------------------------
+
+// One radio card per list: its name, size and what it is. Native radios, so
+// the arrow keys move the choice and Tab leaves the group, as anywhere else.
+function renderPicker() {
+  const box = document.querySelector('#list-picker .list-options');
+  if (!box) return;
+  if (!box.children.length) {
+    for (const list of LISTS) {
+      const descId = `list-desc-${list.id}`;
+      box.appendChild(
+        h(
+          'label',
+          { class: 'list-option', 'data-list': list.id },
+          h('input', { type: 'radio', name: 'progress-list', value: list.id, 'aria-describedby': descId, onchange: (e) => e.currentTarget.checked && chooseList(list.id) }),
+          h(
+            'span',
+            { class: 'list-text' },
+            h('span', { class: 'list-line' }, h('span', { class: 'list-name', text: list.title }), h('span', { class: 'list-size', text: `${list.size} problems` })),
+            h('span', { class: 'list-desc', id: descId, text: list.description })
+          )
+        )
+      );
+    }
+  }
+  for (const option of box.querySelectorAll('.list-option')) {
+    const on = option.dataset.list === activeId;
+    option.toggleAttribute('data-selected', on);
+    const input = option.querySelector('input');
+    if (input.checked !== on) input.checked = on;
+  }
+}
+
+// The canvas shows one list at a time; switching lists builds it anew.
+function useList(id) {
+  const list = listById(id);
+  if (list.id === activeId && ROADMAP === list) return false;
+  activeId = list.id;
+  ROADMAP = list;
+  if (openTopic) closeDrawer({ restore: false });
+  metrics = null;
+  if (built) $('canvas').textContent = '';
+  if (document.body.dataset.tab === 'progress') $('page-sub').textContent = subtitle('progress');
+  return true;
+}
+
+async function chooseList(id) {
+  const before = activeId;
+  if (!useList(id)) return;
+  notice = '';
+  render();
+  if (!(await ask({ type: 'lc-tutor:set-list', list: activeId }))) {
+    useList(before);
+    notice = 'The extension did not save your list. Reload the page and try again.';
+    render();
+  }
+}
+
+function renderView() {
+  const canvas = $('canvas');
+  canvas.dataset.kind = ROADMAP.kind;
+  $('roadmap-heading').textContent = isGraph() ? 'Topics' : `${ROADMAP.title} ${nouns(noun())}`;
+  $('progress-foot').textContent = `Solved problems are kept in this browser only and count in every list. A problem counts as solved when LeetCode accepts your submission with the extension installed; open a ${noun()} and click a status mark to change it.`;
+  if (isGraph()) {
+    if (!$('graph')) {
+      canvas.textContent = '';
+      const graph = h('div', { class: 'graph', id: 'graph', role: 'group', 'aria-label': `${ROADMAP.title} topics` });
+      graph.addEventListener('keydown', graphKeys);
+      canvas.appendChild(graph);
+    }
+    renderGraph();
+  } else {
+    if (!$('groups')) {
+      canvas.textContent = '';
+      const groups = h('div', { class: 'groups', id: 'groups', role: 'group', 'aria-label': `${ROADMAP.title} ${nouns(noun())}` });
+      groups.addEventListener('keydown', groupKeys);
+      canvas.appendChild(groups);
+    }
+    renderGroups();
+  }
+}
+
+function layoutView() {
+  if (built && isGraph()) layoutGraph();
 }
 
 function renderSummary() {
@@ -227,7 +334,17 @@ function renderSummary() {
     h(
       'div',
       { class: 'summary-head' },
-      h('div', {}, h('h2', { id: 'summary-heading', text: ROADMAP.title }), h('p', { class: 'help', text: 'The roadmap of 150 problems by topic. Start at the top; each line leads to a topic that builds on the one above it.' })),
+      h(
+        'div',
+        {},
+        h('h2', { id: 'summary-heading', text: ROADMAP.title }),
+        h('p', {
+          class: 'help',
+          text: isGraph()
+            ? `The roadmap of ${ROADMAP.size} problems by topic. Start at the top; each line leads to a topic that builds on the one above it.`
+            : `${plural(ROADMAP.topics.length, noun())} of ${ROADMAP.size} problems, in the order the list gives them. Work through them in order; the one marked Next is the first you have not finished.`,
+        })
+      ),
       h('p', { class: 'total' }, h('span', { class: 'total-done', text: String(all.solved) }), h('span', { class: 'total-of', text: ` / ${all.total} solved` }))
     ),
     bar(all.solved, all.total, `${ROADMAP.title} solved`),
@@ -370,6 +487,97 @@ function graphKeys(event) {
   $('graph').querySelector(`.node[data-topic="${best}"]`).focus();
 }
 
+// ---- groups (every list without a roadmap graph) ---------------------------
+
+// One card per group in the list's order, in a grid that fills the width:
+// the group's number and title, its solved share, and how its problems split
+// by difficulty (each part filled as far as it is solved).
+function renderGroups() {
+  const box = $('groups');
+  const all = progress(ROADMAP, solvedSet());
+  const next = nextProblem();
+  const existing = new Map([...box.querySelectorAll('.group')].map((n) => [n.dataset.topic, n]));
+  ROADMAP.topics.forEach((topic, i) => {
+    const stats = all.topics[i];
+    let card = existing.get(topic.id);
+    if (!card) {
+      card = h(
+        'button',
+        { type: 'button', class: 'group', 'data-topic': topic.id, onclick: (e) => openDrawer(topic.id, e.currentTarget) },
+        h('span', { class: 'group-head' }, h('span', { class: 'group-step', text: String(i + 1) }), h('span', { class: 'group-title', text: topic.title })),
+        h('span', { class: 'node-meter' }, h('span', { class: 'node-bar' }, h('span', { class: 'node-fill' })), h('span', { class: 'node-count' })),
+        h(
+          'span',
+          { class: 'group-levels', 'aria-hidden': 'true' },
+          ...LEVELS.map((l) => h('span', { class: 'group-level', 'data-level': l }, h('span', { class: 'group-level-bar' }, h('span', { class: 'group-level-fill' })), h('span', { class: 'group-level-text' })))
+        ),
+        h('span', { class: 'node-badge', text: 'Next', 'aria-hidden': 'true' })
+      );
+      box.appendChild(card);
+    }
+    const levels = [];
+    for (const l of LEVELS) {
+      const of = topic.problems.filter((p) => p.difficulty === l);
+      const done = of.filter((p) => solved[p.slug]).length;
+      const part = card.querySelector(`.group-level[data-level="${l}"]`);
+      part.hidden = of.length === 0;
+      part.style.flexGrow = String(of.length);
+      part.querySelector('.group-level-fill').style.width = `${percent(done, of.length)}%`;
+      part.querySelector('.group-level-text').textContent = `${l[0]} ${done}/${of.length}`;
+      if (of.length) levels.push(`${l} ${done} of ${of.length}`);
+    }
+    card.querySelector('.node-fill').style.width = `${percent(stats.solved, stats.total)}%`;
+    card.querySelector('.node-count').textContent = `${stats.solved} / ${stats.total}`;
+    const isNext = Boolean(next && next.topic === topic.id);
+    card.toggleAttribute('data-next', isNext);
+    card.toggleAttribute('data-complete', stats.complete);
+    card.toggleAttribute('data-started', stats.solved > 0);
+    card.setAttribute(
+      'aria-label',
+      `${topic.title}, ${noun()} ${i + 1} of ${ROADMAP.topics.length}, ${stats.solved} of ${stats.total} solved${stats.complete ? ', complete' : ''}${isNext ? ', recommended next' : ''}. ${levels.join(', ')}`
+    );
+  });
+}
+
+// Left and right step through the cards in the list's order (wrapping onto
+// the next row), up and down go to the nearest card in that direction, Home
+// and End to the first and last.
+function groupKeys(event) {
+  const from = event.target.closest && event.target.closest('.group');
+  if (!from) return;
+  const cards = [...$('groups').querySelectorAll('.group')];
+  let target = null;
+  if (event.key === 'Home') target = cards[0];
+  else if (event.key === 'End') target = cards.at(-1);
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') target = cards[cards.indexOf(from) + (event.key === 'ArrowRight' ? 1 : -1)] || null;
+  else {
+    const dirs = { ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const dir = dirs[event.key];
+    if (!dir) return;
+    const centre = (n) => {
+      const r = n.getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2];
+    };
+    const [fx, fy] = centre(from);
+    let bestScore = Infinity;
+    for (const card of cards) {
+      if (card === from) continue;
+      const [x, y] = centre(card);
+      const along = (x - fx) * dir[0] + (y - fy) * dir[1];
+      if (along <= 1) continue;
+      const across = Math.abs((x - fx) * dir[1]) + Math.abs((y - fy) * dir[0]);
+      const score = along + across * 2;
+      if (score < bestScore) {
+        bestScore = score;
+        target = card;
+      }
+    }
+  }
+  if (!target) return;
+  event.preventDefault();
+  target.focus();
+}
+
 // ---- the side panel --------------------------------------------------------
 
 function openDrawer(topicId, opener) {
@@ -438,7 +646,10 @@ function renderDrawer() {
   // Keep focus on the same control across a redraw (a mark, a star).
   const active = document.activeElement;
   const keep = active && drawer.contains(active) ? { slug: active.dataset.slug, role: active.dataset.role, topic: active.dataset.prereq, title: active.id === 'drawer-title' } : null;
-  const prereqs = ROADMAP.edges.filter(([, to]) => to === topic.id).map(([from]) => topicById(from));
+  // A graph's topic lists the topics that lead to it; a group lists the one
+  // before it in the list's order.
+  const place = ROADMAP.topics.indexOf(topic);
+  const prereqs = isGraph() ? ROADMAP.edges.filter(([, to]) => to === topic.id).map(([from]) => topicById(from)) : ROADMAP.topics.slice(Math.max(0, place - 1), place);
   const all = progress(ROADMAP, solvedSet()).topics;
 
   drawer.textContent = '';
@@ -450,7 +661,7 @@ function renderDrawer() {
   );
   const body = h('div', { class: 'drawer-body' });
   body.appendChild(bar(stats.solved, stats.total, `${topic.title} solved`));
-  body.appendChild(h('h3', { text: 'Prerequisites' }));
+  body.appendChild(h('h3', { text: isGraph() ? 'Prerequisites' : 'Comes after' }));
   body.appendChild(
     prereqs.length
       ? h(
@@ -466,7 +677,7 @@ function renderDrawer() {
             );
           })
         )
-      : h('p', { class: 'hint', text: 'None. This is where the roadmap starts.' })
+      : h('p', { class: 'hint', text: isGraph() ? 'None. This is where the roadmap starts.' : `Nothing. This is where ${ROADMAP.title} starts.` })
   );
   const rows = topic.problems.map((p) => {
     const record = solved[p.slug];
@@ -571,9 +782,10 @@ async function toggleStar(slug) {
 
 async function load() {
   try {
-    const stored = await api.storage.local.get([SOLVED_KEY, STARRED_KEY]);
+    const stored = await api.storage.local.get([SOLVED_KEY, STARRED_KEY, ACTIVE_LIST_KEY]);
     solved = normalizeSolved(stored[SOLVED_KEY]);
     starred = normalizeStarred(stored[STARRED_KEY]);
+    useList(stored[ACTIVE_LIST_KEY]);
   } catch {
     solved = {};
     starred = {};
@@ -585,8 +797,12 @@ api.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (SOLVED_KEY in changes) solved = normalizeSolved(changes[SOLVED_KEY].newValue);
   if (STARRED_KEY in changes) starred = normalizeStarred(changes[STARRED_KEY].newValue);
-  if (SOLVED_KEY in changes || STARRED_KEY in changes) render();
+  // The list chosen here, in another tab, or from a Tutor card.
+  const listChanged = ACTIVE_LIST_KEY in changes && useList(changes[ACTIVE_LIST_KEY].newValue);
+  if (SOLVED_KEY in changes || STARRED_KEY in changes || listChanged) render();
 });
 
+// The stored list first, so the tab never draws NeetCode 150 for a moment
+// before the list actually chosen.
+await load();
 wireTabs();
-load();
