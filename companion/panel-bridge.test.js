@@ -1071,3 +1071,127 @@ test('end to end: the summary call never reaches the panel, and a swap keeps the
   assert.ok(afterSwap.includes(SUMMARY_HEADER), 'a swap keeps the summary');
   assert.ok(!modelB.turns[0].messages.some((m) => m.role !== 'system' && m.content.includes(SUMMARY_HEADER)), 'as a system message');
 });
+
+// ---- end to end: the panel's model switcher over the relay -------------------
+//
+// A real companion.js and relay, one stub server answering as whichever model
+// a request names, and this test playing the Tutor panel: POST
+// /panel/switch-profile with leetcode.com's Origin.
+
+test('end to end: the panel switches between saved models through the relay, after a running reply, keeping the chat and the code', async (t) => {
+  const requests = [];
+  let release = null;
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || !/\/chat(\/completions)?$/.test(req.url)) return void res.writeHead(404).end();
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      const parsed = JSON.parse(body);
+      requests.push(parsed);
+      const n = requests.length;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `${parsed.model} reply ${n}` } }] })}\n\n`);
+      if (JSON.stringify(parsed.messages.at(-1)).includes('SLOW')) await new Promise((r) => (release = r));
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  const port = await freePort();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-switch-e2e-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+  const settingsFile = path.join(scratch, 'config', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({
+      version: 1,
+      provider: 'local',
+      providers: { local: { model: 'model-a', baseUrl, contextTokens: 32768 } },
+      profiles: [
+        { id: 'a', provider: 'local', model: 'model-a', label: null },
+        { id: 'b', provider: 'local', model: 'model-b', label: 'B' },
+      ],
+      activeProfile: 'a',
+    })
+  );
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) if (/^(COMPANION_|VAULT_AUTO_SUMMARY)/.test(name)) delete env[name];
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...env,
+      LEETCODE_CAPTURE_SETTINGS: settingsFile,
+      COMPANION_LOCAL_API: 'openai',
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: capturesPath,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (c) => (out += c.toString()));
+  child.stderr.on('data', (c) => (out += c.toString()));
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  let panel = null;
+  t.after(async () => {
+    if (release) release();
+    if (panel) panel.close();
+    child.kill();
+    await exited;
+    server.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  await until(() => out.includes('in-page panel connected'), 15000, 'the panel bridge');
+  panel = connectPanel(port);
+  await until(() => panel.events.some((e) => e.type === 'config' && e.model === 'model-a'), 10000, 'the first config event');
+  const code = Array.from({ length: 30 }, (_, i) => `x${i} = ${i}`).join('\n');
+  const message = (text, snapshotCode = code) =>
+    postJson(port, '/panel/message', { text, problemSlug: 'two-sum', snapshot: { code: snapshotCode, language: 'python3', problemTitle: 'Two Sum', problemDescription: 'Find two numbers.' } }, { origin: LEETCODE });
+  const switchTo = (body) => postJson(port, '/panel/switch-profile', body, { origin: LEETCODE, 'sec-fetch-mode': 'cors' });
+  const turnEnds = () => panel.events.filter((e) => e.type === 'turn-end').length;
+
+  assert.equal((await message('first question')).status, 202);
+  await until(() => turnEnds() === 1, 10000, 'the first reply');
+
+  // A switch asked for while a reply runs waits for that reply.
+  assert.equal((await message('SLOW second question')).status, 202);
+  await until(() => release !== null, 10000, 'the slow reply to start');
+  let answered = null;
+  const pending = switchTo({ id: 'b', baseUrl: 'http://evil.example/v1', apiKey: 'sk-evil' }).then((r) => (answered = r));
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(answered, null, 'the switch waits for the running reply');
+  release();
+  const res = await pending;
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(JSON.parse(res.text), { ok: true, profile: 'b', active: { provider: 'local', label: 'Local model', model: 'model-b' } });
+  await until(() => turnEnds() === 2, 5000, 'the slow reply to end in the panel');
+  assert.equal(requests[1].model, 'model-a', 'the running reply stayed on the first model');
+  const onDisk = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  assert.deepEqual([onDisk.activeProfile, onDisk.providers.local.model, onDisk.providers.local.baseUrl], ['b', 'model-b', baseUrl], 'only the active model changed');
+  assert.equal(onDisk.providers.local.apiKey ?? null, null, 'no key was set');
+  await until(() => panel.events.some((e) => e.type === 'config' && e.model === 'model-b'), 5000, 'the new config event');
+  await until(() => out.includes('switched models - now using Local model (model-b), same conversation'), 5000, 'the terminal note');
+
+  // Unknown ids and malformed bodies change nothing.
+  assert.equal((await switchTo({ id: 'nope' })).status, 404);
+  assert.equal((await switchTo({ id: '../a' })).status, 400);
+  assert.equal(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).activeProfile, 'b');
+
+  // The next message goes to the new model with the chat and the held code.
+  const changed = code.replace('x5 = 5', 'x5 = 50');
+  assert.equal((await message('third question', changed)).status, 202);
+  await until(() => turnEnds() === 3, 10000, 'the third reply');
+  const third = requests[2];
+  assert.equal(third.model, 'model-b');
+  const chat = JSON.stringify(third.messages);
+  assert.ok(chat.includes('first question') && chat.includes('model-a reply 1') && chat.includes('SLOW second question'), 'the chat moved over');
+  assert.ok(third.messages.some((m) => m.role === 'system' && m.content.includes('x5 = 50') && m.content.includes('x29 = 29')), 'the current full code is pinned');
+  const last = third.messages.at(-1).content;
+  assert.ok(last.includes('x5 = 50') && !last.includes('x20 = 20'), `only a diff against the held code: ${last}`);
+});
