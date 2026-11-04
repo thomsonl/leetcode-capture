@@ -46,7 +46,6 @@
             "valid-parentheses",
             "min-stack",
             "evaluate-reverse-polish-notation",
-            "generate-parentheses",
             "daily-temperatures",
             "car-fleet",
             "largest-rectangle-in-histogram"
@@ -117,9 +116,10 @@
           "slugs": [
             "subsets",
             "combination-sum",
+            "combination-sum-ii",
             "permutations",
             "subsets-ii",
-            "combination-sum-ii",
+            "generate-parentheses",
             "word-search",
             "palindrome-partitioning",
             "letter-combinations-of-a-phone-number",
@@ -155,9 +155,9 @@
         {
           "title": "Advanced Graphs",
           "slugs": [
+            "network-delay-time",
             "reconstruct-itinerary",
             "min-cost-to-connect-all-points",
-            "network-delay-time",
             "swim-in-rising-water",
             "alien-dictionary",
             "cheapest-flights-within-k-stops"

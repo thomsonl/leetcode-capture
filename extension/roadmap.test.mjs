@@ -132,6 +132,12 @@ test('LeetCode\'s study plans match LeetCode\'s own data: sections, their order,
   }
 });
 
+test('NeetCode 150 matches neetcode.io\'s own list: each topic\'s problems in its order', () => {
+  const site = new Map(snapshot('neetcode-lists.txt').neetcode150.map((g) => [g.title, g.slugs.map(([slug]) => slug)]));
+  assert.equal(site.size, NEETCODE_150.topics.length);
+  for (const t of NEETCODE_150.topics) assert.deepEqual(t.problems.map((p) => p.slug), site.get(t.title), t.title);
+});
+
 test('only NeetCode 150 has prerequisite lines, and they join its own topics', () => {
   for (const list of LISTS) {
     const ids = new Set(list.topics.map((t) => t.id));

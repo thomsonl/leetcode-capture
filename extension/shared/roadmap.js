@@ -35,6 +35,12 @@ function defineList({ id, title, short, description, groupNoun, groups, edges = 
 }
 
 // NeetCode 150, in NeetCode's order, with its roadmap's prerequisite lines.
+// Membership, topics and the order inside each topic are neetcode.io's own
+// list data (https://neetcode.io/practice/practice/neetcode150, the problem
+// objects in its main bundle, fetched 2026-11-04: e2e/neetcode-lists.txt,
+// which roadmap.test.mjs compares). The older copy in the neetcode-gh/leetcode
+// repository (.problemSiteData.json) still has Generate Parentheses under
+// Stack; the site now lists it under Backtracking.
 // The roadmap's own prerequisite lines: [from, to].
 const EDGES = [
   ['arrays-hashing', 'two-pointers'],
@@ -94,7 +100,6 @@ export const NEETCODE_150 = defineList({
     valid-parentheses
     min-stack
     evaluate-reverse-polish-notation
-    generate-parentheses
     daily-temperatures
     car-fleet
     largest-rectangle-in-histogram`],
@@ -145,9 +150,10 @@ export const NEETCODE_150 = defineList({
   ['backtracking', 'Backtracking', `
     subsets
     combination-sum
+    combination-sum-ii
     permutations
     subsets-ii
-    combination-sum-ii
+    generate-parentheses
     word-search
     palindrome-partitioning
     letter-combinations-of-a-phone-number
@@ -171,9 +177,9 @@ export const NEETCODE_150 = defineList({
     redundant-connection
     word-ladder`],
   ['advanced-graphs', 'Advanced Graphs', `
+    network-delay-time
     reconstruct-itinerary
     min-cost-to-connect-all-points
-    network-delay-time
     swim-in-rising-water
     alien-dictionary
     cheapest-flights-within-k-stops`],

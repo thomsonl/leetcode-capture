@@ -97,7 +97,7 @@ try {
       edges: [...document.querySelectorAll('.edge')].map((e) => e.dataset.from + '>' + e.dataset.to + (e.classList.contains('lit') ? '*' : '')),
     })`);
     const byId = Object.fromEntries(m.nodes.map((n) => [n.id, n]));
-    check(byId['arrays-hashing'].count === '8 / 9' && byId['two-pointers'].count === '2 / 5' && byId.stack.count === '1 / 7' && byId.trees.count === '0 / 15', JSON.stringify(m.nodes));
+    check(byId['arrays-hashing'].count === '8 / 9' && byId['two-pointers'].count === '2 / 5' && byId.stack.count === '1 / 6' && byId.trees.count === '0 / 15', JSON.stringify(m.nodes));
     check(m.nodes.filter((n) => n.next).map((n) => n.id).join() === expectedNext.topic, `next topic: ${JSON.stringify(m.nodes.filter((n) => n.next))}`);
     check(byId['arrays-hashing'].label === 'Arrays & Hashing, 8 of 9 solved, recommended next', byId['arrays-hashing'].label);
     check(m.edges.length === NEETCODE_150.edges.length, `edges: ${m.edges.length}`);
