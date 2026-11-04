@@ -84,4 +84,120 @@
       })
     );
   });
+
+  // ---- accepted submissions ---------------------------------------------
+  //
+  // After a Submit, LeetCode's page polls
+  // /submissions/detail/<id>/check/ until the judge answers with
+  // state "SUCCESS"; status_msg "Accepted" means every test passed. A Run
+  // polls the same path, but with an id like "runcode_..." (and its result
+  // carries task_name "judger.runcodetask.RunCode"), so only an all-digit id
+  // counts. The page's own requests are only watched, never changed: the
+  // wrappers hand back the very response the page asked for and read a
+  // clone (fetch) or the finished text (XMLHttpRequest).
+  //
+  // Each accepted submission id is reported to content.js once, as
+  // leetcode-capture:submission-accepted with a JSON-string detail (the same
+  // Firefox Xray reason as above). Nothing about the code or the problem goes
+  // with it: content.js takes the problem from the page address.
+  const CHECK_PATH = /\/submissions\/detail\/([^/?#]+)\/check\/?(?:[?#]|$)/;
+  const reported = new Set();
+
+  function submissionIdOf(url) {
+    let path;
+    try {
+      path = new URL(String(url), window.location.href).pathname;
+    } catch (err) {
+      return null;
+    }
+    const match = CHECK_PATH.exec(path);
+    return match && /^\d{1,20}$/.test(match[1]) ? match[1] : null;
+  }
+
+  function isAccepted(result) {
+    if (!result || typeof result !== "object") return false;
+    if (result.state !== "SUCCESS" || result.status_msg !== "Accepted") return false;
+    if (typeof result.task_name === "string" && /runcode/i.test(result.task_name)) return false;
+    if ("status_code" in result && result.status_code !== 10) return false;
+    return true;
+  }
+
+  function noteResult(id, result) {
+    if (!id || reported.has(id) || !isAccepted(result)) return;
+    reported.add(id);
+    document.dispatchEvent(
+      new CustomEvent("leetcode-capture:submission-accepted", { detail: JSON.stringify({ submissionId: id }) })
+    );
+  }
+
+  function parseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  const pageFetch = window.fetch;
+  if (typeof pageFetch === "function" && !pageFetch.__lcCaptureWrapped) {
+    const wrapped = function fetch(input, init) {
+      const promise = pageFetch.apply(this, arguments);
+      let id = null;
+      try {
+        id = submissionIdOf(input && typeof input === "object" && "url" in input ? input.url : input);
+      } catch (err) {
+        id = null;
+      }
+      if (id) {
+        promise.then(
+          (response) => {
+            try {
+              response
+                .clone()
+                .text()
+                .then((text) => noteResult(id, parseJson(text)), () => {});
+            } catch (err) {
+              // an opaque or already-used body: nothing to read
+            }
+          },
+          () => {}
+        );
+      }
+      return promise;
+    };
+    Object.defineProperty(wrapped, "__lcCaptureWrapped", { value: true });
+    window.fetch = wrapped;
+  }
+
+  const xhrProto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+  if (xhrProto && !xhrProto.open.__lcCaptureWrapped) {
+    const pageOpen = xhrProto.open;
+    const ids = new WeakMap();
+    const wrappedOpen = function open(method, url) {
+      try {
+        const id = submissionIdOf(url);
+        if (id && !ids.has(this)) {
+          this.addEventListener("load", function () {
+            const current = ids.get(this);
+            if (!current) return;
+            let result = null;
+            try {
+              if (this.responseType === "json") result = this.response;
+              else if (this.responseType === "" || this.responseType === "text") result = parseJson(this.responseText);
+            } catch (err) {
+              result = null;
+            }
+            noteResult(current, result);
+          });
+        }
+        if (id) ids.set(this, id);
+        else ids.delete(this);
+      } catch (err) {
+        // never in the page's way
+      }
+      return pageOpen.apply(this, arguments);
+    };
+    Object.defineProperty(wrappedOpen, "__lcCaptureWrapped", { value: true });
+    xhrProto.open = wrappedOpen;
+  }
 })();

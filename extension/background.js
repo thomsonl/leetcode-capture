@@ -1,6 +1,6 @@
 // LeetCode Capture - background worker (an ES module).
 //
-// Three jobs:
+// Its jobs:
 //   - Open the options page when the Tutor panel's gear is clicked (content
 //     scripts can't call runtime.openOptionsPage themselves).
 //   - Run the tutor itself for the "extension" runtime (local models and API
@@ -13,6 +13,8 @@
 //     is granted, start the Native Messaging helper while a LeetCode problem
 //     tab is open and stop it 30 s after the last one closes
 //     (shared/helper-launcher.js has the rules).
+//   - Keep the solved problems the Progress tab shows (shared/solved.js),
+//     whichever runtime runs the tutor. They stay in storage.local.
 // Only this extension's own content scripts and pages are listened to.
 //
 // API keys live in storage.local and are only ever sent to the provider's
@@ -21,6 +23,7 @@
 import { createTutorService, SETTINGS_KEY } from "./shared/tutor-service.js";
 import { normalizeSettings } from "./shared/extension-settings.js";
 import { createHelperLauncher } from "./shared/helper-launcher.js";
+import { createSolvedService } from "./shared/solved.js";
 
 const api = typeof browser !== "undefined" ? browser : chrome;
 const PANEL_PORT = "lc-tutor-panel";
@@ -130,11 +133,31 @@ const service = createTutorService({
   log: (text) => console.warn(`[leetcode-capture] ${text}`),
 });
 
+const solved = createSolvedService({
+  storage: {
+    get: (keys) => api.storage.local.get(keys),
+    set: (items) => api.storage.local.set(items),
+  },
+  extensionOrigin: new URL(api.runtime.getURL("")).origin,
+  log: (text) => console.warn(`[leetcode-capture] ${text}`),
+});
+const SOLVED_MESSAGES = new Set(["lc-tutor:accepted", "lc-tutor:solved-set", "lc-tutor:star-set"]);
+
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== api.runtime.id) return undefined;
   if (message && message.type === "lc-tutor:open-settings") {
     api.runtime.openOptionsPage();
     return undefined;
+  }
+  // The Tutor panel's "See your progress" link: the options page on its
+  // Progress tab (an extension page of its own, so no permission is needed).
+  if (message && message.type === "lc-tutor:open-progress") {
+    api.tabs.create({ url: api.runtime.getURL("settings.html#progress") });
+    return undefined;
+  }
+  if (message && SOLVED_MESSAGES.has(message.type)) {
+    solved.handleMessage(message, sender).then(sendResponse, () => sendResponse({ ok: false }));
+    return true;
   }
   // A Run or Submit makes its tab the active problem.
   if (message && message.type === "lc-tutor:capture" && sender.tab) launcher.markActive(sender.tab.id);

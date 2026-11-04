@@ -311,6 +311,46 @@
     }
   }
 
+  // LeetCode accepted a submission (inject.js watched the page's own result
+  // polling, see there). The background worker records the problem as solved
+  // in the extension's storage, whichever runtime runs the tutor, and answers
+  // with what the Tutor panel's "nice job" card shows; the panel hears it as
+  // leetcode-capture:solved. Nothing here reaches the tutor or any server.
+  // `events`, `send` and `slugOf` are injectable for content.test.js.
+  const acceptedIds = new Set();
+  async function handleAccepted(event, { events = document, send = sendToBackground, slugOf = getProblemSlug, titleOf = getProblemTitle } = {}) {
+    let submissionId = null;
+    try {
+      submissionId = JSON.parse(event.detail).submissionId;
+    } catch (err) {
+      return;
+    }
+    if (typeof submissionId !== "string" || !/^\d{1,20}$/.test(submissionId) || acceptedIds.has(submissionId)) return;
+    acceptedIds.add(submissionId);
+    const slug = slugOf();
+    if (!slug) return;
+    const answer = await send({ type: "lc-tutor:accepted", submissionId });
+    if (!answer || answer.ok !== true || answer.recorded !== true || !answer.card) return;
+    events.dispatchEvent(
+      new CustomEvent("leetcode-capture:solved", {
+        detail: JSON.stringify({ slug, pageTitle: titleOf(), card: answer.card }),
+      })
+    );
+  }
+
+  // A runtime message to the background worker; resolves to its answer, or
+  // null when it cannot be asked.
+  async function sendToBackground(message) {
+    const runtime =
+      (typeof browser !== "undefined" && browser.runtime) || (typeof chrome !== "undefined" && chrome.runtime) || null;
+    if (!runtime || !runtime.id || typeof runtime.sendMessage !== "function") return null;
+    try {
+      return await runtime.sendMessage(message);
+    } catch {
+      return null;
+    }
+  }
+
   // The Run button is icon-only on the live page (a FontAwesome play-icon
   // SVG, no visible text) - btn.textContent is empty for it, so a
   // text-based match never fires and Run captures were silently never
@@ -480,6 +520,7 @@
       answerSnapshotRequest,
       sendCapture,
       handToBackground,
+      handleAccepted,
     };
     return;
   }
@@ -487,6 +528,10 @@
   document.addEventListener("click", handleDelegatedClick, true);
   document.addEventListener("keydown", handleShortcutKeydown, true);
   document.addEventListener("leetcode-capture:snapshot-request", (event) => answerSnapshotRequest(event));
+  document.addEventListener("leetcode-capture:submission-accepted", (event) => handleAccepted(event));
+  // Right away, not at the first Run or Submit: inject.js also watches for
+  // the judge's verdict, which comes after a Submit's own click.
+  injectPageScript().catch((err) => console.warn("[leetcode-capture] could not load inject.js", err));
 
   console.log("[leetcode-capture] content script active");
 })();
