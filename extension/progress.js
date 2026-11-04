@@ -2,9 +2,10 @@
 //
 // A "Working on" choice of problem list (shared/roadmap.js LISTS, kept in
 // storage.local `activeProgressList`, NeetCode 150 when unset), then a
-// picture of that list: NeetCode 150 as its roadmap graph (one node per topic
-// with its solved count and the prerequisite lines between them), every
-// other list as a grid of its own groups in the publisher's order. Each topic
+// picture of that list: NeetCode 150 and NeetCode 250 as their roadmap graph
+// (one node per topic with its solved count and the prerequisite lines
+// between them, the same topics for both), every other list as a grid of its
+// own groups in the publisher's order. Each topic
 // or group opens a side panel with its problems. Solved problems come from
 // storage.local (`solvedProblems`, written by the background worker when
 // LeetCode accepts a submission, see shared/solved.js) and count in every

@@ -7,9 +7,9 @@
 //           where a problem is { slug, title, difficulty, topic } (title and
 //           difficulty come from the one shared catalog, shared/catalog.js)
 //   edges   prerequisite lines [from, to] between topics; only NeetCode 150
-//           has them (kind 'graph'), every other list is drawn as ordered
-//           groups (kind 'groups') and its next group is simply the first one
-//           not finished
+//           and NeetCode 250 have them (kind 'graph', one roadmap for both),
+//           every other list is drawn as ordered groups (kind 'groups') and
+//           its next group is simply the first one not finished
 // The slug is LeetCode's own (leetcode.com/problems/<slug>/), which is also
 // what the extension reads from the page address, so a problem solved once
 // counts in every list.
@@ -238,6 +238,291 @@ export const NEETCODE_150 = defineList({
     set-matrix-zeroes
     happy-number
     plus-one
+    powx-n
+    multiply-strings
+    detect-squares`],
+  ],
+});
+
+// NeetCode 250: NeetCode 150 plus 100 more, on the same roadmap (the same
+// topics and prerequisite lines). Membership and the order inside each topic
+// are neetcode.io's own list data (https://neetcode.io/practice/practice/neetcode250,
+// the problem objects in its main bundle, fetched 2026-11-04:
+// e2e/neetcode-lists.txt, which roadmap.test.mjs compares). The topics keep
+// NeetCode 150's order (neetcode.io puts Math & Geometry before Bit
+// Manipulation here, but the roadmap leads from Bit Manipulation to it).
+export const NEETCODE_250 = defineList({
+  id: 'neetcode-250',
+  title: 'NeetCode 250',
+  description: 'NeetCode 150 and 100 more, by topic on the same roadmap.',
+  groupNoun: 'topic',
+  edges: EDGES,
+  groups: [
+  ['arrays-hashing', 'Arrays & Hashing', `
+    concatenation-of-array
+    contains-duplicate
+    valid-anagram
+    two-sum
+    longest-common-prefix
+    group-anagrams
+    remove-element
+    majority-element
+    design-hashset
+    design-hashmap
+    sort-an-array
+    sort-colors
+    top-k-frequent-elements
+    encode-and-decode-strings
+    range-sum-query-2d-immutable
+    product-of-array-except-self
+    valid-sudoku
+    longest-consecutive-sequence
+    best-time-to-buy-and-sell-stock-ii
+    majority-element-ii
+    subarray-sum-equals-k
+    first-missing-positive`],
+  ['two-pointers', 'Two Pointers', `
+    reverse-string
+    valid-palindrome
+    valid-palindrome-ii
+    merge-strings-alternately
+    merge-sorted-array
+    remove-duplicates-from-sorted-array
+    two-sum-ii-input-array-is-sorted
+    3sum
+    4sum
+    rotate-array
+    container-with-most-water
+    boats-to-save-people
+    trapping-rain-water`],
+  ['sliding-window', 'Sliding Window', `
+    contains-duplicate-ii
+    best-time-to-buy-and-sell-stock
+    longest-substring-without-repeating-characters
+    longest-repeating-character-replacement
+    permutation-in-string
+    minimum-size-subarray-sum
+    find-k-closest-elements
+    minimum-window-substring
+    sliding-window-maximum`],
+  ['stack', 'Stack', `
+    baseball-game
+    valid-parentheses
+    implement-stack-using-queues
+    implement-queue-using-stacks
+    min-stack
+    evaluate-reverse-polish-notation
+    asteroid-collision
+    daily-temperatures
+    online-stock-span
+    car-fleet
+    simplify-path
+    decode-string
+    maximum-frequency-stack
+    largest-rectangle-in-histogram`],
+  ['binary-search', 'Binary Search', `
+    binary-search
+    search-insert-position
+    guess-number-higher-or-lower
+    sqrtx
+    search-a-2d-matrix
+    koko-eating-bananas
+    capacity-to-ship-packages-within-d-days
+    find-minimum-in-rotated-sorted-array
+    search-in-rotated-sorted-array
+    search-in-rotated-sorted-array-ii
+    time-based-key-value-store
+    split-array-largest-sum
+    median-of-two-sorted-arrays
+    find-in-mountain-array`],
+  ['linked-list', 'Linked List', `
+    reverse-linked-list
+    merge-two-sorted-lists
+    linked-list-cycle
+    reorder-list
+    remove-nth-node-from-end-of-list
+    copy-list-with-random-pointer
+    add-two-numbers
+    find-the-duplicate-number
+    reverse-linked-list-ii
+    design-circular-queue
+    lru-cache
+    lfu-cache
+    merge-k-sorted-lists
+    reverse-nodes-in-k-group`],
+  ['trees', 'Trees', `
+    binary-tree-inorder-traversal
+    binary-tree-preorder-traversal
+    binary-tree-postorder-traversal
+    invert-binary-tree
+    maximum-depth-of-binary-tree
+    diameter-of-binary-tree
+    balanced-binary-tree
+    same-tree
+    subtree-of-another-tree
+    lowest-common-ancestor-of-a-binary-search-tree
+    insert-into-a-binary-search-tree
+    delete-node-in-a-bst
+    binary-tree-level-order-traversal
+    binary-tree-right-side-view
+    construct-quad-tree
+    count-good-nodes-in-binary-tree
+    validate-binary-search-tree
+    kth-smallest-element-in-a-bst
+    construct-binary-tree-from-preorder-and-inorder-traversal
+    house-robber-iii
+    delete-leaves-with-a-given-value
+    binary-tree-maximum-path-sum
+    serialize-and-deserialize-binary-tree`],
+  ['heap', 'Heap / Priority Queue', `
+    kth-largest-element-in-a-stream
+    last-stone-weight
+    k-closest-points-to-origin
+    kth-largest-element-in-an-array
+    task-scheduler
+    design-twitter
+    single-threaded-cpu
+    reorganize-string
+    longest-happy-string
+    car-pooling
+    find-median-from-data-stream
+    ipo`],
+  ['backtracking', 'Backtracking', `
+    sum-of-all-subset-xor-totals
+    subsets
+    combination-sum
+    combination-sum-ii
+    combinations
+    permutations
+    subsets-ii
+    permutations-ii
+    generate-parentheses
+    word-search
+    palindrome-partitioning
+    letter-combinations-of-a-phone-number
+    matchsticks-to-square
+    partition-to-k-equal-sum-subsets
+    n-queens
+    n-queens-ii
+    word-break-ii`],
+  ['tries', 'Tries', `
+    implement-trie-prefix-tree
+    design-add-and-search-words-data-structure
+    extra-characters-in-a-string
+    word-search-ii`],
+  ['graphs', 'Graphs', `
+    island-perimeter
+    verifying-an-alien-dictionary
+    find-the-town-judge
+    number-of-islands
+    max-area-of-island
+    clone-graph
+    walls-and-gates
+    rotting-oranges
+    pacific-atlantic-water-flow
+    surrounded-regions
+    open-the-lock
+    course-schedule
+    course-schedule-ii
+    graph-valid-tree
+    course-schedule-iv
+    number-of-connected-components-in-an-undirected-graph
+    redundant-connection
+    accounts-merge
+    evaluate-division
+    minimum-height-trees
+    word-ladder`],
+  ['advanced-graphs', 'Advanced Graphs', `
+    path-with-minimum-effort
+    network-delay-time
+    reconstruct-itinerary
+    min-cost-to-connect-all-points
+    swim-in-rising-water
+    alien-dictionary
+    cheapest-flights-within-k-stops
+    find-critical-and-pseudo-critical-edges-in-minimum-spanning-tree
+    build-a-matrix-with-conditions
+    greatest-common-divisor-traversal`],
+  ['dp-1d', '1-D Dynamic Programming', `
+    climbing-stairs
+    min-cost-climbing-stairs
+    n-th-tribonacci-number
+    house-robber
+    house-robber-ii
+    longest-palindromic-substring
+    palindromic-substrings
+    decode-ways
+    coin-change
+    maximum-product-subarray
+    word-break
+    longest-increasing-subsequence
+    partition-equal-subset-sum
+    combination-sum-iv
+    perfect-squares
+    integer-break
+    stone-game-iii`],
+  ['dp-2d', '2-D Dynamic Programming', `
+    unique-paths
+    unique-paths-ii
+    minimum-path-sum
+    longest-common-subsequence
+    last-stone-weight-ii
+    best-time-to-buy-and-sell-stock-with-cooldown
+    coin-change-ii
+    target-sum
+    interleaving-string
+    stone-game
+    stone-game-ii
+    longest-increasing-path-in-a-matrix
+    distinct-subsequences
+    edit-distance
+    burst-balloons
+    regular-expression-matching`],
+  ['greedy', 'Greedy', `
+    lemonade-change
+    maximum-subarray
+    maximum-sum-circular-subarray
+    longest-turbulent-subarray
+    jump-game
+    jump-game-ii
+    jump-game-vii
+    gas-station
+    hand-of-straights
+    dota2-senate
+    merge-triplets-to-form-target-triplet
+    partition-labels
+    valid-parenthesis-string
+    candy`],
+  ['intervals', 'Intervals', `
+    insert-interval
+    merge-intervals
+    non-overlapping-intervals
+    meeting-rooms
+    meeting-rooms-ii
+    meeting-rooms-iii
+    minimum-interval-to-include-each-query`],
+  ['bit-manipulation', 'Bit Manipulation', `
+    single-number
+    number-of-1-bits
+    counting-bits
+    add-binary
+    reverse-bits
+    missing-number
+    sum-of-two-integers
+    reverse-integer
+    bitwise-and-of-numbers-range
+    minimum-array-end`],
+  ['math-geometry', 'Math & Geometry', `
+    excel-sheet-column-title
+    greatest-common-divisor-of-strings
+    insert-greatest-common-divisors-in-linked-list
+    transpose-matrix
+    rotate-image
+    spiral-matrix
+    set-matrix-zeroes
+    happy-number
+    plus-one
+    roman-to-integer
     powx-n
     multiply-strings
     detect-squares`],
@@ -817,7 +1102,7 @@ export const SQL_50 = defineList({
 });
 
 // Every list, in the order the Progress tab offers them.
-export const LISTS = [NEETCODE_150, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50];
+export const LISTS = [NEETCODE_150, NEETCODE_250, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50];
 export const ROADMAPS = Object.fromEntries(LISTS.map((list) => [list.id, list]));
 export const DEFAULT_LIST_ID = NEETCODE_150.id;
 

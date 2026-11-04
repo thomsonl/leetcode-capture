@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { NEETCODE_150, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50, LISTS, ROADMAPS, DEFAULT_LIST_ID, listById, problemInList, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
+import { NEETCODE_150, NEETCODE_250, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTERVIEW_150, SQL_50, LISTS, ROADMAPS, DEFAULT_LIST_ID, listById, problemInList, progress, unlockedTopics, nextOnRoadmap, moreOfTopic, suggestAfterSolve, problemUrl } from './shared/roadmap.js';
 import { CATALOG, catalogEntry } from './shared/catalog.js';
 import { listSlugs, OUT } from './scripts/list-slugs.mjs';
 
@@ -84,10 +84,10 @@ test('suggestAfterSolve counts the problem just solved', () => {
 
 // ---- every list ------------------------------------------------------------
 
-const SIZES = { 'neetcode-150': [150, 18], 'blind-75': [75, 10], 'grind-75': [75, 8], 'top-100-liked': [100, 15], 'top-interview-150': [150, 23], 'sql-50': [50, 7] };
+const SIZES = { 'neetcode-150': [150, 18], 'neetcode-250': [250, 18], 'blind-75': [75, 10], 'grind-75': [75, 8], 'top-100-liked': [100, 15], 'top-interview-150': [150, 23], 'sql-50': [50, 7] };
 
 test('the lists, in the selector order, with their sizes and group counts', () => {
-  assert.deepEqual(LISTS.map((l) => l.id), ['neetcode-150', 'blind-75', 'grind-75', 'top-100-liked', 'top-interview-150', 'sql-50']);
+  assert.deepEqual(LISTS.map((l) => l.id), ['neetcode-150', 'neetcode-250', 'blind-75', 'grind-75', 'top-100-liked', 'top-interview-150', 'sql-50']);
   assert.equal(DEFAULT_LIST_ID, 'neetcode-150');
   for (const list of LISTS) {
     const [size, groups] = SIZES[list.id];
@@ -106,7 +106,7 @@ test('the lists, in the selector order, with their sizes and group counts', () =
         assert.equal(p.topic, t.id);
       }
     }
-    assert.equal(list.kind, list.id === 'neetcode-150' ? 'graph' : 'groups', list.id);
+    assert.equal(list.kind, list.id.startsWith('neetcode-') ? 'graph' : 'groups', list.id);
   }
 });
 
@@ -133,16 +133,31 @@ test('LeetCode\'s study plans match LeetCode\'s own data: sections, their order,
   }
 });
 
-test('NeetCode 150 matches neetcode.io\'s own list: each topic\'s problems in its order', () => {
-  const site = new Map(snapshot('neetcode-lists.txt').neetcode150.map((g) => [g.title, g.slugs.map(([slug]) => slug)]));
-  assert.equal(site.size, NEETCODE_150.topics.length);
-  for (const t of NEETCODE_150.topics) assert.deepEqual(t.problems.map((p) => p.slug), site.get(t.title), t.title);
+test('NeetCode 150 and 250 match neetcode.io\'s own lists: each topic\'s problems in its order', () => {
+  const lists = snapshot('neetcode-lists.txt');
+  for (const [flag, list] of [['neetcode150', NEETCODE_150], ['neetcode250', NEETCODE_250]]) {
+    const site = new Map(lists[flag].map((g) => [g.title, g.slugs.map(([slug]) => slug)]));
+    assert.equal(site.size, list.topics.length, flag);
+    for (const t of list.topics) assert.deepEqual(t.problems.map((p) => p.slug), site.get(t.title), `${flag}/${t.title}`);
+  }
 });
 
-test('only NeetCode 150 has prerequisite lines, and they join its own topics', () => {
+test('NeetCode 250 is NeetCode 150 and 100 more, on the same roadmap', () => {
+  const in250 = new Set(NEETCODE_250.topics.flatMap((t) => t.problems.map((p) => p.slug)));
+  for (const p of NEETCODE_150.topics.flatMap((t) => t.problems)) {
+    assert.ok(in250.has(p.slug), p.slug);
+    assert.equal(problemInList(NEETCODE_250, p.slug).topic, p.topic, `${p.slug} keeps its topic`);
+  }
+  assert.equal(in250.size - 150, 100);
+  assert.deepEqual(NEETCODE_250.topics.map((t) => [t.id, t.title]), NEETCODE_150.topics.map((t) => [t.id, t.title]));
+  assert.deepEqual(NEETCODE_250.edges, NEETCODE_150.edges);
+  assert.deepEqual(nextOnRoadmap(NEETCODE_250, [], { count: 2 }).map((p) => p.slug), ['concatenation-of-array', 'contains-duplicate']);
+});
+
+test('only the NeetCode roadmaps have prerequisite lines, and they join their own topics', () => {
   for (const list of LISTS) {
     const ids = new Set(list.topics.map((t) => t.id));
-    if (list.id !== 'neetcode-150') assert.deepEqual(list.edges, [], list.id);
+    if (list.kind !== 'graph') assert.deepEqual(list.edges, [], list.id);
     for (const [a, b] of list.edges) assert.ok(ids.has(a) && ids.has(b), `${list.id}: ${a} -> ${b}`);
   }
 });
