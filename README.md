@@ -229,10 +229,12 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
 
 The settings page has a **Progress** tab (open it with `#progress`, or "See your progress" in the Tutor tab) that tracks a problem list of your choice.
 It is a picture only and changes no setting.
-"Working on" at the top picks the list: NeetCode 150 (the default; NeetCode's expanded Blind 75), Blind 75, Grind 75 (its default eight week schedule), LeetCode's Top Interview 150 or LeetCode's SQL 50.
+"Working on" at the top picks the list: NeetCode 150 (the default; NeetCode's expanded Blind 75), NeetCode 250 (NeetCode 150 and 100 more), Blind 75, Grind 75 (its default eight week schedule), or one of LeetCode's own study plans: Top 100 Liked, Top Interview 150 or SQL 50.
+NeetCode's lists follow neetcode.io's own list data and LeetCode's follow its study plan data, membership and order included; neetcode.io has no "NeetCode 75" list, so there is none here.
 The choice is kept in the extension's local storage (`activeProgressList`) and drives the whole tab and the Tutor tab's card.
-NeetCode 150 is drawn as its roadmap: the 18 topics as a graph with the prerequisite lines, each node with its solved count.
-Every other list is drawn as its own groups (categories, weeks or sections, as the list's publisher groups it) in the publisher's order, each card with its solved count and a part per difficulty; the next group is simply the first one not finished.
+NeetCode 150 and NeetCode 250 are drawn as NeetCode's roadmap: the same 18 topics as a graph with the prerequisite lines, each node with its solved count.
+Every other list is drawn as its own groups (categories, topics or sections, as the list's publisher groups it) in the publisher's order, each card with its solved count and a part per difficulty; the next group is simply the first one not finished.
+Grind 75 groups only by week, so a "Group by" switch also shows it by subject (NeetCode's topic names, one subject per problem); the next problem is still the first unsolved one in the weekly order, and the switch is remembered per list in that page only.
 The topic or group and the problem to do next are marked.
 Clicking a topic or group opens a side panel with its prerequisites (or the group before it) and a table of its problems (status, star, a link to the problem on leetcode.com, difficulty).
 Every list refers to one shared catalog of problems (`extension/shared/catalog.js`), so a problem solved once counts in every list that has it.
@@ -244,7 +246,7 @@ For problems you solved before installing, click the status mark in a topic's or
 Solved problems (`solvedProblems`: slug, time, count), stars (`starredProblems`) and the chosen list (`activeProgressList`) are kept in the extension's local storage and never sent anywhere.
 Changing the list never changes the solved problems.
 
-After an accepted submission the Tutor tab shows a short card: "Nice job completing <problem>", the next problem on the list you work on ("Next up on Blind 75") and one more of the same topic or group, as ordinary links.
+After an accepted submission the Tutor tab shows a short card: "Nice job completing <problem>", the next problem on the list you work on ("Next up on Blind 75") and one more of the same topic or group (for Grind 75, of the same subject), as ordinary links.
 The newest card also has a small "Working on" menu that switches lists right there, and the card follows.
 The tab builds it from the bundled lists; it is never sent to the tutor and never enters its context.
 For a problem that is not on the chosen list, the card offers only that list's next problem.
