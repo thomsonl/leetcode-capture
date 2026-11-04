@@ -2947,7 +2947,8 @@
   // Moving between the browser and the helper starts the other runtime's own
   // session, since the two keep separate conversations.
   // Keyboard: Enter, Space or the arrows open it; arrows, Home and End move;
-  // Enter or Space choose; Escape closes and puts focus back on the button.
+  // Enter or Space choose; Escape closes and puts focus back on the button;
+  // Tab closes and goes on to the gear, Shift+Tab back to the button.
 
   let profiles = []; // the worker's entries
   let activeProfileId = null;
@@ -3099,7 +3100,12 @@
         e.preventDefault();
         closeMenu(p, true);
       } else if (e.key === "Tab") {
-        closeMenu(p, false);
+        // The listbox sits after the composer in the page's order, so a
+        // plain Tab would leave the panel: it goes on from the button
+        // instead, to the gear (Shift+Tab stays on the button).
+        e.preventDefault();
+        closeMenu(p, true);
+        if (!e.shiftKey) p.gear.focus({ preventScroll: true });
       }
     });
     p.menu.addEventListener("click", (e) => {

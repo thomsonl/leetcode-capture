@@ -224,11 +224,22 @@ try {
     check(await page.eval(`window.__q('.menu').hidden`), 'Escape closes');
     check((await page.eval(`window.__root().activeElement === window.__q('button.model')`)), 'focus back on the button');
     check((await page.eval(`window.__q('button.model').getAttribute('aria-expanded')`)) === 'false', 'collapsed');
-    // Enter on the button opens it too; Tab closes without choosing.
+    // Enter on the button opens it too; Tab closes without choosing and goes
+    // on to the gear, inside the panel (the listbox comes after the composer
+    // in the page, so a plain Tab would leave the Tutor panel).
     await key('Enter');
     check(!(await page.eval(`window.__q('.menu').hidden`)), 'Enter opens');
+    await key('ArrowDown');
     await key('Tab');
     check(await page.eval(`window.__q('.menu').hidden`), 'Tab closes');
+    check(await page.eval(`window.__root().activeElement === window.__q('button.gear')`), `Tab goes on to the gear: ${await focused()}`);
+    check((await page.eval(`window.__q('button.model').textContent`)) === 'gpt-oss:20b', 'nothing was chosen');
+    // Shift+Tab closes and stays on the button.
+    await page.eval(`window.__q('button.model').focus()`);
+    await key('Enter');
+    await key('Tab', 8);
+    check(await page.eval(`window.__q('.menu').hidden`), 'Shift+Tab closes');
+    check(await page.eval(`window.__root().activeElement === window.__q('button.model')`), `Shift+Tab stays on the button: ${await focused()}`);
   });
 
   await scenario('Enter on an entry switches through the worker; "Switching" until a reply already running ends', async () => {
