@@ -2,36 +2,61 @@
 // plus the pure logic they share. No Node or browser APIs, so the options
 // page, the background worker and the companion can all import it.
 //
-// A list is { id, title, short, description, kind, topics, edges }:
-//   topics  its groups in the publisher's order, each { id, title, problems }
-//           where a problem is { slug, title, difficulty, topic } (title and
-//           difficulty come from the one shared catalog, shared/catalog.js)
-//   edges   prerequisite lines [from, to] between topics; only NeetCode 150
-//           and NeetCode 250 have them (kind 'graph', one roadmap for both),
-//           every other list is drawn as ordered groups (kind 'groups') and
-//           its next group is simply the first one not finished
+// A list is { id, title, short, description, kind, topics, edges, subjects }:
+//   topics    its groups in the publisher's order, each { id, title, problems }
+//             where a problem is { slug, title, difficulty, topic } (title and
+//             difficulty come from the one shared catalog, shared/catalog.js)
+//   edges     prerequisite lines [from, to] between topics; only NeetCode 150
+//             and NeetCode 250 have them (kind 'graph', one roadmap for both),
+//             every other list is drawn as ordered groups (kind 'groups') and
+//             its next group is simply the first one not finished
+//   subjects  only for a list whose own groups are not subjects (Grind 75's
+//             weeks): a second grouping of the same problems by subject, each
+//             { id, title, problems } with the problems in the list's order;
+//             every problem then also carries `subject`. The list's order (and
+//             so what comes next) stays the publisher's; subjects are a view.
 // The slug is LeetCode's own (leetcode.com/problems/<slug>/), which is also
 // what the extension reads from the page address, so a problem solved once
 // counts in every list.
 
 import { CATALOG } from './catalog.js';
 
+const words = (slugs) => slugs.split(/\s+/).filter(Boolean);
+
 // Each group: [id, title, slugs], the slugs one per line in the list's order.
-function defineList({ id, title, short, description, groupNoun, groups, edges = [] }) {
+function defineList({ id, title, short, description, groupNoun, groups, edges = [], subjects = null }) {
   const topics = groups.map(([topicId, topicTitle, slugs]) => ({
     id: topicId,
     title: topicTitle,
-    problems: slugs
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((slug) => {
-        const entry = CATALOG.get(slug);
-        if (!entry) throw new Error(`${id}: ${slug} is not in the catalog`);
-        return { slug, title: entry.title, difficulty: entry.difficulty, topic: topicId };
-      }),
+    problems: words(slugs).map((slug) => {
+      const entry = CATALOG.get(slug);
+      if (!entry) throw new Error(`${id}: ${slug} is not in the catalog`);
+      return { slug, title: entry.title, difficulty: entry.difficulty, topic: topicId };
+    }),
   }));
   const size = topics.reduce((n, t) => n + t.problems.length, 0);
-  return { id, title, short: short || title, description, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges };
+  const list = { id, title, short: short || title, description, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges, subjects: null };
+  if (subjects) list.subjects = defineSubjects(list, subjects);
+  return list;
+}
+
+// Every problem of the list in exactly one subject; each subject keeps the
+// list's order.
+function defineSubjects(list, subjects) {
+  const problems = list.topics.flatMap((t) => t.problems);
+  const where = new Map();
+  for (const [subjectId, , slugs] of subjects) {
+    for (const slug of words(slugs)) {
+      if (where.has(slug)) throw new Error(`${list.id}: ${slug} has two subjects`);
+      where.set(slug, subjectId);
+    }
+  }
+  for (const p of problems) {
+    if (!where.has(p.slug)) throw new Error(`${list.id}: ${p.slug} has no subject`);
+    p.subject = where.get(p.slug);
+  }
+  if (where.size !== problems.length) throw new Error(`${list.id}: a subject names a problem the list does not have`);
+  return subjects.map(([subjectId, subjectTitle]) => ({ id: subjectId, title: subjectTitle, problems: problems.filter((p) => p.subject === subjectId) }));
 }
 
 // NeetCode 150, in NeetCode's order, with its roadmap's prerequisite lines.
@@ -718,6 +743,111 @@ export const GRIND_75 = defineList({
     merge-k-sorted-lists
     largest-rectangle-in-histogram`],
   ],
+  // Grind 75 groups by week only, so each problem also gets one subject, in
+  // NeetCode's topic names and order: its NeetCode 150 topic; else its
+  // Blind 75 category, Top Interview 150 section or Top 100 Liked group, put
+  // under the NeetCode topic of the same name (Hashmap and Array / String are
+  // Arrays & Hashing, Binary Tree General is Trees); else by judgment (Flood
+  // Fill, 01 Matrix, Accounts Merge and Minimum Height Trees are Graphs,
+  // Implement Queue using Stacks is Stack, First Bad Version is Binary Search,
+  // Longest Palindrome is Arrays & Hashing, Middle of the Linked List is
+  // Linked List, Sort Colors is Two Pointers, String to Integer (atoi) is Math
+  // & Geometry, Maximum Profit in Job Scheduling is 1-D Dynamic Programming).
+  // roadmap.test.mjs checks the first rule.
+  subjects: [
+  ['arrays-hashing', 'Arrays & Hashing', `
+    two-sum
+    valid-anagram
+    ransom-note
+    longest-palindrome
+    majority-element
+    contains-duplicate
+    product-of-array-except-self`],
+  ['two-pointers', 'Two Pointers', `
+    valid-palindrome
+    3sum
+    sort-colors
+    container-with-most-water
+    trapping-rain-water`],
+  ['sliding-window', 'Sliding Window', `
+    best-time-to-buy-and-sell-stock
+    longest-substring-without-repeating-characters
+    find-all-anagrams-in-a-string
+    minimum-window-substring`],
+  ['stack', 'Stack', `
+    valid-parentheses
+    implement-queue-using-stacks
+    evaluate-reverse-polish-notation
+    min-stack
+    basic-calculator
+    largest-rectangle-in-histogram`],
+  ['binary-search', 'Binary Search', `
+    binary-search
+    first-bad-version
+    search-in-rotated-sorted-array
+    time-based-key-value-store`],
+  ['linked-list', 'Linked List', `
+    merge-two-sorted-lists
+    linked-list-cycle
+    reverse-linked-list
+    middle-of-the-linked-list
+    lru-cache
+    merge-k-sorted-lists`],
+  ['trees', 'Trees', `
+    invert-binary-tree
+    lowest-common-ancestor-of-a-binary-search-tree
+    balanced-binary-tree
+    diameter-of-binary-tree
+    maximum-depth-of-binary-tree
+    binary-tree-level-order-traversal
+    validate-binary-search-tree
+    lowest-common-ancestor-of-a-binary-tree
+    binary-tree-right-side-view
+    construct-binary-tree-from-preorder-and-inorder-traversal
+    kth-smallest-element-in-a-bst
+    serialize-and-deserialize-binary-tree`],
+  ['heap', 'Heap / Priority Queue', `
+    k-closest-points-to-origin
+    task-scheduler
+    find-median-from-data-stream`],
+  ['backtracking', 'Backtracking', `
+    combination-sum
+    permutations
+    subsets
+    letter-combinations-of-a-phone-number
+    word-search`],
+  ['tries', 'Tries', `
+    implement-trie-prefix-tree`],
+  ['graphs', 'Graphs', `
+    flood-fill
+    01-matrix
+    clone-graph
+    course-schedule
+    number-of-islands
+    rotting-oranges
+    accounts-merge
+    minimum-height-trees
+    word-ladder`],
+  ['dp-1d', '1-D Dynamic Programming', `
+    climbing-stairs
+    coin-change
+    word-break
+    partition-equal-subset-sum
+    longest-palindromic-substring
+    maximum-profit-in-job-scheduling`],
+  ['dp-2d', '2-D Dynamic Programming', `
+    unique-paths`],
+  ['greedy', 'Greedy', `
+    maximum-subarray`],
+  ['intervals', 'Intervals', `
+    insert-interval
+    merge-intervals`],
+  ['bit-manipulation', 'Bit Manipulation', `
+    add-binary`],
+  ['math-geometry', 'Math & Geometry', `
+    string-to-integer-atoi
+    spiral-matrix`],
+  ],
 });
 
 // LeetCode's own Top 100 Liked study plan (plan top-100-liked), with its
@@ -1172,12 +1302,12 @@ export function nextOnRoadmap(roadmap, solved, { count = 1 } = {}) {
 }
 
 // More of the same kind: unsolved problems in the topic of the one just
-// solved, easiest first.
+// solved (its subject, on a list that has subjects), easiest first.
 export function moreOfTopic(roadmap, solved, slug, { count = 1 } = {}) {
   const done = new Set(solved);
   const problem = index(roadmap).get(slug);
   if (!problem) return { topic: null, problems: [] };
-  const topic = roadmap.topics.find((t) => t.id === problem.topic);
+  const topic = roadmap.subjects ? roadmap.subjects.find((t) => t.id === problem.subject) : roadmap.topics.find((t) => t.id === problem.topic);
   const rank = { Easy: 0, Medium: 1, Hard: 2 };
   const problems = topic.problems
     .filter((p) => !done.has(p.slug) && p.slug !== slug)

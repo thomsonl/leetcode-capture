@@ -128,7 +128,7 @@ export function congratulation(solved, slug, roadmap = NEETCODE_150) {
   const sameTopic = suggestion.sameTopic;
   const other = sameTopic.problems.find((p) => !next || p.slug !== next.slug) || null;
   const entry = problemInList(roadmap, slug) || catalogEntry(slug);
-  const label = sameTopic.topic && (roadmap.groupNoun === 'week' ? `More from ${sameTopic.topic.title}` : `More ${sameTopic.topic.title} problems`);
+  const label = sameTopic.topic && `More ${sameTopic.topic.title} problems`;
   return {
     roadmap: suggestion.roadmap,
     lists: LISTS.map((list) => ({ id: list.id, title: list.title, size: list.size })),

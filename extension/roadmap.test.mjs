@@ -223,6 +223,34 @@ test('per list progress, more of a group and the suggestion after a solve', () =
   assert.equal(s.agenda[0].slug, 'best-time-to-buy-and-sell-stock');
   assert.equal(problemInList(SQL_50, 'two-sum'), null);
   assert.equal(problemInList(GRIND_75, 'two-sum').topic, 'week-1');
+  assert.equal(problemInList(GRIND_75, 'two-sum').subject, 'arrays-hashing');
+});
+
+test('every list groups by subject: Grind 75, whose groups are weeks, also has one subject per problem', () => {
+  for (const list of LISTS) assert.equal(Boolean(list.subjects), list.id === 'grind-75', list.id);
+  const subjects = GRIND_75.subjects;
+  const problems = GRIND_75.topics.flatMap((t) => t.problems);
+  assert.equal(subjects.flatMap((s) => s.problems).length, 75);
+  assert.equal(new Set(subjects.flatMap((s) => s.problems.map((p) => p.slug))).size, 75);
+  const order = new Map(problems.map((p, i) => [p.slug, i]));
+  for (const s of subjects) {
+    assert.ok(s.problems.length > 0, s.id);
+    // In the list's order, and the same problem objects the weeks hold.
+    for (let i = 1; i < s.problems.length; i += 1) assert.ok(order.get(s.problems[i - 1].slug) < order.get(s.problems[i].slug), s.id);
+    for (const p of s.problems) assert.equal(p.subject, s.id);
+  }
+  for (const p of problems) assert.ok(problems.includes(p) && subjects.some((s) => s.problems.includes(p)), p.slug);
+  // NeetCode's topic names and order, and a NeetCode 150 problem keeps its topic.
+  const nc = NEETCODE_150.topics.map((t) => t.id);
+  assert.deepEqual(subjects.map((s) => s.id), nc.filter((id) => subjects.some((s) => s.id === id)));
+  for (const s of subjects) assert.equal(s.title, NEETCODE_150.topics.find((t) => t.id === s.id).title);
+  for (const p of problems) {
+    const inNc = problemInList(NEETCODE_150, p.slug);
+    if (inNc) assert.equal(p.subject, inNc.topic, p.slug);
+  }
+  // The weeks stay the order: what comes next does not change with subjects.
+  assert.equal(nextOnRoadmap(GRIND_75, ['two-sum'])[0].slug, 'valid-parentheses');
+  assert.equal(moreOfTopic(GRIND_75, [], 'two-sum').topic.id, 'arrays-hashing');
 });
 
 test('an unknown or damaged list id means NeetCode 150', () => {

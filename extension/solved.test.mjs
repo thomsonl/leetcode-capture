@@ -117,9 +117,12 @@ test('the card follows the list it is given: its next problem, its group, its la
   assert.equal(blind.more.topic.title, 'Array');
   assert.equal(blind.more.label, 'More Array problems');
   assert.notEqual(blind.more.problem.slug, blind.next.slug);
+  // Grind 75's weeks are not subjects: more of the same subject, not week.
   const grind = congratulation({}, 'flood-fill', GRIND_75);
   assert.equal(grind.next.slug, 'two-sum');
-  assert.equal(grind.more.label, 'More from Week 1');
+  assert.equal(grind.more.topic.title, 'Graphs');
+  assert.equal(grind.more.label, 'More Graphs problems');
+  assert.equal(grind.more.problem.slug, '01-matrix');
   // Two Sum is not on SQL 50: the agenda only, and the catalog's title.
   const sql = congratulation({}, 'two-sum', SQL_50);
   assert.equal(sql.solvedTitle, 'Two Sum');
@@ -219,7 +222,7 @@ test('the card after an accepted submission follows the stored list; no stored o
   const a = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '301', slug: 'two-sum' }, tabSender());
   assert.equal(a.card.roadmap.title, 'Grind 75');
   assert.equal(a.card.next.slug, 'valid-parentheses');
-  assert.equal(a.card.more.label, 'More from Week 1');
+  assert.equal(a.card.more.label, 'More Arrays & Hashing problems');
   storage.data[ACTIVE_LIST_KEY] = 'no-such-list';
   const b = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '302', slug: 'two-sum' }, tabSender());
   assert.equal(b.card.roadmap.title, 'NeetCode 150');
