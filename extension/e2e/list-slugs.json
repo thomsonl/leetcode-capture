@@ -821,7 +821,7 @@
             "number-of-unique-subjects-taught-by-each-teacher",
             "user-activity-for-the-past-30-days-i",
             "product-sales-analysis-iii",
-            "classes-more-than-5-students",
+            "classes-with-at-least-5-students",
             "find-followers-count",
             "biggest-single-number",
             "customers-who-bought-all-products"
@@ -2732,7 +2732,7 @@
     {
       "slug": "count-complete-tree-nodes",
       "title": "Count Complete Tree Nodes",
-      "difficulty": "Easy",
+      "difficulty": "Medium",
       "lists": [
         "top-interview-150"
       ]
@@ -3170,8 +3170,8 @@
       ]
     },
     {
-      "slug": "classes-more-than-5-students",
-      "title": "Classes More Than 5 Students",
+      "slug": "classes-with-at-least-5-students",
+      "title": "Classes With at Least 5 Students",
       "difficulty": "Easy",
       "lists": [
         "sql-50"

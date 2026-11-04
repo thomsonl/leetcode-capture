@@ -228,7 +228,7 @@ flatten-binary-tree-to-linked-list|Flatten Binary Tree to Linked List|M
 path-sum|Path Sum|E
 sum-root-to-leaf-numbers|Sum Root to Leaf Numbers|M
 binary-search-tree-iterator|Binary Search Tree Iterator|M
-count-complete-tree-nodes|Count Complete Tree Nodes|E
+count-complete-tree-nodes|Count Complete Tree Nodes|M
 average-of-levels-in-binary-tree|Average of Levels in Binary Tree|E
 binary-tree-zigzag-level-order-traversal|Binary Tree Zigzag Level Order Traversal|M
 minimum-absolute-difference-in-bst|Minimum Absolute Difference in BST|E
@@ -285,7 +285,7 @@ game-play-analysis-iv|Game Play Analysis IV|M
 number-of-unique-subjects-taught-by-each-teacher|Number of Unique Subjects Taught by Each Teacher|E
 user-activity-for-the-past-30-days-i|User Activity for the Past 30 Days I|E
 product-sales-analysis-iii|Product Sales Analysis III|M
-classes-more-than-5-students|Classes More Than 5 Students|E
+classes-with-at-least-5-students|Classes With at Least 5 Students|E
 find-followers-count|Find Followers Count|E
 biggest-single-number|Biggest Single Number|E
 customers-who-bought-all-products|Customers Who Bought All Products|M

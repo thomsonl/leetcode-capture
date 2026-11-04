@@ -649,7 +649,7 @@ export const SQL_50 = defineList({
     number-of-unique-subjects-taught-by-each-teacher
     user-activity-for-the-past-30-days-i
     product-sales-analysis-iii
-    classes-more-than-5-students
+    classes-with-at-least-5-students
     find-followers-count
     biggest-single-number
     customers-who-bought-all-products`],
