@@ -469,6 +469,44 @@ test('a switch keeps the chat and the held code, waits for a running reply, and 
   assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'gemma');
 });
 
+test('an options-page save that lands while a switch checks its permission is kept', async () => {
+  // The switch's permission check hangs until released, and the page saves
+  // in that gap.
+  let release;
+  const gate = new Promise((r) => (release = r));
+  let hold = false;
+  const storage = memoryStorage({ [SETTINGS_KEY]: TWO_LOCAL });
+  const service = createTutorService({
+    storage,
+    permissions: {
+      contains: async () => {
+        if (hold) {
+          hold = false;
+          await gate;
+        }
+        return true;
+      },
+    },
+    extensionOrigin: ORIGIN,
+    buildBackendImpl: recordingBackends().impl,
+  });
+  await service.ready;
+  hold = true;
+  const switching = service.switchProfile('gemma');
+  for (let i = 0; i < 5; i++) await tick();
+  const saving = service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: { options: { autoClearContext: false } } } }, OPTIONS_PAGE);
+  for (let i = 0; i < 5; i++) await tick();
+  release();
+  assert.deepEqual(await switching, { ok: true, runtime: 'extension' });
+  assert.equal((await saving).ok, true);
+  await settle(service);
+  assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'gemma', 'the switch is kept');
+  assert.equal(storage.data[SETTINGS_KEY].options.autoClearContext, false, 'and so is the save');
+  const got = await service.handleMessage({ type: 'lc-tutor:settings-get' }, OPTIONS_PAGE);
+  assert.equal(got.result.settings.options.autoClearContext, false, 'in memory too');
+  assert.equal(got.result.settings.activeProfile, 'gemma');
+});
+
 test('switching to a helper profile moves the runtime; the helper confirming a switch only records it', async () => {
   const { service, storage } = await setup({ stored: { [SETTINGS_KEY]: TWO_LOCAL } });
   const port = fakePort();

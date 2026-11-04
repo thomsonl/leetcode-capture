@@ -228,6 +228,20 @@ export function createTutorService({
     broadcast(await profilesMessage());
   }
 
+  // Every change to the settings (a switch, a helper's switch noted, an
+  // options-page save) reads the current settings, checks, writes storage and
+  // takes the result in one step on this queue, so none of them works from a
+  // copy another one replaced while it awaited (a permission check, the
+  // storage write) and overwrites it. Only that step is queued: the engine
+  // swap after it, which may wait for a running reply, is not, so a save is
+  // never held up behind a reply.
+  let commitChain = Promise.resolve();
+  function commit(step) {
+    const run = commitChain.then(step);
+    commitChain = run.catch(() => {});
+    return run;
+  }
+
   // Switches to a saved profile: only the active profile changes (never a
   // key, a URL or anything else), saved like any other setting, and the new
   // backend goes in through the engine's turn queue, so a reply already
@@ -241,41 +255,50 @@ export function createTutorService({
   }
 
   async function doSwitchProfile(id) {
-    const profile = findProfile(settings.profiles, id);
-    if (!profile) return { ok: false, code: 'unknown', message: 'That model is no longer saved. Open Manage models to add it again.' };
-    if (settings.activeProfile === id) return { ok: true, runtime: runtimeFor(settings) };
-    const next = applyPatch(settings, secrets, { activeProfile: id });
-    const runtime = runtimeFor(next.settings);
-    if (runtime === 'extension') {
-      const problem = profileProblem(next.settings, next.secrets);
-      if (problem) return { ok: false, code: 'unavailable', message: `${problem}. Open Manage models to finish setting it up.` };
-      const permission = await permissionFor(next.settings);
-      if (!permission.granted) return { ok: false, code: 'unavailable', message: permissionMessage(next.settings) };
-      try {
-        buildBackend(next.settings, next.secrets, { probe: async () => null });
-      } catch (err) {
-        return { ok: false, code: 'unavailable', message: scrub(err.message, [next.secrets[next.settings.provider]]) };
+    const result = await commit(async () => {
+      const profile = findProfile(settings.profiles, id);
+      if (!profile) return { ok: false, code: 'unknown', message: 'That model is no longer saved. Open Manage models to add it again.' };
+      if (settings.activeProfile === id) return { ok: true, runtime: runtimeFor(settings), unchanged: true };
+      const next = applyPatch(settings, secrets, { activeProfile: id });
+      const runtime = runtimeFor(next.settings);
+      if (runtime === 'extension') {
+        const problem = profileProblem(next.settings, next.secrets);
+        if (problem) return { ok: false, code: 'unavailable', message: `${problem}. Open Manage models to finish setting it up.` };
+        const permission = await permissionFor(next.settings);
+        if (!permission.granted) return { ok: false, code: 'unavailable', message: permissionMessage(next.settings) };
+        try {
+          buildBackend(next.settings, next.secrets, { probe: async () => null });
+        } catch (err) {
+          return { ok: false, code: 'unavailable', message: scrub(err.message, [next.secrets[next.settings.provider]]) };
+        }
       }
-    }
-    await storage.set({ [SETTINGS_KEY]: next.settings });
-    settings = next.settings;
+      await storage.set({ [SETTINGS_KEY]: next.settings });
+      settings = next.settings;
+      return { ok: true, runtime };
+    });
+    if (!result.ok) return result;
+    if (result.unchanged) return { ok: true, runtime: result.runtime };
     await applyToEngine();
     broadcastRuntime();
     onRuntime(runtimeFor(settings));
     await broadcastProfiles();
-    return { ok: true, runtime };
+    return { ok: true, runtime: result.runtime };
   }
 
   // The helper's companion switched to a profile (the panel asked it through
   // the relay); the extension remembers which one is active. Nothing else
   // changes: the tutor keeps running through the helper.
   async function noteHelperSwitch(id) {
-    const profile = findProfile(settings.profiles, id);
-    if (!profile || settings.activeProfile === id || runtimeFor(settings) !== 'helper') return;
-    const next = applyPatch(settings, secrets, { activeProfile: id });
-    if (runtimeFor(next.settings) !== 'helper') return;
-    await storage.set({ [SETTINGS_KEY]: next.settings });
-    settings = next.settings;
+    const changed = await commit(async () => {
+      const profile = findProfile(settings.profiles, id);
+      if (!profile || settings.activeProfile === id || runtimeFor(settings) !== 'helper') return false;
+      const next = applyPatch(settings, secrets, { activeProfile: id });
+      if (runtimeFor(next.settings) !== 'helper') return false;
+      await storage.set({ [SETTINGS_KEY]: next.settings });
+      settings = next.settings;
+      return true;
+    });
+    if (!changed) return;
     await applyToEngine();
     await broadcastProfiles();
   }
@@ -288,20 +311,22 @@ export function createTutorService({
   }
 
   async function save({ patch }) {
-    const next = applyPatch(settings, secrets, patch);
-    if (runtimeFor(next.settings) === 'extension') {
-      const problem = missingRequirement(next.settings, next.secrets);
-      if (problem) throw new SettingsError(problem, 'provider');
-      try {
-        // Only checks that a backend can be built; the probe stays off.
-        buildBackend(next.settings, next.secrets, { probe: async () => null });
-      } catch (err) {
-        throw new SettingsError(scrub(err.message, [next.secrets[next.settings.provider]]), err.field || 'provider');
+    await commit(async () => {
+      const next = applyPatch(settings, secrets, patch);
+      if (runtimeFor(next.settings) === 'extension') {
+        const problem = missingRequirement(next.settings, next.secrets);
+        if (problem) throw new SettingsError(problem, 'provider');
+        try {
+          // Only checks that a backend can be built; the probe stays off.
+          buildBackend(next.settings, next.secrets, { probe: async () => null });
+        } catch (err) {
+          throw new SettingsError(scrub(err.message, [next.secrets[next.settings.provider]]), err.field || 'provider');
+        }
       }
-    }
-    await storage.set({ [SETTINGS_KEY]: next.settings, [SECRETS_KEY]: next.secrets });
-    settings = next.settings;
-    secrets = next.secrets;
+      await storage.set({ [SETTINGS_KEY]: next.settings, [SECRETS_KEY]: next.secrets });
+      settings = next.settings;
+      secrets = next.secrets;
+    });
     await applyToEngine();
     broadcastRuntime();
     onRuntime(runtimeFor(settings));
