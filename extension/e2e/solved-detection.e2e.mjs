@@ -2,7 +2,7 @@
 // extension (Playwright's cached Chromium): https://leetcode.com/problems/...
 // is served by the browser itself (CDP Fetch fulfils it with
 // panel-fixture.html plus a fake Monaco), and so are LeetCode's submission
-// result polls (/submissions/detail/<id>/check/), scripted per submission.
+// result polls (/submissions/detail/<id>/check/ and /v2/check/), scripted per submission.
 // The page polls them the way LeetCode does (fetch and XMLHttpRequest, from
 // the page's own world), and the extension's real inject.js, content.js,
 // worker and panel do the rest.
@@ -95,6 +95,9 @@ const judge = {
   'runcode_1730000000.1_abc': [{ state: 'SUCCESS', status_msg: 'Accepted', status_code: 10, task_name: 'judger.runcodetask.RunCode', code_answer: ['[0,1]'] }],
   7003: [{ state: 'STARTED' }, ACCEPTED],
   7004: [ACCEPTED],
+  7005: [{ state: 'STARTED' }, ACCEPTED],
+  7006: [{ state: 'STARTED' }, ACCEPTED],
+  7007: [{ state: 'STARTED' }, ACCEPTED],
   8001: [ACCEPTED],
 };
 const polls = {};
@@ -134,6 +137,8 @@ try {
       };
       once();
     });
+    // LeetCode today polls the /v2/ path.
+    window.__pollV2 = async (id) => (await (await fetch('/submissions/detail/' + id + '/v2/check/', { credentials: 'include' })).json()).state;
     window.__send = (text) => {
       const t = window.__q('textarea');
       t.value = text;
@@ -151,7 +156,7 @@ try {
         await tab.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'ConnectionRefused' });
         return;
       }
-      const check = /^\/submissions\/detail\/([^/]+)\/check\/$/.exec(url.pathname);
+      const check = /^\/submissions\/detail\/([^/]+)\/(?:v2\/)?check\/$/.exec(url.pathname);
       if (check && judge[check[1]]) {
         const n = (polls[check[1]] = (polls[check[1]] || 0) + 1);
         const answers = judge[check[1]];
@@ -341,6 +346,41 @@ try {
     check(text.startsWith('Nice job completing Valid Parentheses.Next up on NeetCode 150Contains DuplicateEasyMore Stack problemsMin StackMedium'), text);
     await tab.eval(`window.__q('.scroll').scrollTop = 1e6`);
     await tab.screenshot(path.join(shots, 'card-helper-runtime-dark.png'), { width: 1100, height: 760 });
+  });
+
+  await scenario('a verdict that arrives after an in-app move marks neither problem solved; a submission after the move counts for the new one', async () => {
+    // A tab of its own (the helper runtime is still chosen, which detection
+    // does not mind).
+    const page = await openProblem('two-sum');
+    await page.send('Page.bringToFront');
+    await page.eval('window.__openTutor()');
+    await page.waitFor(`window.__q('.feed')`, { what: 'the panel' });
+    const before = await stored();
+    const cards = await page.eval(`window.__cards().length`);
+    // The first poll starts on two-sum; LeetCode's router moves to 3sum
+    // before the next poll brings the verdict.
+    check((await page.eval(`window.__pollV2(7005)`)) === 'STARTED', 'first poll');
+    await page.eval(`history.pushState({}, '', '/problems/3sum/description/')`);
+    check((await page.eval(`window.__pollV2(7005)`)) === 'SUCCESS', 'the verdict');
+    // XMLHttpRequest polling too.
+    await page.eval(`history.pushState({}, '', '/problems/two-sum/description/')`);
+    await page.eval(`new Promise((resolve) => { const x = new XMLHttpRequest(); x.open('GET', '/submissions/detail/7006/v2/check/'); x.onload = resolve; x.send(); })`);
+    await page.eval(`history.pushState({}, '', '/problems/3sum/description/')`);
+    await page.eval(`new Promise((resolve) => { const x = new XMLHttpRequest(); x.open('GET', '/submissions/detail/7006/v2/check/'); x.onload = resolve; x.send(); })`);
+    await sleep(700);
+    const after = await stored();
+    check(JSON.stringify(after) === JSON.stringify(before), `stored: ${JSON.stringify(after)}`);
+    check((await page.eval(`window.__cards().length`)) === cards, 'no card');
+    // A submission made after the move counts for the problem moved to.
+    check((await page.eval(`window.__pollV2(7007)`)) === 'STARTED', 'first poll on 3sum');
+    check((await page.eval(`window.__pollV2(7007)`)) === 'SUCCESS', 'the verdict on 3sum');
+    await sleep(700);
+    const moved = await stored();
+    check(moved['3sum'] && moved['3sum'].count === 1, `stored: ${JSON.stringify(moved)}`);
+    // The panel steps aside on a problem change (ensureMounted in panel.js).
+    await page.eval('window.__openTutor()');
+    await page.waitFor(`window.__cards().length === 1`, { what: 'the card for 3sum' });
+    page.close();
   });
 
   await scenario('nothing about a solve went to the relay', async () => {

@@ -98,10 +98,29 @@
   //
   // Each accepted submission id is reported to content.js once, as
   // leetcode-capture:submission-accepted with a JSON-string detail (the same
-  // Firefox Xray reason as above). Nothing about the code or the problem goes
-  // with it: content.js takes the problem from the page address.
+  // Firefox Xray reason as above): the id and the slug of the problem page
+  // the first check for it started on. LeetCode is a single-page app, so the
+  // verdict can arrive after the student moved to another problem; content.js
+  // and the worker drop a verdict whose slug is not the page's now, rather
+  // than mark the wrong problem solved. Nothing about the code goes with it.
   const CHECK_PATH = /\/submissions\/detail\/([^/?#]+)\/(?:v2\/)?check\/?(?:[?#]|$)/;
   const reported = new Set();
+  const slugs = new Map(); // submission id -> the problem page's slug when its first check started
+  const MAX_SLUGS = 100;
+
+  function pageSlug() {
+    const match = /^\/problems\/([^/]+)/.exec(window.location.pathname || "");
+    return match ? match[1] : null;
+  }
+
+  // Called as each check request starts; the first one for an id fixes its slug.
+  function slugFor(id) {
+    if (!slugs.has(id)) {
+      slugs.set(id, pageSlug());
+      if (slugs.size > MAX_SLUGS) slugs.delete(slugs.keys().next().value);
+    }
+    return slugs.get(id);
+  }
 
   function submissionIdOf(url) {
     let path;
@@ -122,11 +141,11 @@
     return true;
   }
 
-  function noteResult(id, result) {
-    if (!id || reported.has(id) || !isAccepted(result)) return;
+  function noteResult(id, slug, result) {
+    if (!id || !slug || reported.has(id) || !isAccepted(result)) return;
     reported.add(id);
     document.dispatchEvent(
-      new CustomEvent("leetcode-capture:submission-accepted", { detail: JSON.stringify({ submissionId: id }) })
+      new CustomEvent("leetcode-capture:submission-accepted", { detail: JSON.stringify({ submissionId: id, slug }) })
     );
   }
 
@@ -149,13 +168,14 @@
         id = null;
       }
       if (id) {
+        const slug = slugFor(id);
         promise.then(
           (response) => {
             try {
               response
                 .clone()
                 .text()
-                .then((text) => noteResult(id, parseJson(text)), () => {});
+                .then((text) => noteResult(id, slug, parseJson(text)), () => {});
             } catch (err) {
               // an opaque or already-used body: nothing to read
             }
@@ -187,10 +207,10 @@
             } catch (err) {
               result = null;
             }
-            noteResult(current, result);
+            noteResult(current.id, current.slug, result);
           });
         }
-        if (id) ids.set(this, id);
+        if (id) ids.set(this, { id, slug: slugFor(id) });
         else ids.delete(this);
       } catch (err) {
         // never in the page's way

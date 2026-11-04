@@ -13,16 +13,19 @@
 //
 // Messages the background worker answers through createSolvedService:
 //   from a content script on leetcode.com/problems/<slug>/...:
-//     { type: 'lc-tutor:accepted', submissionId }  LeetCode accepted a
-//       submission on this tab's page. The slug comes from the sender's
-//       address, never from the message. Answers { ok, recorded, card }.
+//     { type: 'lc-tutor:accepted', submissionId, slug }  LeetCode accepted a
+//       submission for the problem this tab shows (`slug`, read by the
+//       content script from the live address, since sender.url does not
+//       follow in-app moves; the sender must be a problem page in a tab).
+//       Answers { ok, recorded, card }.
 //   from the extension's own pages (the Progress tab):
 //     { type: 'lc-tutor:solved-set', slug, solved }  mark or unmark by hand
 //     { type: 'lc-tutor:star-set', slug, starred }
 //   from either (the Progress tab's list selector, the card's list menu):
-//     { type: 'lc-tutor:set-list', list }  work on another list. From a
-//       problem page the answer carries that page's card again, built for
-//       the new list: { ok, card }.
+//     { type: 'lc-tutor:set-list', list, slug? }  work on another list. From
+//       a problem page (with the card's `slug`, as for lc-tutor:accepted)
+//       the answer carries that card again, built for the new list:
+//       { ok, card }.
 //
 // Pure JavaScript with no Node API (extension/shared.test.js checks that).
 
@@ -159,10 +162,23 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
     return Boolean(sender && typeof sender.url === 'string' && sender.url.startsWith(`${extensionOrigin}/`));
   }
 
+  // The problem a message from a problem tab is about. The sender must be a
+  // leetcode.com problem page in a tab, but its address (sender.url) is where
+  // the document was loaded: LeetCode moves between problems in the page
+  // (history.pushState) and sender.url does not follow, so the content
+  // script names the problem from the page's live address.
+  function tabSlug(message, sender) {
+    if (!sender || !sender.tab || !slugFromUrl(sender.url)) return null;
+    return isSlug(message.slug) ? message.slug : null;
+  }
+
+  // content.js sends this only when the submission's first check started on
+  // the problem the page shows now (see inject.js), so a verdict that arrives
+  // after a move never marks the next problem solved.
   async function accepted(message, sender) {
-    const slug = slugFromUrl(sender && sender.url);
+    const slug = tabSlug(message, sender);
     const id = message.submissionId;
-    if (!slug || !sender.tab || typeof id !== 'string' || !/^\d{1,20}$/.test(id)) return { ok: false };
+    if (!slug || typeof id !== 'string' || !/^\d{1,20}$/.test(id)) return { ok: false };
     const key = `${slug}:${id}`;
     if (seen.includes(key)) return { ok: true, recorded: false, card: null };
     seen.push(key);
@@ -177,8 +193,8 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
   // Only the list choice is written; the solved problems stay as they are.
   async function setList(message, sender) {
     const page = isExtensionPage(sender);
-    const slug = page ? null : slugFromUrl(sender && sender.url);
-    if (!isListId(message.list) || (!page && !(slug && sender.tab))) return { ok: false };
+    const slug = page ? null : tabSlug(message, sender);
+    if (!isListId(message.list) || (!page && !slug)) return { ok: false };
     return update(async (solved) => {
       await storage.set({ [ACTIVE_LIST_KEY]: message.list });
       return slug ? { ok: true, card: congratulation(solved, slug, listById(message.list)) } : { ok: true };

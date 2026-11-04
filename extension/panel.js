@@ -2202,7 +2202,7 @@
     select.addEventListener("change", async () => {
       const wanted = select.value;
       select.disabled = true;
-      const answer = await askWorker({ type: "lc-tutor:set-list", list: wanted });
+      const answer = await askWorker({ type: "lc-tutor:set-list", list: wanted, slug: item.slug });
       select.disabled = false;
       const fresh = answer && answer.ok === true && answer.card && typeof answer.card === "object" ? cardSuggestions(answer.card) : null;
       if (!fresh || fresh.roadmapId !== wanted || currentSlug() !== item.slug) {

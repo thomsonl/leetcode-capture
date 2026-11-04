@@ -166,20 +166,26 @@ const ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
 const tabSender = (url = 'https://leetcode.com/problems/two-sum/description/') => ({ id: 'x', url, tab: { id: 4 } });
 const pageSender = { id: 'x', url: `${ORIGIN}/settings.html#progress` };
 
-test('an accepted submission is stored once per submission id, with the slug from the sender', async () => {
+test('an accepted submission is stored once per submission id, for the problem the problem tab names', async () => {
   const storage = fakeStorage();
   let clock = 0;
   const service = createSolvedService({ storage, extensionOrigin: ORIGIN, now: () => `2026-11-04T10:00:0${clock++}.000Z` });
-  const first = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '111', slug: 'not-this-one' }, tabSender());
+  const first = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '111', slug: 'two-sum' }, tabSender());
   assert.equal(first.ok, true);
   assert.equal(first.recorded, true);
   assert.equal(first.card.solvedTitle, 'Two Sum');
   assert.deepEqual(storage.data[SOLVED_KEY], { 'two-sum': { at: '2026-11-04T10:00:00.000Z', count: 1 } });
-  const again = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '111' }, tabSender());
+  const again = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '111', slug: 'two-sum' }, tabSender());
   assert.deepEqual(again, { ok: true, recorded: false, card: null });
   assert.equal(storage.writes, 1);
-  await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '112' }, tabSender());
+  await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '112', slug: 'two-sum' }, tabSender());
   assert.deepEqual(storage.data[SOLVED_KEY]['two-sum'], { at: '2026-11-04T10:00:01.000Z', count: 2 });
+  // After an in-app move the sender's address is still the one the tab
+  // loaded; the problem is the one the content script names.
+  const moved = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '113', slug: '3sum' }, tabSender());
+  assert.equal(moved.card.solvedTitle, '3Sum');
+  assert.deepEqual(storage.data[SOLVED_KEY]['3sum'], { at: '2026-11-04T10:00:02.000Z', count: 1 });
+  assert.equal(storage.data[SOLVED_KEY]['two-sum'].count, 2);
 });
 
 test('an accepted message from anywhere but a problem tab, or with a bad id, is refused', async () => {
@@ -191,6 +197,10 @@ test('an accepted message from anywhere but a problem tab, or with a bad id, is 
     [{ type: 'lc-tutor:accepted', submissionId: 'runcode_1' }, tabSender()],
     [{ type: 'lc-tutor:accepted', submissionId: 12 }, tabSender()],
     [{ type: 'lc-tutor:accepted' }, pageSender],
+    // No problem named, or not a slug.
+    [{ type: 'lc-tutor:accepted', submissionId: '1' }, tabSender()],
+    [{ type: 'lc-tutor:accepted', submissionId: '1', slug: 'Two Sum' }, tabSender()],
+    [{ type: 'lc-tutor:accepted', submissionId: '1', slug: 'two-sum' }, { id: 'x', url: 'https://example.com/problems/two-sum/', tab: { id: 1 } }],
   ];
   for (const [message, sender] of refused) assert.deepEqual(await service.handleMessage(message, sender), { ok: false }, JSON.stringify([message, sender]));
   assert.equal(storage.writes, 0);
@@ -199,15 +209,15 @@ test('an accepted message from anywhere but a problem tab, or with a bad id, is 
 test('the card after an accepted submission follows the stored list; no stored or a bad one means NeetCode 150', async () => {
   const storage = fakeStorage({ [ACTIVE_LIST_KEY]: 'grind-75' });
   const service = createSolvedService({ storage, extensionOrigin: ORIGIN, now: () => 'now' });
-  const a = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '301' }, tabSender());
+  const a = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '301', slug: 'two-sum' }, tabSender());
   assert.equal(a.card.roadmap.title, 'Grind 75');
   assert.equal(a.card.next.slug, 'valid-parentheses');
   assert.equal(a.card.more.label, 'More from Week 1');
   storage.data[ACTIVE_LIST_KEY] = 'no-such-list';
-  const b = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '302' }, tabSender());
+  const b = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '302', slug: 'two-sum' }, tabSender());
   assert.equal(b.card.roadmap.title, 'NeetCode 150');
   delete storage.data[ACTIVE_LIST_KEY];
-  const c = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '303' }, tabSender());
+  const c = await service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '303', slug: 'two-sum' }, tabSender());
   assert.equal(c.card.roadmap.title, 'NeetCode 150');
 });
 
@@ -217,7 +227,7 @@ test('switching lists writes only the list choice, answers a problem tab with it
   const service = createSolvedService({ storage, extensionOrigin: ORIGIN });
   assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:set-list', list: 'blind-75' }, pageSender), { ok: true });
   assert.equal(storage.data[ACTIVE_LIST_KEY], 'blind-75');
-  const fromTab = await service.handleMessage({ type: 'lc-tutor:set-list', list: 'sql-50' }, tabSender());
+  const fromTab = await service.handleMessage({ type: 'lc-tutor:set-list', list: 'sql-50', slug: 'two-sum' }, tabSender());
   assert.equal(fromTab.ok, true);
   assert.equal(fromTab.card.roadmap.title, 'SQL 50');
   assert.equal(fromTab.card.solvedTitle, 'Two Sum');
@@ -230,7 +240,8 @@ test('switching lists writes only the list choice, answers a problem tab with it
     [{ type: 'lc-tutor:set-list', list: 'nope' }, pageSender],
     [{ type: 'lc-tutor:set-list', list: '__proto__' }, pageSender],
     [{ type: 'lc-tutor:set-list' }, pageSender],
-    [{ type: 'lc-tutor:set-list', list: 'blind-75' }, { id: 'x', url: 'https://leetcode.com/problemset/', tab: { id: 1 } }],
+    [{ type: 'lc-tutor:set-list', list: 'blind-75', slug: 'two-sum' }, { id: 'x', url: 'https://leetcode.com/problemset/', tab: { id: 1 } }],
+    [{ type: 'lc-tutor:set-list', list: 'blind-75' }, tabSender()],
     [{ type: 'lc-tutor:set-list', list: 'blind-75' }, { id: 'x', url: 'https://example.com/problems/two-sum/', tab: { id: 1 } }],
     [{ type: 'lc-tutor:set-list', list: 'blind-75' }, { id: 'x', url: 'https://leetcode.com/problems/two-sum/' }],
   ]) assert.deepEqual(await service.handleMessage(message, sender), { ok: false }, JSON.stringify([message, sender]));
@@ -268,7 +279,7 @@ test('writes queue up: quick marks never lose one another', async () => {
   const slugs = ['a', 'b', 'c', 'd', 'e'];
   await Promise.all([
     ...slugs.map((slug) => service.handleMessage({ type: 'lc-tutor:solved-set', slug, solved: true }, pageSender)),
-    service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '5' }, tabSender()),
+    service.handleMessage({ type: 'lc-tutor:accepted', submissionId: '5', slug: 'two-sum' }, tabSender()),
   ]);
   assert.deepEqual(Object.keys(storage.data[SOLVED_KEY]).sort(), [...slugs, 'two-sum'].sort());
 });
@@ -298,9 +309,12 @@ test('a storage failure answers ok: false and the next write still runs', async 
 function loadInject(routes) {
   const document = new EventTarget();
   const reports = [];
+  const slugs = [];
   document.addEventListener('leetcode-capture:submission-accepted', (e) => {
     assert.equal(typeof e.detail, 'string', 'the detail is a JSON string');
-    reports.push(JSON.parse(e.detail).submissionId);
+    const detail = JSON.parse(e.detail);
+    reports.push(detail.submissionId);
+    slugs.push(detail.slug);
   });
   const calls = [];
   const fetch = async function (input) {
@@ -326,11 +340,16 @@ function loadInject(routes) {
       });
     }
   }
-  const context = { document, fetch, XMLHttpRequest, CustomEvent, URL, JSON, location: { href: 'https://leetcode.com/problems/two-sum/' } };
+  const location = new URL('https://leetcode.com/problems/two-sum/description/');
+  const context = { document, fetch, XMLHttpRequest, CustomEvent, URL, JSON, location };
   context.window = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(here, 'inject.js'), 'utf8'), context);
-  return { context, reports, calls };
+  // An in-app move to another problem, as LeetCode's router does.
+  const moveTo = (slug) => {
+    location.pathname = `/problems/${slug}/description/`;
+  };
+  return { context, reports, slugs, calls, moveTo };
 }
 
 const ACCEPTED = JSON.stringify({ state: 'SUCCESS', status_msg: 'Accepted', status_code: 10, task_name: 'judger.judgetask.Judge', total_correct: 63, total_testcases: 63 });
@@ -390,6 +409,34 @@ test('inject.js also reads the /v2/check/ path LeetCode polls today, and still i
   assert.deepEqual(reports, ['401']);
 });
 
+test('inject.js names the problem a submission\'s first check started on, even when the verdict comes after a move', async () => {
+  const routes = { '/submissions/detail/601/v2/check/': JSON.stringify({ state: 'PENDING' }), '/submissions/detail/602/check/': ACCEPTED };
+  const { context, reports, slugs, moveTo } = loadInject(routes);
+  // fetch: the first poll starts on two-sum; the page moves to 3sum, and the
+  // next poll brings the verdict.
+  await context.fetch('/submissions/detail/601/v2/check/');
+  moveTo('3sum');
+  routes['/submissions/detail/601/v2/check/'] = ACCEPTED;
+  await context.fetch('/submissions/detail/601/v2/check/');
+  await tick();
+  // XMLHttpRequest: opened on 3sum, the page moves before the answer.
+  const xhr = new context.XMLHttpRequest();
+  xhr.open('GET', '/submissions/detail/602/check/');
+  moveTo('valid-anagram');
+  xhr.send();
+  await tick();
+  assert.deepEqual(reports, ['601', '602']);
+  assert.deepEqual(slugs, ['two-sum', '3sum']);
+});
+
+test('inject.js reports nothing for a check that started off a problem page', async () => {
+  const { context, reports } = loadInject({ '/submissions/detail/702/v2/check/': ACCEPTED });
+  context.location.pathname = '/problemset/';
+  await context.fetch('/submissions/detail/702/v2/check/');
+  await tick();
+  assert.deepEqual(reports, []);
+});
+
 test('inject.js reports an accepted submission seen through XMLHttpRequest, text or json', async () => {
   const { context, reports } = loadInject({
     '/submissions/detail/301/check/': ACCEPTED,
@@ -440,15 +487,18 @@ test('content.js forwards an accepted submission once and hands the card to the 
   };
   const opts = { events, send, slugOf: () => 'two-sum', titleOf: () => 'Two Sum' };
   const ev = (detail) => ({ detail });
-  await handleAccepted(ev(JSON.stringify({ submissionId: '501' })), opts);
-  await handleAccepted(ev(JSON.stringify({ submissionId: '501' })), opts);
+  await handleAccepted(ev(JSON.stringify({ submissionId: '501', slug: 'two-sum' })), opts);
+  await handleAccepted(ev(JSON.stringify({ submissionId: '501', slug: 'two-sum' })), opts);
   await handleAccepted(ev('not json'), opts);
-  await handleAccepted(ev(JSON.stringify({ submissionId: 'runcode_1' })), opts);
-  assert.deepEqual(sent, [{ type: 'lc-tutor:accepted', submissionId: '501' }], 'nothing but the id goes to the worker');
+  await handleAccepted(ev(JSON.stringify({ submissionId: 'runcode_1', slug: 'two-sum' })), opts);
+  // Checked on another problem than the page shows now, or not said: dropped.
+  await handleAccepted(ev(JSON.stringify({ submissionId: '505', slug: '3sum' })), opts);
+  await handleAccepted(ev(JSON.stringify({ submissionId: '506' })), opts);
+  assert.deepEqual(sent, [{ type: 'lc-tutor:accepted', submissionId: '501', slug: 'two-sum' }], 'nothing but the id and the checked slug go to the worker');
   assert.deepEqual(solved, [{ slug: 'two-sum', pageTitle: 'Two Sum', card }]);
   // A worker that records nothing (already seen) or cannot be asked: no card.
-  await handleAccepted(ev(JSON.stringify({ submissionId: '502' })), { ...opts, send: async () => ({ ok: true, recorded: false, card: null }) });
-  await handleAccepted(ev(JSON.stringify({ submissionId: '503' })), { ...opts, send: async () => null });
-  await handleAccepted(ev(JSON.stringify({ submissionId: '504' })), { ...opts, slugOf: () => null });
+  await handleAccepted(ev(JSON.stringify({ submissionId: '502', slug: 'two-sum' })), { ...opts, send: async () => ({ ok: true, recorded: false, card: null }) });
+  await handleAccepted(ev(JSON.stringify({ submissionId: '503', slug: 'two-sum' })), { ...opts, send: async () => null });
+  await handleAccepted(ev(JSON.stringify({ submissionId: '504', slug: 'two-sum' })), { ...opts, slugOf: () => null });
   assert.equal(solved.length, 1);
 });

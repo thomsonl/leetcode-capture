@@ -317,19 +317,26 @@
   // with what the Tutor panel's "nice job" card shows; the panel hears it as
   // leetcode-capture:solved. Nothing here reaches the tutor or any server.
   // `events`, `send` and `slugOf` are injectable for content.test.js.
+  // The detail names the problem page the submission's check started on;
+  // a verdict that arrives after an in-app move to another problem is
+  // dropped, since the page's address (all the worker trusts) is no longer
+  // the problem it was for.
   const acceptedIds = new Set();
   async function handleAccepted(event, { events = document, send = sendToBackground, slugOf = getProblemSlug, titleOf = getProblemTitle } = {}) {
     let submissionId = null;
+    let checkedSlug = null;
     try {
-      submissionId = JSON.parse(event.detail).submissionId;
+      const detail = JSON.parse(event.detail);
+      submissionId = detail.submissionId;
+      checkedSlug = detail.slug;
     } catch (err) {
       return;
     }
     if (typeof submissionId !== "string" || !/^\d{1,20}$/.test(submissionId) || acceptedIds.has(submissionId)) return;
     acceptedIds.add(submissionId);
     const slug = slugOf();
-    if (!slug) return;
-    const answer = await send({ type: "lc-tutor:accepted", submissionId });
+    if (!slug || typeof checkedSlug !== "string" || checkedSlug !== slug) return;
+    const answer = await send({ type: "lc-tutor:accepted", submissionId, slug });
     if (!answer || answer.ok !== true || answer.recorded !== true || !answer.card) return;
     events.dispatchEvent(
       new CustomEvent("leetcode-capture:solved", {
