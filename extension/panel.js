@@ -1308,6 +1308,7 @@
     .solved-head svg { flex: none; margin-top: 2.5px; color: var(--green); }
     .solved-head b { font-weight: 600; }
     .solved-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0 0 0 24px; list-style: none; }
+    .solved-list[hidden] { display: none; }
     .solved-list li { display: flex; flex-direction: column; min-width: 0; }
     .solved-label { font-size: 12px; line-height: 16px; color: var(--muted); }
     .solved-line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
@@ -1318,7 +1319,16 @@
     .diff[data-level="Easy"] { color: var(--easy); }
     .diff[data-level="Medium"] { color: var(--medium); }
     .diff[data-level="Hard"] { color: var(--red); }
-    button.solved-more { align-self: flex-start; width: auto; height: auto; margin-left: 24px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; cursor: pointer; }
+    .solved-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-left: 24px; min-width: 0; }
+    /* Only the newest card offers the list menu: an older one shows what it
+       suggested then, not the list chosen since. */
+    section.solved:not(:last-of-type) .solved-switch { display: none; }
+    .solved-switch { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+    .solved-switch select { min-width: 0; max-width: 100%; height: 24px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--fg); font: inherit; font-size: 12px; color-scheme: var(--scheme); cursor: pointer; }
+    .solved-switch select:hover:not(:disabled) { border-color: color-mix(in srgb, var(--fg) 35%, transparent); }
+    .solved-switch select:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 1px; }
+    .solved-switch select:disabled { opacity: 0.6; cursor: default; }
+    button.solved-more { width: auto; height: auto; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; cursor: pointer; }
     button.solved-more:hover:not(:disabled) { background: none; color: var(--fg); text-decoration: underline; }
     .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
     .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 8px; background: var(--fill); white-space: pre-wrap; }
@@ -1924,6 +1934,18 @@
     }
   }
 
+  // A message to the background worker that waits for its answer; null when
+  // it cannot be asked.
+  async function askWorker(message) {
+    const runtime = messagingRuntime();
+    if (!runtime) return null;
+    try {
+      return await runtime.sendMessage(message);
+    } catch {
+      return null;
+    }
+  }
+
   function currentSlug() {
     return problemSlugFromPath(location.pathname);
   }
@@ -2031,10 +2053,13 @@
   //
   // After LeetCode accepts a submission, content.js has the worker record the
   // problem as solved and passes on what to suggest next, built only from the
-  // bundled NeetCode 150 roadmap and the solved list
-  // (leetcode-capture:solved, see shared/solved.js's congratulation). The
-  // card lives only in this tab's transcript: it is never sent to the tutor,
-  // never enters its context and is not kept anywhere.
+  // list the student works on (storage.local activeProgressList, NeetCode 150
+  // unless chosen) and the solved list (leetcode-capture:solved, see
+  // shared/solved.js's congratulation). The card's own list menu asks the
+  // worker to work on another list (lc-tutor:set-list), which answers this
+  // page's card again for it. The card lives only in this tab's transcript:
+  // it is never sent to the tutor, never enters its context and is not kept
+  // anywhere.
 
   const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
   const LEVELS = ["Easy", "Medium", "Hard"];
@@ -2050,6 +2075,34 @@
     return { slug: problem.slug, title, difficulty: LEVELS.includes(problem.difficulty) ? problem.difficulty : null };
   }
 
+  const LIST_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+  // The suggestion part of a card from the worker (what a list switch
+  // replaces), cleaned: { roadmap, roadmapId, lists, next, more, finished }.
+  function cardSuggestions(card) {
+    const roadmap = cleanText(card.roadmap && card.roadmap.title, 60) || "NeetCode 150";
+    const roadmapId = card.roadmap && typeof card.roadmap.id === "string" && LIST_ID_RE.test(card.roadmap.id) ? card.roadmap.id : "";
+    const lists = [];
+    for (const list of Array.isArray(card.lists) ? card.lists.slice(0, 20) : []) {
+      if (!list || typeof list.id !== "string" || !LIST_ID_RE.test(list.id) || list.id.length > 40) continue;
+      const title = cleanText(list.title, 60);
+      if (!title || lists.some((l) => l.id === list.id)) continue;
+      lists.push({ id: list.id, title, size: Number.isInteger(list.size) && list.size > 0 ? list.size : null });
+    }
+    const next = cleanProblem(card.next);
+    const moreProblem = card.more && typeof card.more === "object" ? cleanProblem(card.more.problem) : null;
+    const moreTopic = moreProblem ? cleanText(card.more.topic && card.more.topic.title, 60) : "";
+    const moreLabel = moreProblem ? cleanText(card.more.label, 90) : "";
+    return {
+      roadmap,
+      roadmapId,
+      lists: roadmapId && lists.some((l) => l.id === roadmapId) ? lists : [],
+      next,
+      more: moreProblem && moreTopic ? { topic: moreTopic, label: moreLabel || `More ${moreTopic} problems`, problem: moreProblem } : null,
+      finished: !next && card.finished === true,
+    };
+  }
+
   // The transcript item for a leetcode-capture:solved detail, or null.
   function solvedItem(detail, slug) {
     let data;
@@ -2061,18 +2114,7 @@
     if (!data || typeof data !== "object" || data.slug !== slug || !data.card || typeof data.card !== "object") return null;
     const card = data.card;
     const title = cleanText(card.solvedTitle) || cleanText(data.pageTitle) || "this problem";
-    const roadmap = cleanText(card.roadmap && card.roadmap.title, 60) || "NeetCode 150";
-    const next = cleanProblem(card.next);
-    const moreProblem = card.more && typeof card.more === "object" ? cleanProblem(card.more.problem) : null;
-    const moreTopic = moreProblem ? cleanText(card.more.topic && card.more.topic.title, 60) : "";
-    return {
-      kind: "solved",
-      title,
-      roadmap,
-      next,
-      more: moreProblem && moreTopic ? { topic: moreTopic, problem: moreProblem } : null,
-      finished: !next && card.finished === true,
-    };
+    return { kind: "solved", title, slug, ...cardSuggestions(card) };
   }
 
   function checkCircleIcon() {
@@ -2100,6 +2142,22 @@
     return line;
   }
 
+  // The suggestion rows, which a list switch replaces in place.
+  function solvedList(item) {
+    const list = el("ul", "solved-list");
+    const row = (label, content) => {
+      const li = el("li");
+      li.appendChild(el("span", "solved-label", label));
+      li.appendChild(content);
+      list.appendChild(li);
+    };
+    if (item.next) row(`Next up on ${item.roadmap}`, problemLine(item.next));
+    else if (item.finished) row(item.roadmap, el("span", "solved-line", "You have solved every problem on it."));
+    if (item.more) row(item.more.label, problemLine(item.more.problem));
+    list.hidden = !list.children.length;
+    return list;
+  }
+
   function renderSolved(item) {
     const card = el("section", "solved");
     card.setAttribute("aria-label", "Accepted");
@@ -2110,24 +2168,60 @@
     text.appendChild(document.createTextNode("."));
     head.appendChild(text);
     card.appendChild(head);
-    const list = el("ul", "solved-list");
-    const row = (label, content) => {
-      const li = el("li");
-      li.appendChild(el("span", "solved-label", label));
-      li.appendChild(content);
-      list.appendChild(li);
-    };
-    if (item.next) row(`Next up on ${item.roadmap}`, problemLine(item.next));
-    else if (item.finished) row(item.roadmap, el("span", "solved-line", "You have solved every problem on it."));
-    if (item.more) row(`More ${item.more.topic} problems`, problemLine(item.more.problem));
-    if (list.children.length) card.appendChild(list);
+    card.appendChild(solvedList(item));
     if (messagingRuntime()) {
+      const foot = el("div", "solved-foot");
+      if (item.lists.length > 1) foot.appendChild(listMenu(item));
       const more = el("button", "solved-more", "See your progress");
       more.type = "button";
       more.addEventListener("click", () => sendToWorker({ type: "lc-tutor:open-progress" }));
-      card.appendChild(more);
+      foot.appendChild(more);
+      card.appendChild(foot);
     }
     return card;
+  }
+
+  // "Working on [list]": a compact native menu of the bundled lists. A
+  // choice asks the worker to work on that list (only the choice is stored,
+  // never the solved problems) and to answer this page's card for it.
+  function listMenu(item) {
+    const label = el("label", "solved-switch");
+    label.appendChild(el("span", "", "Working on"));
+    const select = el("select");
+    for (const list of item.lists) {
+      const option = el("option", "", list.title);
+      option.value = list.id;
+      select.appendChild(option);
+    }
+    select.value = item.roadmapId;
+    select.addEventListener("change", async () => {
+      const wanted = select.value;
+      select.disabled = true;
+      const answer = await askWorker({ type: "lc-tutor:set-list", list: wanted });
+      select.disabled = false;
+      const fresh = answer && answer.ok === true && answer.card && typeof answer.card === "object" ? cardSuggestions(answer.card) : null;
+      if (!fresh || fresh.roadmapId !== wanted || currentSlug() !== item.slug) {
+        select.value = item.roadmapId;
+        return;
+      }
+      Object.assign(item, fresh);
+      touch(item);
+      noteApplied(item.slug);
+      select.focus();
+    });
+    label.appendChild(select);
+    return label;
+  }
+
+  // A static item changed after it was drawn: only the card's suggestion
+  // rows ever do (a list switch). The rest of the card, and the focus in
+  // its menu, stay.
+  function patchStatic(node, item) {
+    if (item.kind !== "solved") return;
+    const old = node.querySelector(".solved-list");
+    if (old) old.replaceWith(solvedList(item));
+    const select = node.querySelector(".solved-switch select");
+    if (select && select.value !== item.roadmapId) select.value = item.roadmapId;
   }
 
   function renderStaticItem(item) {
@@ -2196,7 +2290,8 @@
       nodeCache.set(item, entry);
     }
     if (entry.rev !== item.rev) {
-      patchTutor(entry, item);
+      if (item.kind === "tutor") patchTutor(entry, item);
+      else patchStatic(entry.node, item);
       entry.rev = item.rev;
     }
     return entry.node;

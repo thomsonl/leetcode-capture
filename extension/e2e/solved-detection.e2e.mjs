@@ -10,7 +10,9 @@
 // Proves: an accepted submission is stored exactly once under the slug of
 // the page address (a repeated poll, a Run and a wrong answer change
 // nothing); the Tutor panel shows the "nice job" card with working links and
-// a "See your progress" button; the card never reaches the model; it all
+// a "See your progress" button; the card follows the list chosen on the
+// Progress tab, and its own list menu switches lists without touching the
+// solved problems; the card never reaches the model; it all
 // works the same with the helper runtime chosen; nothing goes to the relay.
 //
 // Run with:  node extension/e2e/solved-detection.e2e.mjs
@@ -92,6 +94,7 @@ const judge = {
   7002: [{ state: 'STARTED' }, { state: 'SUCCESS', status_msg: 'Wrong Answer', status_code: 11, task_name: 'judger.judgetask.Judge' }],
   'runcode_1730000000.1_abc': [{ state: 'SUCCESS', status_msg: 'Accepted', status_code: 10, task_name: 'judger.runcodetask.RunCode', code_answer: ['[0,1]'] }],
   7003: [{ state: 'STARTED' }, ACCEPTED],
+  7004: [ACCEPTED],
   8001: [ACCEPTED],
 };
 const polls = {};
@@ -227,13 +230,62 @@ try {
     check(s['two-sum'].count === 2, `stored: ${JSON.stringify(s)}`);
   });
 
+  const listState = () => browser.serviceWorkerEval(`chrome.storage.local.get(['activeProgressList', 'solvedProblems'])`);
+  const lastCard = () => page.eval(`(() => { const c = window.__qa('.feed .solved').at(-1); const sel = c.querySelector('.solved-switch select'); return { text: c.querySelector('.solved-head').textContent + c.querySelector('.solved-list').textContent, select: sel && sel.value, options: sel ? [...sel.options].map((o) => o.value + ':' + o.textContent) : [], label: c.querySelector('.solved-switch')?.textContent.replace(sel?.textContent || '', ''), focus: window.__root().activeElement === sel }; })()`);
+  const pickList = (id) => page.eval(`(() => { const sel = window.__qa('.feed .solved').at(-1).querySelector('.solved-switch select'); sel.focus(); sel.value = ${JSON.stringify(id)}; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+
+  await scenario('the card follows the list chosen on the Progress tab, and names it', async () => {
+    const before = await listState();
+    check(before.activeProgressList === undefined, `first run has no stored list: ${JSON.stringify(before.activeProgressList)}`);
+    const m = await lastCard();
+    check(m.select === 'neetcode-150', `first run default: ${m.select}`);
+    check(m.label === 'Working on', `menu label: ${m.label}`);
+    check(JSON.stringify(m.options) === JSON.stringify(['neetcode-150:NeetCode 150', 'blind-75:Blind 75', 'grind-75:Grind 75', 'top-interview-150:Top Interview 150', 'sql-50:SQL 50']), `options: ${m.options}`);
+    await browser.serviceWorkerEval(`chrome.storage.local.set({ activeProgressList: 'blind-75' })`);
+    check((await page.eval(`window.__pollFetch(7004)`)) === 'Accepted', 'poll');
+    await page.waitFor(`window.__cards().length === 3`, { what: 'the third card' });
+    const b = await lastCard();
+    check(b.text === 'Nice job completing Two Sum.Next up on Blind 75Best Time to Buy and Sell StockEasyMore Array problemsContains DuplicateEasy', b.text);
+    check(b.select === 'blind-75', `menu shows the stored list: ${b.select}`);
+  });
+
+  await scenario('the card\'s list menu switches lists: the card follows in place, only the choice is stored', async () => {
+    const before = await listState();
+    await pickList('sql-50');
+    await page.waitFor(`window.__qa('.feed .solved').at(-1).textContent.includes('Next up on SQL 50')`, { what: 'the card to follow' });
+    const m = await lastCard();
+    // Two Sum is not on SQL 50: the agenda only.
+    check(m.text === 'Nice job completing Two Sum.Next up on SQL 50Recyclable and Low Fat ProductsEasy', m.text);
+    check(m.select === 'sql-50' && m.focus, `menu value and focus: ${JSON.stringify(m)}`);
+    const after = await listState();
+    check(after.activeProgressList === 'sql-50', `stored: ${after.activeProgressList}`);
+    check(JSON.stringify(after.solvedProblems) === JSON.stringify(before.solvedProblems), 'the solved problems changed');
+    check((await page.eval(`window.__cards().length`)) === 3, 'a switch adds no card');
+    const first = await page.eval(`window.__cards()[0]`);
+    check(first.includes('Next up on NeetCode 150'), `older cards keep what they said: ${first}`);
+    const menus = await page.eval(`window.__qa('.feed .solved .solved-switch').map((n) => getComputedStyle(n).display)`);
+    check(menus.length === 3 && menus[0] === 'none' && menus[1] === 'none' && menus[2] !== 'none', `only the newest card has the menu: ${menus}`);
+    await page.eval(`window.__q('.scroll').scrollTop = 1e6`);
+    await page.screenshot(path.join(shots, 'card-list-menu-dark.png'), { width: 1100, height: 760 });
+    // The keyboard: arrow keys on the focused menu move the choice.
+    await page.eval(`window.__qa('.feed .solved').at(-1).querySelector('.solved-switch select').focus()`);
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 });
+    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 });
+    await page.waitFor(`window.__qa('.feed .solved').at(-1).textContent.includes('Next up on Top Interview 150')`, { what: 'ArrowUp to pick the list above' });
+    check((await listState()).activeProgressList === 'top-interview-150', 'stored after the keyboard');
+    // Back to the default for the rest of the run.
+    await pickList('neetcode-150');
+    await page.waitFor(`window.__qa('.feed .solved').at(-1).textContent.includes('Next up on NeetCode 150')`, { what: 'back to NeetCode 150' });
+    check((await listState()).activeProgressList === 'neetcode-150', 'stored');
+  });
+
   await scenario('the card never reaches the model: the next message carries no trace of it', async () => {
     await page.eval(`window.__send('what next?')`);
     await page.waitFor(`window.__qa('.feed .tutor').some((n) => n.textContent.includes('A short reply.'))`, { what: 'the reply', timeout: 10000 });
     const last = model.requests.filter((r) => r.stream).at(-1);
     const all = JSON.stringify(last.messages);
     check(all.includes('what next?'), 'the message went');
-    check(!/Nice job|Contains Duplicate|Valid Anagram|Accepted|NeetCode/.test(all), `the card reached the model: ${all.slice(0, 400)}`);
+    check(!/Nice job|Contains Duplicate|Valid Anagram|Accepted|NeetCode|Blind 75|SQL 50|Working on/.test(all), `the card reached the model: ${all.slice(0, 400)}`);
   });
 
   await scenario('"See your progress" opens the options page on its Progress tab, showing the problem solved', async () => {
@@ -284,7 +336,7 @@ try {
     check((await tab.eval(`window.__pollFetch(8001)`)) === 'Accepted', 'poll');
     await tab.waitFor(`window.__cards().length === 1`, { what: 'the card with the helper runtime' });
     const s = await stored();
-    check(s['valid-parentheses'] && s['valid-parentheses'].count === 1 && s['two-sum'].count === 2, `stored: ${JSON.stringify(s)}`);
+    check(s['valid-parentheses'] && s['valid-parentheses'].count === 1 && s['two-sum'].count === 3, `stored: ${JSON.stringify(s)}`);
     const text = await tab.eval(`window.__cards()[0]`);
     check(text.startsWith('Nice job completing Valid Parentheses.Next up on NeetCode 150Contains DuplicateEasyMore Stack problemsMin StackMedium'), text);
     await tab.eval(`window.__q('.scroll').scrollTop = 1e6`);
