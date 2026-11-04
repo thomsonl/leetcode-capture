@@ -2,7 +2,7 @@
 // plus the pure logic they share. No Node or browser APIs, so the options
 // page, the background worker and the companion can all import it.
 //
-// A list is { id, title, short, aliases, description, kind, topics, edges }:
+// A list is { id, title, short, description, kind, topics, edges }:
 //   topics  its groups in the publisher's order, each { id, title, problems }
 //           where a problem is { slug, title, difficulty, topic } (title and
 //           difficulty come from the one shared catalog, shared/catalog.js)
@@ -17,7 +17,7 @@
 import { CATALOG } from './catalog.js';
 
 // Each group: [id, title, slugs], the slugs one per line in the list's order.
-function defineList({ id, title, short, aliases = [], description, groupNoun, groups, edges = [] }) {
+function defineList({ id, title, short, description, groupNoun, groups, edges = [] }) {
   const topics = groups.map(([topicId, topicTitle, slugs]) => ({
     id: topicId,
     title: topicTitle,
@@ -31,7 +31,7 @@ function defineList({ id, title, short, aliases = [], description, groupNoun, gr
       }),
   }));
   const size = topics.reduce((n, t) => n + t.problems.length, 0);
-  return { id, title, short: short || title, aliases, description, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges };
+  return { id, title, short: short || title, description, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges };
 }
 
 // NeetCode 150, in NeetCode's order, with its roadmap's prerequisite lines.
@@ -63,8 +63,7 @@ const EDGES = [
 export const NEETCODE_150 = defineList({
   id: 'neetcode-150',
   title: 'NeetCode 150',
-  aliases: ['Blind 150'],
-  description: 'The expanded Blind 75, also called Blind 150, by topic on a roadmap.',
+  description: 'NeetCode\'s expanded Blind 75, by topic on a roadmap.',
   groupNoun: 'topic',
   edges: EDGES,
   groups: [

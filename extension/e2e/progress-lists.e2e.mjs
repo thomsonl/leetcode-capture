@@ -86,7 +86,7 @@ try {
       check(o.name === LISTS[i].title && o.size === `${LISTS[i].size} problems` && o.desc === LISTS[i].description && o.described === o.desc, JSON.stringify(o));
       check(o.checked === (i === 0) && o.selected === (i === 0), `checked: ${JSON.stringify(o)}`);
     }
-    check(/Blind 150/.test(m.options[0].desc) && /NeetCode 150 extends it/.test(m.options[1].desc), 'the Blind 150 alias and the Blind 75 note');
+    check(/NeetCode 150 extends it/.test(m.options[1].desc), 'the Blind 75 note');
     check(m.nodes === 18 && m.sub === 'Your NeetCode 150 progress' && m.title === 'NeetCode 150', JSON.stringify(m));
     check((await stored()).activeProgressList === undefined, 'nothing stored before a choice');
     await page.screenshot(path.join(shots, 'picker-neetcode-dark.png'), { width: 1280, height: 700, scheme: 'dark' });

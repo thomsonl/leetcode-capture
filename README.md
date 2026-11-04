@@ -229,7 +229,7 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
 
 The settings page has a **Progress** tab (open it with `#progress`, or "See your progress" in the Tutor tab) that tracks a problem list of your choice.
 It is a picture only and changes no setting.
-"Working on" at the top picks the list: NeetCode 150 (the default; the expanded Blind 75, also called Blind 150), Blind 75, Grind 75 (its default eight week schedule), LeetCode's Top Interview 150 or LeetCode's SQL 50.
+"Working on" at the top picks the list: NeetCode 150 (the default; NeetCode's expanded Blind 75), Blind 75, Grind 75 (its default eight week schedule), LeetCode's Top Interview 150 or LeetCode's SQL 50.
 The choice is kept in the extension's local storage (`activeProgressList`) and drives the whole tab and the Tutor tab's card.
 NeetCode 150 is drawn as its roadmap: the 18 topics as a graph with the prerequisite lines, each node with its solved count.
 Every other list is drawn as its own groups (categories, weeks or sections, as the list's publisher groups it) in the publisher's order, each card with its solved count and a part per difficulty; the next group is simply the first one not finished.

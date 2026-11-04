@@ -181,7 +181,6 @@ test('an unknown or damaged list id means NeetCode 150', () => {
   assert.equal(listById('grind-75'), GRIND_75);
   for (const bad of [undefined, null, '', 'nope', 'toString', '__proto__', 7, {}]) assert.equal(listById(bad), NEETCODE_150, String(bad));
   assert.equal(ROADMAPS['blind-75'], BLIND_75);
-  assert.deepEqual(NEETCODE_150.aliases, ['Blind 150']);
 });
 
 test('extension/e2e/list-slugs.json matches the catalog (regenerate with node extension/scripts/list-slugs.mjs)', () => {
