@@ -77,6 +77,9 @@ function companion({ env = {}, stored = emptySettings(), models = ['gpt-oss:20b'
           return ok(testResult || { ok: true, message: 'Connected in 0.4s', reply: 'OK' });
         case 'models':
           return ok({ models });
+        case 'setProfiles':
+          st = applyPatch(st, { profiles: body.params.profiles });
+          return ok({ ...view(), saved: true });
         default:
           return fail('unknown method');
       }
@@ -381,6 +384,135 @@ await scenario('browser runtime: a denied permission prompt says what happened a
   });
   model.server.close();
 }
+
+
+// ---- models in the Tutor tab (profiles) ----------------------------------------
+
+const profileRows = (page) => page.eval(`[...document.querySelectorAll('#profiles .profile')].map((r) => ({
+  id: r.dataset.id,
+  name: r.querySelector('.profile-name') ? r.querySelector('.profile-name').textContent : null,
+  meta: r.querySelector('.profile-meta') ? r.querySelector('.profile-meta').textContent : null,
+  isDefault: r.hasAttribute('data-default'),
+}))`);
+const pickAddModel = async (page, name) => {
+  await page.eval(`(() => {
+    const s = document.getElementById('add-model');
+    if (s.tagName === 'SELECT') { s.value = ${JSON.stringify(name)}; s.dispatchEvent(new Event('change', { bubbles: true })); }
+    else s.value = ${JSON.stringify(name)};
+  })()`);
+};
+const keyOn = async (page, selector, key) => {
+  await page.eval(`document.querySelector(${JSON.stringify(selector)}).focus()`);
+  const codes = { Enter: 13, Escape: 27 };
+  for (const type of ['keyDown', 'keyUp']) {
+    await page.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: codes[key], ...(key === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}) });
+  }
+};
+
+{
+  const model = await stubServer();
+  await scenario('models card: add several local models, rename, reorder, remove, choose the default and save', null, async (page) => {
+    await page.type('#local-baseUrl', model.url);
+    await page.click('#local-find');
+    await page.waitFor(`/Found 2/.test(document.getElementById('local-models-note').textContent)`, { what: 'model suggestions' });
+    await pickLocalModel(page, 'qwen3:8b');
+    await page.click('#save');
+    await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the first save', timeout: 20000 });
+    let rows = await profileRows(page);
+    assert.deepEqual(rows.map((r) => [r.name, r.isDefault]), [['qwen3:8b', true]], 'the first save makes one default model');
+    assert.equal(rows[0].meta, 'Local model · in the browser');
+
+    // Add a second local model from the same dropdown of the server's models, with a name.
+    assert.equal(await page.eval(`document.getElementById('add-model').tagName`), 'SELECT', 'the add row reuses the model dropdown');
+    await pickAddModel(page, 'gemma4:26b');
+    await page.type('#add-label', 'Gemma');
+    await page.click('#add-profile-button');
+    // A model the list already has is refused.
+    await pickAddModel(page, 'qwen3:8b');
+    await page.click('#add-profile-button');
+    assert.match(await text(page, '#profiles-note'), /already in the list/);
+    // A model a provider needs must be chosen.
+    await page.eval(`(() => { const s = document.getElementById('add-provider'); s.value = 'openai'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await page.click('#add-profile-button');
+    assert.match(await text(page, '#profiles-note'), /Choose a model for OpenAI API key/);
+    await page.eval(`(() => { const s = document.getElementById('add-provider'); s.value = 'anthropic'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await page.click('#add-profile-button');
+    rows = await profileRows(page);
+    assert.deepEqual(rows.map((r) => r.name), ['qwen3:8b', 'Gemma', 'claude-opus-5-5']);
+    assert.equal(rows[1].meta, 'Local model · gemma4:26b · in the browser');
+
+    // Rename with the keyboard: Enter keeps it, and focus returns to the rename button.
+    const qwen = rows[0].id;
+    await page.click(`#profile-${qwen}-rename`);
+    assert.equal(await page.eval(`document.activeElement.id`), `profile-${qwen}-label`);
+    await page.type(`#profile-${qwen}-label`, 'Qwen');
+    await keyOn(page, `#profile-${qwen}-label`, 'Enter');
+    assert.equal(await page.eval(`document.activeElement.id`), `profile-${qwen}-rename`);
+    // Escape leaves a name as it was.
+    await page.click(`#profile-${qwen}-rename`);
+    await page.type(`#profile-${qwen}-label`, 'Nope');
+    await keyOn(page, `#profile-${qwen}-label`, 'Escape');
+    // Reorder, remove.
+    const gemma = rows[1].id;
+    assert.equal(await page.eval(`document.getElementById('profile-${qwen}-up').disabled`), true, 'the first cannot move up');
+    await page.click(`#profile-${gemma}-up`);
+    await page.click(`#profile-${rows[2].id}-remove`);
+    rows = await profileRows(page);
+    assert.deepEqual(rows.map((r) => r.name), ['Gemma', 'Qwen']);
+    await page.screenshot(path.join(shots, 'models-card-dark.png'), { scheme: 'dark' });
+    await page.screenshot(path.join(shots, 'models-card-light.png'), { scheme: 'light' });
+    await page.screenshot(path.join(shots, 'models-card-narrow.png'), { scheme: 'dark', width: 420 });
+
+    // Choosing the default moves the provider card to that model.
+    await page.click(`#profile-${gemma}-radio`);
+    assert.equal(await value(page, '#local-model'), 'gemma4:26b');
+    await page.click('#save');
+    await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save', timeout: 20000 });
+    assert.equal(await text(page, '#connection-text'), 'Tutor running in the browser: Local model, gemma4:26b');
+    const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+    assert.deepEqual(stored.tutorSettings.profiles.map((p) => [p.provider, p.model, p.label]), [['local', 'gemma4:26b', 'Gemma'], ['local', 'qwen3:8b', 'Qwen']]);
+    assert.equal(stored.tutorSettings.activeProfile, gemma);
+    assert.equal(stored.tutorSettings.providers.local.model, 'gemma4:26b');
+    // Editing the default's model in its card edits that entry.
+    await pickLocalModel(page, 'qwen3:8b');
+    await page.click('#save');
+    await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved') && document.getElementById('connection-text').textContent.endsWith('qwen3:8b')`, { what: 'the save of an existing model', timeout: 20000 });
+    const again = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+    assert.equal(again.tutorSettings.profiles.length, 2, 'picking a model already saved makes it the default, no duplicate');
+    assert.equal(again.tutorSettings.profiles.find((p) => p.id === again.tutorSettings.activeProfile).label, 'Qwen');
+  });
+  model.server.close();
+}
+
+await scenario('models card: subscription models are kept by the helper too, and an old single setting shows as one model', companion({
+  stored: applyPatch(emptySettings(), { provider: 'claude', providers: { claude: { model: 'claude-haiku-5-5' } } }),
+}), async (page) => {
+  let rows = await profileRows(page);
+  assert.deepEqual(rows.map((r) => [r.name, r.isDefault]), [['claude-haiku-5-5', true]], 'the old setting is one default model');
+  await page.eval(`(() => { const s = document.getElementById('add-provider'); s.value = 'claude'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await page.type('#add-model', 'claude-sonnet-5');
+  await page.type('#add-label', 'Sonnet');
+  await page.click('#add-profile-button');
+  await page.eval(`(() => { const s = document.getElementById('add-provider'); s.value = 'local'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await page.eval(`(() => { const s = document.getElementById('add-model'); s.value = '__other__'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  assert.equal(await page.eval(`document.getElementById('add-model').tagName`), 'INPUT', '"Other" types a name in the add row');
+  assert.equal(await page.eval(`document.getElementById('local-model').tagName`), 'SELECT', 'and leaves the card\'s dropdown alone');
+  await page.type('#add-model', 'llama3.2');
+  await page.click('#add-profile-button');
+  rows = await profileRows(page);
+  assert.deepEqual(rows.map((r) => r.name), ['claude-haiku-5-5', 'Sonnet', 'llama3.2']);
+  assert.match(rows[1].meta, /through the helper app/);
+  assert.match(rows[2].meta, /in the browser/);
+  await page.click('#save');
+  await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'save confirmation' });
+  const patch = lastCall(page, 'save').body.params.patch;
+  assert.deepEqual(patch.profiles.map((p) => p.model), ['claude-haiku-5-5', 'claude-sonnet-5'], 'only the helper\'s models go to the helper');
+  assert.equal(patch.activeProfile, rows[0].id);
+  const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
+  assert.deepEqual(stored.tutorSettings.profiles.map((p) => p.model), ['claude-haiku-5-5', 'claude-sonnet-5', 'llama3.2'], 'the extension keeps the whole list');
+  assert.equal(stored.tutorSettings.activeProfile, rows[0].id);
+  await page.screenshot(path.join(shots, 'models-card-helper-dark.png'), { scheme: 'dark' });
+});
 
 // ---- live: the real relay and companion ------------------------------------------
 

@@ -530,12 +530,14 @@
   const NOT_CHAT = /embed|rerank/i;
   const OTHER = "__other__";
 
-  function modelSelect(id, value, attrs) {
+  // `flag` is the typeModelByHand key that remembers "Other" was picked
+  // (the provider's card, or the Models card's add row).
+  function modelSelect(id, value, attrs, flag = id) {
     const names = (foundModels[id] || []).filter((n) => !NOT_CHAT.test(n) || n === value);
     const select = h("select", { ...attrs, onchange: () => {
       if (select.value === OTHER) {
         // In place, so nothing typed in the other fields is lost.
-        typeModelByHand[id] = true;
+        typeModelByHand[flag] = true;
         const box = h("input", { ...attrs, type: "text", value: "", placeholder: "Model name" });
         select.replaceWith(box);
         box.focus();
@@ -576,7 +578,7 @@
     const locked = isLocked(id, field);
     const required = catalog[id].requires.includes(field);
     const defaults = (runtime === "extension" ? ext.settings.defaults[id] : helper && helper.settings.defaults[id]) || {};
-    const raw = info ? info[field] : null;
+    const raw = field === "model" && info && Object.prototype.hasOwnProperty.call(formModel, id) && !locked ? formModel[id] : info ? info[field] : null;
     const value = raw === null || raw === undefined ? "" : String(raw);
     const attrs = { id: `${id}-${field}`, autocomplete: "off", spellcheck: "false", disabled: locked || !info };
     let input;
@@ -758,6 +760,7 @@
     renderOffline();
     renderConnection();
     renderFoot();
+    renderProfiles();
     autoFindModels("local");
     const can = usable(selected);
     $("test").disabled = !can;
@@ -784,6 +787,286 @@
     el.textContent = text;
     if (kind) el.setAttribute("data-kind", kind);
     else el.removeAttribute("data-kind");
+  }
+
+  // ---- models in the Tutor tab (profiles) ---------------------------------------------
+  //
+  // The saved models the Tutor panel's switcher lists (shared/profiles.js).
+  // This page keeps a draft of the list (add, rename, reorder, remove,
+  // choose the default) and sends it with Save. The provider cards above
+  // edit the default model: its provider, its model and the provider's
+  // connection. The extension keeps the whole list; the helper's companion
+  // keeps the ones that run through it, so the panel can switch it only to
+  // one of those.
+
+  const PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+  const MAX_PROFILES = 30;
+  let draftProfiles = []; // [{ id, provider, model, label }]
+  let draftActive = null;
+  const formModel = {}; // provider -> the model its card shows for the default
+  let renaming = null; // the id being renamed
+  let addProvider = "local";
+
+  function newProfileId(provider) {
+    const bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    const id = `${provider}-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+    return PROFILE_ID_RE.test(id) ? id : `m-${Date.now().toString(36)}`;
+  }
+
+  function defaultModelOf(provider) {
+    const defaults = ext && ext.settings.defaults[provider];
+    return defaults && defaults.model ? defaults.model : null;
+  }
+
+  function profileName(profile) {
+    return profile.label || profile.model || defaultModelOf(profile.provider) || (catalog[profile.provider] ? catalog[profile.provider].label : profile.provider);
+  }
+
+  function profileMeta(profile) {
+    const parts = [catalog[profile.provider] ? catalog[profile.provider].label : profile.provider];
+    const model = profile.model || defaultModelOf(profile.provider);
+    if (model && model !== profileName(profile)) parts.push(model);
+    parts.push(runtimeOf(profile.provider) === "helper" ? "through the helper app" : "in the browser");
+    return parts.join(" · ");
+  }
+
+  function loadDraft(view) {
+    draftProfiles = (view.profiles || []).map((p) => ({ ...p }));
+    draftActive = view.activeProfile || null;
+    const active = draftProfiles.find((p) => p.id === draftActive);
+    if (active) formModel[active.provider] = active.model;
+  }
+
+  function profilesNote(kind, text) {
+    const note = $("profiles-note");
+    note.textContent = text || "";
+    if (kind) note.setAttribute("data-kind", kind);
+    else note.removeAttribute("data-kind");
+  }
+
+  function chooseDefault(id) {
+    const profile = draftProfiles.find((p) => p.id === id);
+    if (!profile) return;
+    draftActive = id;
+    formModel[profile.provider] = profile.model;
+    typeModelByHand[profile.provider] = false;
+    if (selected !== profile.provider) {
+      selected = profile.provider;
+      clearResults();
+      if (runtimeOf(profile.provider) === "helper" && !helper) loadHelper();
+    }
+    render();
+  }
+
+  function moveProfile(id, by) {
+    const i = draftProfiles.findIndex((p) => p.id === id);
+    const j = i + by;
+    if (i < 0 || j < 0 || j >= draftProfiles.length) return;
+    [draftProfiles[i], draftProfiles[j]] = [draftProfiles[j], draftProfiles[i]];
+    renderProfiles();
+    const again = $(`profile-${id}-${by < 0 ? "up" : "down"}`);
+    if (again && !again.disabled) again.focus();
+    else if ($(`profile-${id}-radio`)) $(`profile-${id}-radio`).focus();
+  }
+
+  function removeProfile(id) {
+    const i = draftProfiles.findIndex((p) => p.id === id);
+    if (i < 0) return;
+    const [gone] = draftProfiles.splice(i, 1);
+    profilesNote(null, `Removed ${profileName(gone)}. Save to apply.`);
+    if (draftActive === id) {
+      const next = draftProfiles[Math.min(i, draftProfiles.length - 1)];
+      draftActive = null;
+      if (next) {
+        chooseDefault(next.id);
+        return;
+      }
+    }
+    renderProfiles();
+  }
+
+  function iconButton(id, label, path, onclick, disabled = false) {
+    const button = h("button", { type: "button", class: "iconbtn", id, "aria-label": label, title: label, disabled, onclick });
+    button.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+    return button;
+  }
+
+  function profileRow(profile, index) {
+    const isDefault = profile.id === draftActive;
+    const name = profileName(profile);
+    const radio = h("input", {
+      type: "radio",
+      name: "profile",
+      id: `profile-${profile.id}-radio`,
+      value: profile.id,
+      checked: isDefault,
+      "aria-label": `Use ${name} by default`,
+      onchange: () => chooseDefault(profile.id),
+    });
+    let text;
+    if (renaming === profile.id) {
+      const input = h("input", {
+        type: "text",
+        id: `profile-${profile.id}-label`,
+        value: profile.label || "",
+        placeholder: profile.model || defaultModelOf(profile.provider) || "Name",
+        maxlength: "60",
+        "aria-label": `Name for ${name}`,
+        onkeydown: (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            finishRename(profile.id, input.value);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            renaming = null;
+            renderProfiles();
+            $(`profile-${profile.id}-rename`).focus();
+          }
+        },
+      });
+      text = h("div", { class: "profile-text" }, input);
+    } else {
+      text = h("label", { class: "profile-text", for: radio.id }, h("span", { class: "profile-name", text: name }), h("span", { class: "profile-meta", text: profileMeta(profile) }));
+    }
+    const actions = h("div", { class: "profile-actions" });
+    if (renaming === profile.id) {
+      actions.appendChild(h("button", { type: "button", class: "btn", id: `profile-${profile.id}-done`, text: "Done", onclick: () => finishRename(profile.id, $(`profile-${profile.id}-label`).value) }));
+    } else {
+      actions.append(
+        iconButton(`profile-${profile.id}-rename`, `Rename ${name}`, '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>', () => {
+          renaming = profile.id;
+          renderProfiles();
+          const input = $(`profile-${profile.id}-label`);
+          input.focus();
+          input.select();
+        }),
+        iconButton(`profile-${profile.id}-up`, `Move ${name} up`, '<path d="M18 15l-6-6-6 6"/>', () => moveProfile(profile.id, -1), index === 0),
+        iconButton(`profile-${profile.id}-down`, `Move ${name} down`, '<path d="M6 9l6 6 6-6"/>', () => moveProfile(profile.id, 1), index === draftProfiles.length - 1),
+        iconButton(`profile-${profile.id}-remove`, `Remove ${name}`, '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>', () => removeProfile(profile.id))
+      );
+    }
+    return h("div", { class: "profile", "data-default": isDefault, "data-id": profile.id }, radio, text, actions);
+  }
+
+  function finishRename(id, value) {
+    const profile = draftProfiles.find((p) => p.id === id);
+    renaming = null;
+    if (profile) profile.label = value.trim().slice(0, 60) || null;
+    renderProfiles();
+    const again = $(`profile-${id}-rename`);
+    if (again) again.focus();
+  }
+
+  // The add row: a provider, a model (the local provider's is the same
+  // dropdown of the server's models as its card), an optional name.
+  function renderAddRow() {
+    const row = $("add-profile");
+    const keepModel = $("add-model") ? $("add-model").value : "";
+    const keepLabel = $("add-label") ? $("add-label").value : "";
+    row.textContent = "";
+    const select = h("select", {
+      id: "add-provider",
+      onchange: () => {
+        addProvider = select.value;
+        typeModelByHand.add = false;
+        renderAddRow();
+      },
+    });
+    for (const id of ORDER) if (catalog[id]) select.appendChild(h("option", { value: id, text: catalog[id].label, selected: id === addProvider }));
+    let model;
+    if (addProvider === "local" && !typeModelByHand.add) {
+      // "Other" in this dropdown types a name here, not in the card.
+      model = modelSelect("local", keepModel && (foundModels.local || []).includes(keepModel) ? keepModel : "", { id: "add-model", autocomplete: "off", spellcheck: "false" }, "add");
+    } else {
+      const required = catalog[addProvider].requires.includes("model");
+      model = h("input", {
+        type: "text",
+        id: "add-model",
+        autocomplete: "off",
+        spellcheck: "false",
+        value: addProvider === "local" ? keepModel : "",
+        placeholder: required ? "Model name" : defaultModelOf(addProvider) || "Default",
+        list: addProvider !== "local" && $(`${addProvider}-models`) ? `${addProvider}-models` : false,
+      });
+    }
+    const label = h("input", { type: "text", id: "add-label", autocomplete: "off", maxlength: "60", placeholder: "Optional", value: keepLabel });
+    row.append(
+      h("div", { class: "field" }, h("label", { for: "add-provider", text: "Provider" }), select),
+      h("div", { class: "field" }, h("label", { for: "add-model", text: "Model" }), model),
+      h("div", { class: "field" }, h("label", { for: "add-label" }, "Name", h("span", { class: "opt", text: " (optional)" })), label),
+      h("button", { type: "button", class: "btn", id: "add-profile-button", text: "Add model", onclick: addProfile })
+    );
+  }
+
+  function addProfile() {
+    const provider = $("add-provider").value;
+    const raw = $("add-model").value.trim();
+    const model = raw && raw !== OTHER ? raw : null;
+    const label = $("add-label").value.trim().slice(0, 60) || null;
+    if (!model && catalog[provider].requires.includes("model")) {
+      profilesNote("error", `Choose a model for ${catalog[provider].label} first.`);
+      $("add-model").focus();
+      return;
+    }
+    if (draftProfiles.some((p) => p.provider === provider && (p.model || null) === model)) {
+      profilesNote("error", "That model is already in the list.");
+      return;
+    }
+    if (draftProfiles.length >= MAX_PROFILES) {
+      profilesNote("error", `At most ${MAX_PROFILES} models can be saved.`);
+      return;
+    }
+    const profile = { id: newProfileId(provider), provider, model, label };
+    draftProfiles.push(profile);
+    $("add-label").value = "";
+    if ($("add-model").tagName === "INPUT") $("add-model").value = "";
+    typeModelByHand.add = false;
+    if (!draftActive) {
+      chooseDefault(profile.id);
+    } else {
+      renderProfiles();
+    }
+    profilesNote("ok", `Added ${profileName(profile)}. Save to apply.`);
+  }
+
+  function renderProfiles() {
+    const list = $("profiles");
+    list.textContent = "";
+    draftProfiles.forEach((profile, i) => list.appendChild(profileRow(profile, i)));
+    renderAddRow();
+  }
+
+  // The list and default to save: the default follows the provider card
+  // (its provider and its model). Same provider: the default's model is
+  // edited in place, unless another saved entry already is that model, which
+  // then becomes the default. Another provider: an entry with that provider
+  // and model becomes the default, or a new one is added for it.
+  function profilesForSave() {
+    const provider = selected;
+    const input = $(`${provider}-model`);
+    const locked = isLocked(provider, "model");
+    const typed = input && !locked ? input.value.trim() : "";
+    const model = typed && typed !== OTHER ? typed : null;
+    const list = draftProfiles.map((p) => ({ ...p }));
+    let active = list.find((p) => p.id === draftActive) || null;
+    const same = list.find((p) => p !== active && p.provider === provider && (p.model || null) === model);
+    if (active && active.provider === provider) {
+      if (same) active = same;
+      else if (!locked) active.model = model;
+    } else {
+      active = same || null;
+      if (!active) {
+        active = { id: newProfileId(provider), provider, model, label: null };
+        list.push(active);
+      }
+    }
+    return { profiles: list.slice(0, MAX_PROFILES), activeProfile: active.id };
+  }
+
+  // The entries that run through the helper, for the companion's own list.
+  function helperProfiles(list) {
+    return list.filter((p) => runtimeOf(p.provider) === "helper");
   }
 
   // ---- reading the form back --------------------------------------------------------
@@ -821,15 +1104,31 @@
   }
 
   // The patch for the companion (helper runtime), in its own shape.
-  function helperPatch() {
+  function helperPatch(plan) {
     const id = selected;
-    return { provider: helperLocked("provider") ? undefined : id, providers: { [id]: collectFields(id) }, options: collectOptions(false) };
+    const patch = { provider: helperLocked("provider") ? undefined : id, providers: { [id]: collectFields(id) }, options: collectOptions(false) };
+    if (plan) {
+      patch.profiles = helperProfiles(plan.profiles);
+      if (patch.profiles.some((p) => p.id === plan.activeProfile) && !helperLocked("provider") && !helperLocked("model")) patch.activeProfile = plan.activeProfile;
+    }
+    return patch;
   }
 
   // The patch for the extension (browser runtime).
-  function extensionPatch() {
+  function extensionPatch(plan) {
     const id = selected;
-    return { provider: id, runtime: "extension", providers: { [id]: collectFields(id) }, options: collectOptions(true) };
+    const patch = { provider: id, runtime: "extension", providers: { [id]: collectFields(id) }, options: collectOptions(true) };
+    if (plan) Object.assign(patch, plan);
+    return patch;
+  }
+
+  // Keeps the companion's list in step after a save in the browser runtime,
+  // when a helper is there to tell (best effort: a helper that is not running
+  // gets the list with the next save made through it).
+  async function syncHelperProfiles(plan) {
+    if (!helper) return;
+    const res = await rpc("setProfiles", { profiles: helperProfiles(plan.profiles) });
+    if (res.ok) helper = res.result;
   }
 
   // ---- actions ----------------------------------------------------------------------------
@@ -923,8 +1222,9 @@
     const button = $("save");
     button.disabled = true;
     showResult("save-result", "", "Saving...");
+    const plan = profilesForSave();
     if (inBrowser) {
-      const patch = extensionPatch();
+      const patch = extensionPatch(plan);
       if (!(await allowed)) {
         button.disabled = false;
         showResult("save-result", "error", deniedMessage(pattern));
@@ -938,11 +1238,13 @@
       }
       forgetKeyActions("extension");
       ext = res.result;
+      loadDraft(ext.settings);
       render();
       showResult("save-result", "ok", `Saved. The tutor now runs in the browser with ${activeLabel(ext.active)}.`);
+      syncHelperProfiles(plan);
       return;
     }
-    const res = await rpc("save", { patch: helperPatch() });
+    const res = await rpc("save", { patch: helperPatch(plan) });
     if (!res.ok) {
       button.disabled = false;
       failSave(res.error);
@@ -952,9 +1254,12 @@
     // The extension remembers that this provider runs through the helper, so
     // captures and the Tutor panel go to the relay.
     const provider = helper.settings.provider;
-    const routed = await worker("lc-tutor:settings-save", { patch: { provider, runtime: "helper" } });
+    const routed = await worker("lc-tutor:settings-save", { patch: { provider, runtime: "helper", ...plan } });
     button.disabled = false;
-    if (routed.ok) ext = routed.result;
+    if (routed.ok) {
+      ext = routed.result;
+      loadDraft(ext.settings);
+    }
     forgetKeyActions("helper");
     selected = provider;
     render();
@@ -992,6 +1297,7 @@
     }
     ext = res.result;
     catalog = ext.catalog;
+    loadDraft(ext.settings);
     for (const [id, runtime] of Object.entries(ext.settings.runtimes)) runtimeChoice[id] = runtime;
     selected = ext.settings.provider;
     const helperFirst = rpc("get", {});
@@ -1005,6 +1311,8 @@
         helper = res2.result;
         selected = helper.settings.provider;
         if (runtimesOf(selected).includes("helper")) runtimeChoice[selected] = "helper";
+        // Its saved models too, for the extension to keep from the next save.
+        if (!draftProfiles.length) loadDraft(helper.settings);
       } else {
         helperOffline = res2.error.offline || "relay-down";
         selected = "local";
@@ -1023,6 +1331,15 @@
     render();
   }
 
+  // What the default model's card shows is what Save makes the default.
+  $("providers").addEventListener("change", (e) => {
+    const m = /^([a-z]+)-model$/.exec(e.target.id || "");
+    if (m && e.target.value !== OTHER) formModel[m[1]] = e.target.value.trim() || null;
+  });
+  $("providers").addEventListener("input", (e) => {
+    const m = /^([a-z]+)-model$/.exec(e.target.id || "");
+    if (m && e.target.tagName === "INPUT") formModel[m[1]] = e.target.value.trim() || null;
+  });
   $("form").addEventListener("submit", save);
   $("test").addEventListener("click", runTest);
   load();
