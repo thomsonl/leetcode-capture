@@ -617,6 +617,9 @@ await liveScenario('live: the page reads, tests and saves through the real relay
   assert.match(await text(page, '#connection-text'), /Tutor running: Local model, model-b/);
   const saved = JSON.parse(fs.readFileSync(live.settingsFile, 'utf8'));
   assert.deepEqual([saved.provider, saved.providers.local.model, saved.providers.local.baseUrl], ['local', 'model-b', live.modelB.url]);
+  // The default saved model became model-b in place, and the companion keeps the list.
+  assert.deepEqual(saved.profiles.map((p) => [p.provider, p.model]), [['local', 'model-b']]);
+  assert.equal(saved.activeProfile, saved.profiles[0].id);
   assert.equal(fs.statSync(live.settingsFile).mode & 0o777, 0o600);
   const deadline = Date.now() + 5000;
   while (!live.out().includes('settings saved - now using Local model (model-b)')) {
