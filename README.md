@@ -238,7 +238,7 @@ Clicking a topic or group opens a side panel with its prerequisites (or the grou
 Every list refers to one shared catalog of problems (`extension/shared/catalog.js`), so a problem solved once counts in every list that has it.
 
 A problem counts as solved when LeetCode accepts one of your submissions on its page.
-The extension watches the page's own request for the judge's verdict (`/submissions/detail/<id>/check/`, an all-digit id with `state` "SUCCESS" and `status_msg` "Accepted"; a Run's check is ignored) and reads nothing else from it.
+The extension watches the page's own request for the judge's verdict (`/submissions/detail/<id>/v2/check/`, or the older `/<id>/check/`, an all-digit id with `state` "SUCCESS" and `status_msg` "Accepted"; a Run's check is ignored) and reads nothing else from it.
 This works whichever runtime runs the tutor, and needs nothing running besides the browser.
 For problems you solved before installing, click the status mark in a topic's or group's table; click it again to unmark any problem.
 Solved problems (`solvedProblems`: slug, time, count), stars (`starredProblems`) and the chosen list (`activeProgressList`) are kept in the extension's local storage and never sent anywhere.

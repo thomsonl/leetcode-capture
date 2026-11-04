@@ -88,7 +88,7 @@
   // ---- accepted submissions ---------------------------------------------
   //
   // After a Submit, LeetCode's page polls
-  // /submissions/detail/<id>/check/ until the judge answers with
+  // /submissions/detail/<id>/v2/check/ (older pages: /<id>/check/) until the judge answers with
   // state "SUCCESS"; status_msg "Accepted" means every test passed. A Run
   // polls the same path, but with an id like "runcode_..." (and its result
   // carries task_name "judger.runcodetask.RunCode"), so only an all-digit id
@@ -100,7 +100,7 @@
   // leetcode-capture:submission-accepted with a JSON-string detail (the same
   // Firefox Xray reason as above). Nothing about the code or the problem goes
   // with it: content.js takes the problem from the page address.
-  const CHECK_PATH = /\/submissions\/detail\/([^/?#]+)\/check\/?(?:[?#]|$)/;
+  const CHECK_PATH = /\/submissions\/detail\/([^/?#]+)\/(?:v2\/)?check\/?(?:[?#]|$)/;
   const reported = new Set();
 
   function submissionIdOf(url) {

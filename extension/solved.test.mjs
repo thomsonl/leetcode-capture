@@ -377,6 +377,19 @@ test('inject.js ignores a Run, a wrong answer, an error and unrelated requests',
   assert.deepEqual(reports, []);
 });
 
+test('inject.js also reads the /v2/check/ path LeetCode polls today, and still ignores other paths', async () => {
+  const { context, reports } = loadInject({
+    '/submissions/detail/401/v2/check/': ACCEPTED,
+    '/submissions/detail/402/v3/check/': ACCEPTED,
+    '/submissions/detail/403/v2/check/': JSON.stringify({ state: 'SUCCESS', status_msg: 'Wrong Answer', status_code: 11 }),
+  });
+  await context.fetch('/submissions/detail/401/v2/check/');
+  await context.fetch('/submissions/detail/402/v3/check/');
+  await context.fetch('/submissions/detail/403/v2/check/');
+  await tick();
+  assert.deepEqual(reports, ['401']);
+});
+
 test('inject.js reports an accepted submission seen through XMLHttpRequest, text or json', async () => {
   const { context, reports } = loadInject({
     '/submissions/detail/301/check/': ACCEPTED,
