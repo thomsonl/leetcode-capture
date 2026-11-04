@@ -9,11 +9,15 @@
 //     transport). Panel to worker:
 //       { type: 'subscribe', after, epoch }   replay, then follow live
 //       { type: 'message', id, text, problemSlug, snapshot }
+//       { type: 'switch-profile', reqId, id } the model switcher picked a profile
+//       { type: 'profile-switched', id }      the helper's companion switched to it
 //       { type: 'ping' }                      keeps the worker awake
 //     Worker to panel:
 //       { type: 'runtime', runtime, chosen }  on connect and on every change
+//       { type: 'profiles', profiles, active } the switcher's entries (no secrets)
 //       { type: 'event', event }              one hub event
 //       { type: 'reply', id, ok, error? }     answer to a message
+//       { type: 'switch-result', reqId, ok, runtime?, message? }
 //   - Answers runtime messages: a capture from content.js
 //     ('lc-tutor:capture'), and the options page's settings calls
 //     ('lc-tutor:settings-get|save|test|models'), which only the extension's
@@ -26,6 +30,7 @@ import { createEventHub } from './event-hub.js';
 import { createTutorEngine } from './tutor-engine.js';
 import { CONNECTION_TEST_PROMPT } from './tutor-prompt.js';
 import { listAnthropicModels } from './anthropic-backend.js';
+import { findProfile } from './profiles.js';
 import {
   SettingsError,
   applyPatch,
@@ -36,10 +41,13 @@ import {
   normalizeSecrets,
   normalizeSettings,
   originPatternFor,
+  profileEntry,
+  profileProblem,
   publicView,
   runtimeFor,
   serverUrlFor,
   statusSummary,
+  withProfile,
 } from './extension-settings.js';
 
 export const SETTINGS_KEY = 'tutorSettings';
@@ -70,6 +78,8 @@ function withTimeout(promise, ms, what) {
 // extensionOrigin: 'chrome-extension://<id>' (or moz-extension://<uuid>)
 // onRuntime(runtime): called once the settings are read and after every save,
 // with 'extension' or 'helper' (the background's helper launcher follows it).
+// helperProblem(currentRuntime): why a profile that runs through the helper
+// cannot be switched to right now, as a short line, or null (async allowed).
 export function createTutorService({
   storage,
   permissions,
@@ -77,6 +87,7 @@ export function createTutorService({
   log = () => {},
   buildBackendImpl = buildBackend,
   onRuntime = () => {},
+  helperProblem = async () => null,
 }) {
   const hub = createEventHub();
   const engine = createTutorEngine({ hub, log });
@@ -169,8 +180,7 @@ export function createTutorService({
     return { type: 'runtime', runtime: runtimeFor(settings), chosen: Boolean(settings.provider) };
   }
 
-  function broadcastRuntime() {
-    const message = runtimeMessage();
+  function broadcast(message) {
     for (const port of ports) {
       try {
         port.postMessage(message);
@@ -178,6 +188,96 @@ export function createTutorService({
         // gone; its disconnect handler removes it
       }
     }
+  }
+
+  function broadcastRuntime() {
+    broadcast(runtimeMessage());
+  }
+
+  // ---- the panel's model switcher ------------------------------------------
+
+  // Every saved profile with whether it can be switched to now and, if not,
+  // a one-line reason. Only non-secret fields.
+  async function profilesMessage() {
+    const current = runtimeFor(settings);
+    const entries = [];
+    for (const profile of settings.profiles) {
+      const entry = profileEntry(settings, profile);
+      let reason = null;
+      if (entry.runtime === 'extension') {
+        const draft = withProfile(settings, profile);
+        reason = profileProblem(draft, secrets);
+        if (!reason) {
+          const permission = await permissionFor(draft);
+          if (!permission.granted) reason = `Not allowed to reach ${permission.pattern.replace(/\/\*$/, '')} yet`;
+        }
+      } else {
+        try {
+          reason = (await helperProblem(current)) || null;
+        } catch {
+          reason = null;
+        }
+      }
+      entries.push({ ...entry, available: !reason, reason });
+    }
+    return { type: 'profiles', profiles: entries, active: settings.activeProfile };
+  }
+
+  async function broadcastProfiles() {
+    if (ports.size === 0) return;
+    broadcast(await profilesMessage());
+  }
+
+  // Switches to a saved profile: only the active profile changes (never a
+  // key, a URL or anything else), saved like any other setting, and the new
+  // backend goes in through the engine's turn queue, so a reply already
+  // running finishes first and the chat, statement and code move over.
+  // Resolves once the swap has happened. One switch at a time.
+  let switchChain = Promise.resolve();
+  function switchProfile(id) {
+    const run = switchChain.then(() => doSwitchProfile(id));
+    switchChain = run.catch(() => {});
+    return run;
+  }
+
+  async function doSwitchProfile(id) {
+    const profile = findProfile(settings.profiles, id);
+    if (!profile) return { ok: false, code: 'unknown', message: 'That model is no longer saved. Open Manage models to add it again.' };
+    if (settings.activeProfile === id) return { ok: true, runtime: runtimeFor(settings) };
+    const next = applyPatch(settings, secrets, { activeProfile: id });
+    const runtime = runtimeFor(next.settings);
+    if (runtime === 'extension') {
+      const problem = profileProblem(next.settings, next.secrets);
+      if (problem) return { ok: false, code: 'unavailable', message: `${problem}. Open Manage models to finish setting it up.` };
+      const permission = await permissionFor(next.settings);
+      if (!permission.granted) return { ok: false, code: 'unavailable', message: permissionMessage(next.settings) };
+      try {
+        buildBackend(next.settings, next.secrets, { probe: async () => null });
+      } catch (err) {
+        return { ok: false, code: 'unavailable', message: scrub(err.message, [next.secrets[next.settings.provider]]) };
+      }
+    }
+    await storage.set({ [SETTINGS_KEY]: next.settings });
+    settings = next.settings;
+    await applyToEngine();
+    broadcastRuntime();
+    onRuntime(runtimeFor(settings));
+    await broadcastProfiles();
+    return { ok: true, runtime };
+  }
+
+  // The helper's companion switched to a profile (the panel asked it through
+  // the relay); the extension remembers which one is active. Nothing else
+  // changes: the tutor keeps running through the helper.
+  async function noteHelperSwitch(id) {
+    const profile = findProfile(settings.profiles, id);
+    if (!profile || settings.activeProfile === id || runtimeFor(settings) !== 'helper') return;
+    const next = applyPatch(settings, secrets, { activeProfile: id });
+    if (runtimeFor(next.settings) !== 'helper') return;
+    await storage.set({ [SETTINGS_KEY]: next.settings });
+    settings = next.settings;
+    await applyToEngine();
+    await broadcastProfiles();
   }
 
   // ---- the options page -------------------------------------------------
@@ -205,6 +305,7 @@ export function createTutorService({
     await applyToEngine();
     broadcastRuntime();
     onRuntime(runtimeFor(settings));
+    await broadcastProfiles();
     return view({ saved: true });
   }
 
@@ -331,7 +432,10 @@ export function createTutorService({
           // disconnected
         }
       };
-      ready.then(() => post(runtimeMessage()));
+      ready.then(async () => {
+        post(runtimeMessage());
+        post(await profilesMessage());
+      });
       port.onMessage.addListener((message) => {
         if (!message || typeof message !== 'object') return;
         ready.then(() => {
@@ -350,6 +454,14 @@ export function createTutorService({
                 ? engine.handleMessage(message)
                 : { ok: false, error: 'helper' };
             post({ type: 'reply', id: message.id, ...answer });
+          } else if (message.type === 'switch-profile') {
+            const reqId = message.reqId;
+            switchProfile(typeof message.id === 'string' ? message.id : '').then(
+              (result) => post({ type: 'switch-result', reqId, ...result }),
+              (err) => post({ type: 'switch-result', reqId, ok: false, code: 'failed', message: scrub(err.message, Object.values(secrets)) })
+            );
+          } else if (message.type === 'profile-switched' && typeof message.id === 'string') {
+            noteHelperSwitch(message.id).catch((err) => log(`could not note a model switch: ${err.message}`));
           }
           // 'ping' needs no answer: receiving it is what keeps the worker up.
         });
@@ -363,7 +475,21 @@ export function createTutorService({
     // Re-checks what the current settings need (call when host permissions
     // change).
     refresh() {
-      return ready.then(() => applyToEngine());
+      return ready.then(async () => {
+        await applyToEngine();
+        await broadcastProfiles();
+      });
+    },
+
+    // Sends every panel the switcher's entries again (call when what the
+    // helper can do changed).
+    refreshProfiles() {
+      return ready.then(() => broadcastProfiles());
+    },
+
+    // For tests: the same as a panel's 'switch-profile'.
+    switchProfile(id) {
+      return ready.then(() => switchProfile(id));
     },
   };
 }

@@ -179,3 +179,65 @@ test('an unknown method and bad params never throw', async (t) => {
   assert.equal((await rpc.handle('save', null)).ok, false);
   assert.equal((await rpc.handle('get', 'junk')).ok, true);
 });
+
+test('switchProfile: only a saved id, only the active profile changes, and it waits for the swap', async (t) => {
+  const { rpc, state, file } = harness(t);
+  await rpc.handle('save', {
+    patch: {
+      provider: 'local',
+      providers: { local: { model: 'gpt-oss:20b', baseUrl: 'http://127.0.0.1:1/v1' } },
+      profiles: [
+        { id: 'gpt', provider: 'local', model: 'gpt-oss:20b' },
+        { id: 'gemma', provider: 'local', model: 'gemma4:26b', label: 'Gemma' },
+        { id: 'haiku', provider: 'claude', model: 'claude-haiku-5-5' },
+      ],
+      activeProfile: 'gpt',
+    },
+  });
+  const unknown = await rpc.handle('switchProfile', { id: 'nope' });
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.error.code, 'unknown');
+  const sneaky = await rpc.handle('switchProfile', { id: 'gemma', baseUrl: 'http://evil', patch: { providers: { local: { baseUrl: 'http://evil' } } } });
+  assert.equal(sneaky.ok, true);
+  assert.deepEqual(sneaky.result, { active: { provider: 'local', label: 'Local model', model: 'gemma4:26b' }, profile: 'gemma' });
+  const saved = loadSettings(file).settings;
+  assert.equal(saved.activeProfile, 'gemma');
+  assert.equal(saved.providers.local.model, 'gemma4:26b');
+  assert.equal(saved.providers.local.baseUrl, 'http://127.0.0.1:1/v1', 'the URL is untouched');
+  assert.equal(state.applied.length, 2);
+  // Switching to the active one again builds nothing.
+  await rpc.handle('switchProfile', { id: 'gemma' });
+  assert.equal(state.applied.length, 2);
+  const toClaude = await rpc.handle('switchProfile', { id: 'haiku' });
+  assert.equal(toClaude.result.active.provider, 'claude');
+});
+
+test('switchProfile waits for the queued swap; a locked provider or model is refused; setProfiles keeps the backend', async (t) => {
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const { rpc, state } = harness(t, {
+    apply: async (effective) => {
+      await gate;
+      state.applied.push({ effective });
+    },
+  });
+  await rpc.handle('setProfiles', { profiles: [{ id: 'a', provider: 'local', model: 'm1' }, { id: 'b', provider: 'local', model: 'm2' }] });
+  assert.equal(state.applied.length, 0, 'setProfiles applies nothing');
+  let done = false;
+  const pending = rpc.handle('switchProfile', { id: 'b' }).then((r) => {
+    done = true;
+    return r;
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(done, false, 'the answer waits for the swap');
+  release();
+  assert.equal((await pending).ok, true);
+
+  const locked = harness(t, { env: { COMPANION_MODEL: 'pinned' } });
+  await locked.rpc.handle('setProfiles', { profiles: [{ id: 'a', provider: 'local', model: 'm1' }] });
+  const refused = await locked.rpc.handle('switchProfile', { id: 'a' });
+  assert.equal(refused.error.code, 'locked');
+  assert.match(refused.error.message, /COMPANION_MODEL/);
+  const bad = await locked.rpc.handle('setProfiles', { profiles: [{ id: 'x', provider: 'nope' }] });
+  assert.equal(bad.ok, false);
+});

@@ -149,3 +149,32 @@ test("LeetCode tags never enter a Submit or problem context", async () => {
   });
   assert.ok(!JSON.stringify({ message, context: captureProblemContext(capture) }).includes("SECRET_TOPIC_SENTINEL"));
 });
+
+test("saved model profiles: bad entries are dropped on load and refused on save, and old settings migrate", async () => {
+  const { cleanProfiles, migrateProfiles, profileName, ProfileError } = await import("./shared/profiles.js");
+  const { PROVIDERS } = await import("./shared/providers.js");
+  const { applyPatch, normalizeSettings, SettingsError } = await import("./shared/extension-settings.js");
+  const raw = [
+    { id: "a", provider: "local", model: "gpt-oss:20b" },
+    { id: "a", provider: "local", model: "dup" },
+    { id: "Bad Id", provider: "local" },
+    { id: "b", provider: "nope" },
+    { id: "c", provider: "claude", model: null, label: " Fast " },
+  ];
+  assert.deepEqual(cleanProfiles(raw, PROVIDERS).map((p) => p.id), ["a", "c"]);
+  assert.throws(() => cleanProfiles(raw, PROVIDERS, { strict: true }), ProfileError);
+  assert.equal(profileName({ id: "c", provider: "claude", model: null, label: "Fast" }, PROVIDERS), "Fast");
+  assert.equal(profileName({ id: "c", provider: "claude", model: null, label: null }, PROVIDERS), "Claude subscription");
+  assert.deepEqual(migrateProfiles({ provider: null }), { profiles: [], activeProfile: null });
+
+  const old = normalizeSettings({ provider: "local", providers: { local: { model: "gemma4:26b" } } });
+  assert.deepEqual(old.profiles, [{ id: "default", provider: "local", model: "gemma4:26b", label: null }]);
+  assert.equal(old.activeProfile, "default");
+  // A switch changes only the active profile, provider and model.
+  const two = applyPatch(old, {}, { profiles: [...old.profiles, { id: "b", provider: "local", model: "gpt-oss:20b" }] }).settings;
+  const switched = applyPatch(two, {}, { activeProfile: "b" }).settings;
+  assert.equal(switched.providers.local.model, "gpt-oss:20b");
+  assert.equal(switched.providers.local.baseUrl, two.providers.local.baseUrl);
+  assert.throws(() => applyPatch(two, {}, { activeProfile: "missing" }), SettingsError);
+  assert.throws(() => applyPatch(two, {}, { profiles: [{ id: "x", provider: "local", model: "\u0007" }] }), SettingsError);
+});

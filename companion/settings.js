@@ -25,6 +25,13 @@ export const DEFAULT_PROVIDER = 'claude';
 // each one) is shared with the extension: extension/shared/providers.js.
 export { PROVIDERS, OLLAMA_BASE_URL, OPENAI_BASE_URL } from '../extension/shared/providers.js';
 import { PROVIDERS, OLLAMA_BASE_URL, OPENAI_BASE_URL } from '../extension/shared/providers.js';
+import {
+  ProfileError,
+  cleanActiveProfile,
+  cleanProfiles,
+  findProfile,
+  migrateProfiles,
+} from '../extension/shared/profiles.js';
 
 const DEFAULT_FIELDS = {
   local: { baseUrl: OLLAMA_BASE_URL, model: null, contextTokens: 8192, apiKey: null },
@@ -60,7 +67,18 @@ export function settingsPath(env = process.env) {
 export function emptySettings() {
   const providers = {};
   for (const id of Object.keys(PROVIDERS)) providers[id] = { ...DEFAULT_FIELDS[id] };
-  return { version: SETTINGS_VERSION, provider: null, providers, options: { ...DEFAULT_OPTIONS } };
+  return { version: SETTINGS_VERSION, provider: null, providers, options: { ...DEFAULT_OPTIONS }, profiles: [], activeProfile: null };
+}
+
+// The saved models the Tutor panel's switcher may move the helper between
+// (extension/shared/profiles.js). The options page keeps this list equal to
+// its own list of the profiles that run through the helper. `provider` and
+// that provider's model always match the active profile.
+function syncActive(settings) {
+  const profile = findProfile(settings.profiles, settings.activeProfile);
+  if (!profile) return;
+  settings.provider = profile.provider;
+  settings.providers[profile.provider].model = profile.model;
 }
 
 // ---- validation ------------------------------------------------------------
@@ -171,6 +189,15 @@ export function sanitizeStored(input) {
       // keep default
     }
   }
+  const migrated = migrateProfiles({
+    profiles: cleanProfiles(input.profiles, PROVIDERS),
+    activeProfile: input.activeProfile,
+    provider: out.provider,
+    model: out.provider ? out.providers[out.provider].model : null,
+  });
+  out.profiles = migrated.profiles;
+  out.activeProfile = migrated.activeProfile;
+  syncActive(out);
   return out;
 }
 
@@ -191,8 +218,11 @@ export function saveSettings(settings, file = settingsPath()) {
 
 // ---- applying a change from the options page ------------------------------------
 
-// patch = { provider?, providers?: { [id]: { model?, baseUrl?, contextTokens?, apiKey? } }, options? }
+// patch = { provider?, providers?: { [id]: { model?, baseUrl?, contextTokens?, apiKey? } }, options?,
+//           profiles?, activeProfile? }
 // apiKey: a string sets it, null removes it, undefined (absent) keeps what is saved.
+// `profiles` replaces the whole list; `activeProfile` (an id in it, or null)
+// makes that profile's provider and model the ones in use.
 // Returns a new stored object; throws SettingsError and changes nothing on a bad value.
 export function applyPatch(stored, patch) {
   const next = JSON.parse(JSON.stringify(stored));
@@ -226,7 +256,51 @@ export function applyPatch(stored, patch) {
       next.options.localMaxHistoryTurns = turns === null ? DEFAULT_OPTIONS.localMaxHistoryTurns : turns;
     }
   }
+  if (!Array.isArray(next.profiles)) next.profiles = [];
+  if (patch.profiles !== undefined) {
+    try {
+      next.profiles = cleanProfiles(patch.profiles, PROVIDERS, { strict: true });
+    } catch (err) {
+      throw new SettingsError(err instanceof ProfileError ? err.message : 'profiles are not valid', 'profiles');
+    }
+    next.activeProfile = cleanActiveProfile(next.profiles, next.activeProfile);
+  }
+  if (patch.activeProfile !== undefined) {
+    if (patch.activeProfile === null) next.activeProfile = null;
+    else if (!findProfile(next.profiles, patch.activeProfile)) throw new SettingsError('That model is not in the saved list.', 'activeProfile');
+    else next.activeProfile = patch.activeProfile;
+  } else if (patch.profiles === undefined && (patch.provider !== undefined || patch.providers !== undefined)) {
+    // A patch from before profiles: the active profile follows the provider
+    // and model it saves, or there is none.
+    followLegacyPatch(next);
+  }
+  syncActive(next);
   return next;
+}
+
+// A patch from before profiles (a provider and its fields, no profile list):
+// the active profile follows the provider and model it saves, as loading
+// such a file would have migrated it.
+function followLegacyPatch(next) {
+  if (!next.provider) {
+    next.activeProfile = null;
+    return;
+  }
+  const model = next.providers[next.provider].model;
+  const active = findProfile(next.profiles, next.activeProfile);
+  if (active && active.provider === next.provider) {
+    active.model = model;
+    return;
+  }
+  const same = next.profiles.find((p) => p.provider === next.provider && p.model === model);
+  if (same) {
+    next.activeProfile = same.id;
+    return;
+  }
+  let id = next.profiles.length ? next.provider : 'default';
+  for (let n = 2; findProfile(next.profiles, id); n += 1) id = `${next.provider}-${n}`;
+  next.profiles.push({ id, provider: next.provider, model, label: null });
+  next.activeProfile = id;
 }
 
 // ---- effective settings (env > file > default) ---------------------------------
@@ -373,6 +447,8 @@ export function publicView(stored, env = process.env, file = settingsPath(env)) 
     providers,
     options: effective.options,
     locks: effective.locks,
+    profiles: (stored.profiles || []).map((p) => ({ ...p })),
+    activeProfile: stored.activeProfile || null,
     catalog: Object.fromEntries(
       Object.entries(PROVIDERS).map(([id, p]) => [id, { label: p.label, hint: p.hint, fields: p.fields, requires: p.requires }])
     ),

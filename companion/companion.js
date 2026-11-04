@@ -2001,24 +2001,28 @@ function swapBackend(nextBackend) {
 
 // Swaps in a saved configuration through the turn queue, so it lands between
 // turns and never in the middle of one (a message queued after the save goes
-// to the new backend). Not awaited by the save itself: the options page hears
-// "saved" at once even while a long reply is still running.
-function applySettings(nextEffective, nextBackend) {
-  queueTurn(async () => {
+// to the new backend). Returns the queued swap: a save does not wait for it
+// (the options page hears "saved" at once even while a long reply is still
+// running), the model switcher does (`why` is 'switch'), so the panel shows
+// "Switching" until the new model is really in place.
+function applySettings(nextEffective, nextBackend, why = 'save') {
+  return queueTurn(async () => {
     const swap = backendKey(nextEffective) !== backendKey(effective);
     effective = nextEffective;
     if (swap) swapBackend(nextBackend);
     const now = statusSummary(effective);
+    const model = now.model ? ` (${oneLine(now.model)})` : '';
     printAboveInput(
       dim(
-        `companion: settings saved - ${swap ? 'now using' : 'still using'} ${now.label}${
-          now.model ? ` (${oneLine(now.model)})` : ''
-        }${swap ? ', starting a fresh tutor session' : ''}`
+        why === 'switch'
+          ? `companion: switched models - now using ${now.label}${model}, same conversation`
+          : `companion: settings saved - ${swap ? 'now using' : 'still using'} ${now.label}${model}`
       )
     );
     publishConfig();
   }).catch((err) => {
     printAboveInput(dim(`companion: error applying settings: ${err.message}`));
+    throw err;
   });
 }
 

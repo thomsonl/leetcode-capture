@@ -922,3 +922,41 @@ test("unit: sanitizeEvent keeps the switch flag only on a notice, and only as tr
   assert.equal(sanitizeEvent({ type: "notice", text: "fresh", problemSlug: "a", switch: "yes" }).switch, undefined);
   assert.equal(sanitizeEvent({ type: "user", text: "hi", problemSlug: "a", switch: true }).switch, undefined);
 });
+
+test("the model switcher: a panel may only ask the companion to switch to a saved id, and hears back nothing secret", async (t) => {
+  const port = await startInProcess(t);
+  const switchCall = (body, origin = "https://leetcode.com") =>
+    request({ method: "POST", route: "/panel/switch-profile", headers: { origin, "sec-fetch-mode": "cors" }, body, port });
+  assert.equal((await switchCall({ id: "gemma" }, "https://evil.example")).status, 403, "another site is refused");
+  assert.equal((await switchCall({ id: "gemma" })).status, 503, "no companion");
+  const companion = await companionInbox(port);
+  t.after(() => companion.inbox.close());
+  for (const id of ["", "Bad Id", "../x", 7, null]) assert.equal((await switchCall({ id })).status, 400, `id ${id}`);
+
+  // Whatever else the body carries, only the id goes on, as switchProfile.
+  const pending = switchCall({ id: "gemma", patch: { providers: { local: { baseUrl: "http://evil" } } }, method: "save" });
+  const call = await companion.nextRpc();
+  assert.equal(call.method, "switchProfile");
+  assert.deepEqual(call.params, { id: "gemma" });
+  await companion.answer(call.id, {
+    ok: true,
+    result: { profile: "gemma", active: { provider: "local", label: "Local model", model: "gemma4:26b", apiKey: "sk-leak" }, settings: { secret: "x" } },
+  });
+  const ok = await pending;
+  assert.equal(ok.status, 200);
+  assert.deepEqual(JSON.parse(ok.body), { ok: true, profile: "gemma", active: { provider: "local", label: "Local model", model: "gemma4:26b" } });
+  assert.equal(ok.headers["access-control-allow-origin"], "https://leetcode.com");
+
+  // A refusal: an id the companion does not have.
+  const unknown = switchCall({ id: "nope" });
+  const call2 = await companion.nextRpc(2);
+  await companion.answer(call2.id, { ok: false, error: { code: "unknown", message: "The helper app does not have that model saved.", field: "profile" } });
+  const refused = await unknown;
+  assert.equal(refused.status, 404);
+  assert.deepEqual(JSON.parse(refused.body), { ok: false, error: { code: "unknown", message: "The helper app does not have that model saved." } });
+
+  const locked = switchCall({ id: "haiku" });
+  const call3 = await companion.nextRpc(3);
+  await companion.answer(call3.id, { ok: false, error: { code: "locked", message: "Set by COMPANION_MODEL" } });
+  assert.equal((await locked).status, 409);
+});

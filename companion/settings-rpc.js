@@ -1,6 +1,9 @@
 // companion/settings-rpc.js - what the extension's options page can ask the
 // companion to do: read the settings, save a change, test a connection, list a
-// server's models.
+// server's models, keep its list of saved models (profiles) up to date; and
+// what the Tutor panel's model switcher can ask: switch to one of those saved
+// models (switchProfile, the only method the relay's panel-origin
+// POST /panel/switch-profile forwards).
 //
 // The options page talks to the relay, which forwards each call here over the
 // companion's existing inbox stream (see panel-bridge.js). All the decisions
@@ -24,6 +27,7 @@ import {
   statusSummary,
 } from './settings.js';
 import { checkCodexLogin } from './codex-backend.js';
+import { PROFILE_ID_RE, findProfile } from '../extension/shared/profiles.js';
 import { CONNECTION_TEST_PROMPT as TEST_PROMPT } from '../extension/shared/tutor-prompt.js';
 
 const TEST_TIMEOUT_MS = 90_000;
@@ -51,7 +55,8 @@ function withTimeout(promise, ms, what) {
 //   getStored()                     the saved settings object currently in memory
 //   setStored(next)                 replace it after a successful save
 //   buildBackend(effective)         throws if a backend can't be built (async allowed)
-//   apply(effective, backend)       swap the live backend (companion.js queues it behind the current turn)
+//   apply(effective, backend, why)  swap the live backend (companion.js queues it behind the
+//                                   current turn); may return a promise of the swap having happened
 //   validateVault(effective)        throws if the vault auto-summary can't run (optional)
 //   fetchImpl, codexCommand         injectable for tests
 export function createSettingsRpc(deps) {
@@ -90,8 +95,55 @@ export function createSettingsRpc(deps) {
     }
     saveSettings(next, deps.file);
     deps.setStored(next);
-    await deps.apply(effective, backend);
+    // Not waited for: the page hears "saved" even while a reply still runs.
+    Promise.resolve(deps.apply(effective, backend, 'save')).catch(() => {});
     return view({ saved: true });
+  }
+
+  // The options page's list of saved models that run through the helper.
+  // Changes nothing about the running backend; an active profile that is no
+  // longer listed is simply no longer one.
+  async function setProfiles({ profiles }) {
+    const next = applyPatch(deps.getStored(), { profiles: Array.isArray(profiles) ? profiles : [] });
+    saveSettings(next, deps.file);
+    deps.setStored(next);
+    return view({ saved: true });
+  }
+
+  // The model switcher: makes a saved profile the active one. It can change
+  // nothing but which saved profile is active (never a key, a URL or any
+  // other setting), so whoever may call it can at most flip between the
+  // models the user saved. Resolves once the new backend is in place, after
+  // any turn already queued, with only the non-secret summary.
+  async function switchProfile({ id }) {
+    const stored = deps.getStored();
+    const profile = typeof id === 'string' && PROFILE_ID_RE.test(id) ? findProfile(stored.profiles, id) : null;
+    if (!profile) {
+      throw Object.assign(new SettingsError('The helper app does not have that model saved. Open Manage models and press Save.', 'profile'), { code: 'unknown' });
+    }
+    const env = deps.env || {};
+    if ((env.COMPANION_BACKEND && env.COMPANION_BACKEND !== profile.provider) || (env.COMPANION_MODEL && env.COMPANION_MODEL !== profile.model)) {
+      const name = env.COMPANION_BACKEND && env.COMPANION_BACKEND !== profile.provider ? 'COMPANION_BACKEND' : 'COMPANION_MODEL';
+      throw Object.assign(new SettingsError(`The model is set by ${name} in the helper's environment, so it can't be switched here.`, 'profile'), { code: 'locked' });
+    }
+    const current = resolveEffective(stored, deps.env);
+    if (stored.activeProfile === id && current.provider === profile.provider && (current.model || null) === (profile.model || null)) {
+      return { active: statusSummary(current), profile: id };
+    }
+    const next = applyPatch(stored, { activeProfile: id });
+    const effective = resolveEffective(next, deps.env);
+    const problem = missingRequirement(effective);
+    if (problem) throw Object.assign(new SettingsError(`${problem}. Open Manage models to finish setting it up.`, 'profile'), { code: 'unavailable' });
+    let backend;
+    try {
+      backend = await deps.buildBackend(effective);
+    } catch (err) {
+      throw Object.assign(new SettingsError(scrub(err.message, [effective.apiKey]), 'profile'), { code: 'unavailable' });
+    }
+    saveSettings(next, deps.file);
+    deps.setStored(next);
+    await deps.apply(effective, backend, 'switch');
+    return { active: statusSummary(effective), profile: id };
   }
 
   // Tries a draft (the saved settings with the page's unsaved edits on top).
@@ -155,7 +207,7 @@ export function createSettingsRpc(deps) {
     }
   }
 
-  const METHODS = { get, save, test, models };
+  const METHODS = { get, save, test, models, setProfiles, switchProfile };
 
   // Single entry point used by the bridge. Never throws: the result is always
   // { ok: true, result } or { ok: false, error: { message, field } }.
@@ -165,7 +217,9 @@ export function createSettingsRpc(deps) {
     try {
       return { ok: true, result: await fn(params && typeof params === 'object' ? params : {}) };
     } catch (err) {
-      if (err instanceof SettingsError) return { ok: false, error: { message: err.message, field: err.field } };
+      if (err instanceof SettingsError) {
+        return { ok: false, error: { message: err.message, field: err.field, ...(err.code ? { code: err.code } : {}) } };
+      }
       return { ok: false, error: { message: scrub(err.message, [deps.env.COMPANION_API_KEY]) } };
     }
   }

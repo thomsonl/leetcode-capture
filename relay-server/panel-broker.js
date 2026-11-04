@@ -14,6 +14,7 @@
 // Routes (all under /panel/):
 //   GET  /panel/events?after=<seq>  panel     SSE stream of tutor events (replays the buffer after <seq>)
 //   POST /panel/message             panel     a typed message for the tutor
+//   POST /panel/switch-profile      panel     { id }: the model switcher picked a saved model
 //   POST /panel/publish             companion one event, or { events: [...] }
 //   GET  /panel/inbox               companion SSE stream of the panel's typed messages
 //   POST /panel/drop-problem        companion { problemSlug }: forget that problem's buffered events
@@ -25,6 +26,13 @@
 // A `config` event (which provider and model the tutor uses, never a key) is
 // not buffered with the conversation: the newest one is kept on its own and
 // sent to every panel that connects, after the replay and before `status`.
+//
+// POST /panel/switch-profile is the one settings call a panel (and so any
+// script on leetcode.com) can make: it goes to the companion as the rpc
+// `switchProfile` with nothing but the id, and the companion accepts only an
+// id it already has saved, which changes nothing but which saved model is in
+// use (see companion/settings-rpc.js). The answer carries only whether it
+// worked, a reason and the non-secret summary of the model now in use.
 //
 // /settings/rpc is for the extension's own options page (extension/settings.js)
 // only: its Origin must be an extension origin (chrome-extension://<32 letters
@@ -105,6 +113,10 @@ const MAX_RPC_BYTES = 64 * 1024;
 const MAX_RPC_RESULT_BYTES = 1024 * 1024;
 const MAX_PENDING_RPCS = 50;
 const RPC_METHOD_RE = /^[a-z][a-zA-Z]{0,39}$/;
+// Same as extension/shared/profiles.js's PROFILE_ID_RE.
+const PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+// A switch waits for the reply already running, so it may take a while.
+const SWITCH_STATUS = { unknown: 404, locked: 409, unavailable: 409 };
 
 // Everything in C0 except tab and newline, plus DEL and all of C1 (which some
 // terminals honor as 8-bit CSI/OSC introducers), plus the invisible bidi and
@@ -421,6 +433,54 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
     req.on("error", () => {});
   }
 
+  // Sends a settings call down the companion's inbox and answers the request
+  // with `answer(response)` -> [status, body] once the companion has.
+  function forwardRpc(req, res, method, params, answer) {
+    if (consumers.size === 0) {
+      sendJson(req, res, 503, { ok: false, error: { message: "The tutor isn't running." } });
+      return;
+    }
+    if (pendingRpcs.size >= MAX_PENDING_RPCS) {
+      sendJson(req, res, 503, { ok: false, error: { message: "Too many settings calls are waiting. Try again." } });
+      return;
+    }
+    const id = crypto.randomBytes(12).toString("hex");
+    const timer = setTimeout(() => {
+      pendingRpcs.delete(id);
+      sendJson(req, res, 504, {
+        ok: false,
+        error: { message: `The tutor did not answer within ${Math.round(rpcTimeoutMs / 1000)} seconds.` },
+      });
+    }, rpcTimeoutMs);
+    timer.unref();
+    pendingRpcs.set(id, { req, res, timer, answer });
+    res.on("close", () => {
+      const pending = pendingRpcs.get(id);
+      if (pending && pending.res === res) {
+        clearTimeout(pending.timer);
+        pendingRpcs.delete(id);
+      }
+    });
+    const message = { type: "rpc", id, method, params };
+    for (const consumer of consumers) sseWrite(consumer, { data: message });
+  }
+
+  // What a panel hears back from a model switch: nothing but whether it
+  // worked, why not, and the non-secret summary of the model in use.
+  function switchAnswer(response) {
+    if (response.ok) {
+      const result = response.result || {};
+      const active = sanitizeConfig(result.active);
+      const body = { ok: true, profile: typeof result.profile === "string" && PROFILE_ID_RE.test(result.profile) ? result.profile : null };
+      if (active) body.active = { provider: active.provider, label: active.label, model: active.model };
+      return [200, body];
+    }
+    const error = response.error || {};
+    const code = typeof error.code === "string" && SWITCH_STATUS[error.code] ? error.code : "failed";
+    const message = typeof error.message === "string" ? stripControlChars(error.message).slice(0, 300) : "The switch failed.";
+    return [SWITCH_STATUS[code] || 500, { ok: false, error: { code, message } }];
+  }
+
   // POST /settings/rpc from the extension's options page (see the file
   // header). Returns true once handled.
   function handleSettings(req, res, url) {
@@ -458,33 +518,7 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
         sendJson(req, res, 400, { error: "a settings `method` and optional `params` object are required" });
         return;
       }
-      if (consumers.size === 0) {
-        sendJson(req, res, 503, { ok: false, error: { message: "The tutor isn't running." } });
-        return;
-      }
-      if (pendingRpcs.size >= MAX_PENDING_RPCS) {
-        sendJson(req, res, 503, { ok: false, error: { message: "Too many settings calls are waiting. Try again." } });
-        return;
-      }
-      const id = crypto.randomBytes(12).toString("hex");
-      const timer = setTimeout(() => {
-        pendingRpcs.delete(id);
-        sendJson(req, res, 504, {
-          ok: false,
-          error: { message: `The tutor did not answer within ${Math.round(rpcTimeoutMs / 1000)} seconds.` },
-        });
-      }, rpcTimeoutMs);
-      timer.unref();
-      pendingRpcs.set(id, { req, res, timer });
-      res.on("close", () => {
-        const pending = pendingRpcs.get(id);
-        if (pending && pending.res === res) {
-          clearTimeout(pending.timer);
-          pendingRpcs.delete(id);
-        }
-      });
-      const message = { type: "rpc", id, method, params: params || {} };
-      for (const consumer of consumers) sseWrite(consumer, { data: message });
+      forwardRpc(req, res, method, params || {}, (response) => [200, response]);
     });
     return true;
   }
@@ -593,6 +627,19 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
       return true;
     }
 
+    // The model switcher (see the file header): only an id goes on.
+    if (route === "POST /panel/switch-profile") {
+      readBody(req, res, 4096, (body) => {
+        const id = body && body.id;
+        if (typeof id !== "string" || !PROFILE_ID_RE.test(id)) {
+          sendJson(req, res, 400, { ok: false, error: { code: "invalid", message: "a saved model's `id` is required" } });
+          return;
+        }
+        forwardRpc(req, res, "switchProfile", { id }, switchAnswer);
+      });
+      return true;
+    }
+
     // The companion moved on from a problem (its tutor context was reset), so
     // that problem's transcript is no longer kept for panels that connect or
     // reload later. Panels already showing it keep what they have.
@@ -679,7 +726,8 @@ function createPanelBroker({ port, captureLog = null, rpcTimeoutMs = RPC_TIMEOUT
         }
         pendingRpcs.delete(id);
         clearTimeout(pending.timer);
-        sendJson(pending.req, pending.res, 200, response);
+        const [status, answer] = pending.answer(response);
+        sendJson(pending.req, pending.res, status, answer);
         sendJson(req, res, 200, { ok: true });
       });
       return true;

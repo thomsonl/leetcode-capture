@@ -68,6 +68,7 @@ async function helperView() {
 
 const panelPorts = new Set();
 launcher.onChange((view) => {
+  service.refreshProfiles();
   for (const port of panelPorts) {
     try {
       port.postMessage({ type: "helper", state: view.wanted ? view.state : null });
@@ -97,7 +98,25 @@ async function applyDevSeed() {
 }
 applyDevSeed();
 
+// Why the model switcher cannot move to a profile that runs through the
+// helper right now, or null. While the helper runtime is in use the panel
+// itself sees whether the tutor answers; from the browser runtime the
+// extension must be able to start the helper.
+async function helperProblem(current) {
+  if (current === "helper") return null;
+  let granted = false;
+  try {
+    granted = await api.permissions.contains(NATIVE);
+  } catch {
+    granted = false;
+  }
+  if (!granted || typeof api.runtime.connectNative !== "function") return "Helper app not set up yet";
+  if (launcher.view().state === "not-installed") return "Helper app not installed";
+  return null;
+}
+
 const service = createTutorService({
+  helperProblem,
   onRuntime: (next) => {
     runtime = next;
     refreshHelper();

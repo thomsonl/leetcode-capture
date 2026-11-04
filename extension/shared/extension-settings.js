@@ -6,17 +6,25 @@
 // used for the helper runtime.
 //
 // Two stored records, so a key can never ride along with anything else:
-//   settings: { version, provider, runtimes, providers, options }, no secrets
+//   settings: { version, provider, runtimes, providers, options, profiles,
+//               activeProfile }, no secrets
 //   secrets:  { local, anthropic, openai }, the API keys
 // publicView() is all the options page is ever given: `hasKey`, never a key.
+//
+// `profiles` are the saved models the Tutor panel's switcher lists (see
+// profiles.js); `activeProfile` is the one in use. `provider` and the active
+// provider's `model` always match the active profile, so everything that
+// reads them (runtimeFor, buildBackend, statusSummary) needs no change. A
+// record from before profiles becomes one profile (migrateProfiles).
 //
 // Pure JavaScript with no Node API (extension/shared.test.js checks that).
 
 import { PROVIDERS, OLLAMA_BASE_URL, OPENAI_BASE_URL, defaultRuntime } from './providers.js';
 import { LocalBackend } from './local-backend.js';
 import { AnthropicBackend, ANTHROPIC_BASE_URL, DEFAULT_ANTHROPIC_MODEL } from './anthropic-backend.js';
+import { ProfileError, cleanActiveProfile, cleanProfiles, findProfile, migrateProfiles, profileName } from './profiles.js';
 
-export const EXTENSION_SETTINGS_VERSION = 1;
+export const EXTENSION_SETTINGS_VERSION = 2;
 // The providers the extension can run itself.
 export const EXTENSION_PROVIDERS = Object.keys(PROVIDERS).filter((id) => PROVIDERS[id].runtimes.includes('extension'));
 export const DEFAULT_LOCAL_CONTEXT_TOKENS = 8192;
@@ -48,7 +56,15 @@ export function emptySettings() {
     providers[id] = { ...DEFAULT_FIELDS[id] };
     runtimes[id] = defaultRuntime(id);
   }
-  return { version: EXTENSION_SETTINGS_VERSION, provider: null, runtimes, providers, options: { ...DEFAULT_OPTIONS } };
+  return {
+    version: EXTENSION_SETTINGS_VERSION,
+    provider: null,
+    runtimes,
+    providers,
+    options: { ...DEFAULT_OPTIONS },
+    profiles: [],
+    activeProfile: null,
+  };
 }
 
 export function emptySecrets() {
@@ -128,7 +144,57 @@ export function normalizeSettings(raw) {
   } catch {
     // keep the default
   }
+  const providerModel = out.provider && out.providers[out.provider] ? out.providers[out.provider].model : null;
+  const migrated = migrateProfiles({
+    profiles: cleanProfiles(raw.profiles, PROVIDERS),
+    activeProfile: raw.activeProfile,
+    provider: out.provider,
+    model: providerModel,
+  });
+  out.profiles = migrated.profiles;
+  out.activeProfile = migrated.activeProfile;
+  syncActive(out);
   return out;
+}
+
+// Makes `provider` and that provider's model match the active profile.
+function syncActive(settings) {
+  const profile = findProfile(settings.profiles, settings.activeProfile);
+  if (!profile) return;
+  settings.provider = profile.provider;
+  if (settings.providers[profile.provider]) settings.providers[profile.provider].model = profile.model;
+}
+
+// An id for a profile the store makes itself, unused in `profiles`.
+function freeProfileId(profiles, base) {
+  const stem = base.replace(/[^a-z0-9-]/g, '').slice(0, 30) || 'model';
+  for (let n = 1; ; n += 1) {
+    const id = n === 1 ? stem : `${stem}-${n}`;
+    if (!findProfile(profiles, id)) return id;
+  }
+}
+
+// A patch from before profiles (a provider and its fields, no profile list):
+// the active profile follows it, as it would have been migrated.
+function followLegacyPatch(next) {
+  if (!next.provider) {
+    next.activeProfile = null;
+    return;
+  }
+  const model = next.providers[next.provider] ? next.providers[next.provider].model : null;
+  const active = findProfile(next.profiles, next.activeProfile);
+  if (active && active.provider === next.provider) {
+    if (next.providers[next.provider]) active.model = model;
+    return;
+  }
+  const same = next.profiles.find((p) => p.provider === next.provider && (!next.providers[next.provider] || p.model === model));
+  if (same) {
+    next.activeProfile = same.id;
+    return;
+  }
+  const profile = { id: freeProfileId(next.profiles, next.profiles.length ? next.provider : 'default'), provider: next.provider, model, label: null };
+  next.profiles.push(profile);
+  next.activeProfile = profile.id;
 }
 
 export function normalizeSecrets(raw) {
@@ -184,6 +250,23 @@ export function applyPatch(settings, secrets, patch) {
       next.providers[id][field] = cleaned === null ? DEFAULT_FIELDS[id][field] : cleaned;
     }
   }
+  if (patch.profiles !== undefined) {
+    try {
+      next.profiles = cleanProfiles(patch.profiles, PROVIDERS, { strict: true });
+    } catch (err) {
+      throw new SettingsError(err instanceof ProfileError ? err.message : 'profiles are not valid', 'profiles');
+    }
+    next.activeProfile = cleanActiveProfile(next.profiles, next.activeProfile);
+  }
+  if (patch.activeProfile !== undefined) {
+    if (patch.activeProfile === null) next.activeProfile = null;
+    else if (!findProfile(next.profiles, patch.activeProfile)) throw new SettingsError('That model is not in the saved list.', 'activeProfile');
+    else next.activeProfile = patch.activeProfile;
+  }
+  if (patch.profiles === undefined && patch.activeProfile === undefined && (patch.provider !== undefined || patch.providers !== undefined)) {
+    followLegacyPatch(next);
+  }
+  syncActive(next);
   const options = patch.options || {};
   if (options.autoClearContext !== undefined) {
     if (typeof options.autoClearContext !== 'boolean') throw new SettingsError('autoClearContext must be on or off', 'autoClearContext');
@@ -297,7 +380,46 @@ export function publicView(settings, secrets) {
     runtimes: { ...s.runtimes },
     providers,
     options: { ...s.options },
+    profiles: s.profiles.map((p) => ({ ...p })),
+    activeProfile: s.activeProfile,
     defaults: { local: { ...DEFAULT_FIELDS.local }, openai: { ...DEFAULT_FIELDS.openai }, anthropic: { model: DEFAULT_ANTHROPIC_MODEL } },
+  };
+}
+
+// ---- profiles for the panel's switcher -------------------------------------
+
+// The settings with `profile` made the active one (nothing is saved).
+export function withProfile(settings, profile) {
+  const next = normalizeSettings(settings);
+  next.activeProfile = profile.id;
+  if (!findProfile(next.profiles, profile.id)) next.profiles.push({ ...profile });
+  syncActive(next);
+  return next;
+}
+
+// Why a profile that runs in the browser cannot be used yet, as a short
+// line for the switcher, or null.
+export function profileProblem(settings, secrets) {
+  const id = settings.provider;
+  const fields = settings.providers[id] || {};
+  for (const need of PROVIDERS[id].requires) {
+    if (need === 'apiKey' && !secrets[id]) return 'No API key saved';
+    if (need === 'model' && !fields.model) return 'No model chosen';
+  }
+  return null;
+}
+
+// One switcher entry, without availability (the service adds it).
+export function profileEntry(settings, profile) {
+  const spec = PROVIDERS[profile.provider];
+  const model = profile.model || (profile.provider === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : null);
+  return {
+    id: profile.id,
+    name: profileName({ ...profile, model }, PROVIDERS),
+    provider: profile.provider,
+    providerLabel: spec.label,
+    model,
+    runtime: runtimeFor(withProfile(settings, profile)),
   };
 }
 

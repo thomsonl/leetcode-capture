@@ -345,3 +345,146 @@ test('the helper runtime leaves captures to the relay, and missing setup or perm
   assert.equal(tested.result.ok, false);
   assert.match(tested.result.message, /isn't allowed/);
 });
+
+// ---- the model switcher -------------------------------------------------------
+
+const TWO_LOCAL = {
+  ...LOCAL,
+  profiles: [
+    { id: 'gpt', provider: 'local', model: 'model-a', label: null },
+    { id: 'gemma', provider: 'local', model: 'model-b', label: 'Gemma' },
+    { id: 'opus', provider: 'anthropic', model: null, label: null },
+    { id: 'haiku', provider: 'claude', model: 'claude-haiku-5-5', label: null },
+  ],
+  activeProfile: 'gpt',
+};
+
+test('settings from before profiles become one active profile, and the port lists profiles without secrets', async () => {
+  const { service, storage } = await setup({
+    stored: { [SETTINGS_KEY]: { provider: 'local', runtimes: { local: 'extension' }, providers: { local: { model: 'model-a' } } }, [SECRETS_KEY]: { anthropic: 'sk-ant-hidden-key-123' } },
+  });
+  const port = fakePort();
+  service.connectPort(port);
+  await settle(service);
+  const list = port.received.find((m) => m.type === 'profiles');
+  assert.equal(list.active, 'default');
+  assert.deepEqual(list.profiles.map((p) => [p.id, p.provider, p.model, p.runtime, p.available]), [['default', 'local', 'model-a', 'extension', true]]);
+  await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: { profiles: TWO_LOCAL.profiles, activeProfile: 'gpt' } } }, OPTIONS_PAGE);
+  await settle(service);
+  const after = port.received.filter((m) => m.type === 'profiles').pop();
+  assert.deepEqual(after.profiles.map((p) => p.name), ['model-a', 'Gemma', 'claude-opus-5-5', 'claude-haiku-5-5']);
+  assert.deepEqual(after.profiles.map((p) => p.runtime), ['extension', 'extension', 'extension', 'helper']);
+  // The Anthropic key exists, so that entry is available; nothing secret goes out.
+  assert.equal(after.profiles[2].available, true);
+  assert.equal(JSON.stringify(port.received).includes('hidden-key'), false);
+  assert.equal(storage.data[SETTINGS_KEY].version, 2);
+});
+
+test('a disabled entry says why: no key, no permission, or no helper', async () => {
+  const backends = recordingBackends();
+  const service = createTutorService({
+    storage: memoryStorage({ [SETTINGS_KEY]: TWO_LOCAL }),
+    permissions: { contains: async ({ origins }) => !origins[0].includes('anthropic') },
+    extensionOrigin: ORIGIN,
+    buildBackendImpl: backends.impl,
+    helperProblem: async (current) => (current === 'helper' ? null : 'Helper app not installed'),
+  });
+  await service.ready;
+  const port = fakePort();
+  service.connectPort(port);
+  await settle(service);
+  const list = port.received.find((m) => m.type === 'profiles');
+  const byId = Object.fromEntries(list.profiles.map((p) => [p.id, p]));
+  assert.equal(byId.opus.available, false);
+  assert.equal(byId.opus.reason, 'No API key saved');
+  assert.equal(byId.haiku.reason, 'Helper app not installed');
+  const refused = await service.switchProfile('opus');
+  assert.equal(refused.ok, false);
+  assert.match(refused.message, /No API key saved/);
+});
+
+test('a switch keeps the chat and the held code, waits for a running reply, and an unknown id is refused', async () => {
+  const backends = recordingBackends();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const storage = memoryStorage({ [SETTINGS_KEY]: TWO_LOCAL });
+  const service = createTutorService({
+    storage,
+    permissions: { contains: async () => true },
+    extensionOrigin: ORIGIN,
+    buildBackendImpl: (settings, secrets, opts) => {
+      const backend = backends.impl(settings, secrets, opts);
+      const plain = backend.sendMessage;
+      // The first model's first reply hangs until released; every backend
+      // keeps its turns so the conversation can move.
+      backend.turns = [];
+      backend.sendMessage = async (text, options) => {
+        if (backends.built.indexOf(backend) === 0 && backend.calls.length === 0) await gate;
+        const reply = await plain(text, options);
+        backend.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+        return reply;
+      };
+      backend.exportConversation = () => ({ turns: backend.turns, summary: null, problem: null });
+      backend.importConversation = (state) => {
+        backend.turns = [...state.turns];
+      };
+      return backend;
+    },
+  });
+  await service.ready;
+  const port = fakePort();
+  service.connectPort(port);
+  port.send({ type: 'subscribe', after: 0 });
+  port.send({ type: 'message', id: 1, text: 'first question', problemSlug: 'two-sum', snapshot: { code: code1, language: 'python3' } });
+  await tick();
+  port.send({ type: 'switch-profile', reqId: 7, id: 'gemma' });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(port.received.some((m) => m.type === 'switch-result'), false, 'the switch waits for the running reply');
+  release();
+  await settle(service);
+  const result = port.received.find((m) => m.type === 'switch-result');
+  assert.deepEqual(result, { type: 'switch-result', reqId: 7, ok: true, runtime: 'extension' });
+  assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'gemma');
+  assert.equal(storage.data[SETTINGS_KEY].providers.local.model, 'model-b');
+  assert.equal(storage.data[SETTINGS_KEY].providers.local.baseUrl, 'http://localhost:11434/v1', 'the URL is untouched');
+  const [first, second] = backends.built;
+  assert.equal(second.model, 'model-b');
+  assert.deepEqual(second.turns.map((t) => t.content), [first.turns[0].content, 'reply 1'], 'the chat moved');
+  assert.match(second.turns[0].content, /first question/);
+  // The next message goes to the new model as a diff against the held code.
+  port.send({ type: 'message', id: 2, text: 'second question', problemSlug: 'two-sum', snapshot: { code: code2, language: 'python3' } });
+  await settle(service);
+  assert.equal(second.calls.length, 1);
+  assert.equal(second.calls[0].options.currentCode.code, code2, 'the current code is pinned');
+  assert.match(second.calls[0].text, /line five/);
+  assert.doesNotMatch(second.calls[0].text, /line 29/, 'only a diff, the held code survived the switch');
+  const config = port.events().filter((e) => e.type === 'config').pop();
+  assert.equal(config.model, 'model-b');
+  // Unknown ids change nothing.
+  port.send({ type: 'switch-profile', reqId: 8, id: 'nope' });
+  await settle(service);
+  const refused = port.received.filter((m) => m.type === 'switch-result').pop();
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'unknown');
+  assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'gemma');
+});
+
+test('switching to a helper profile moves the runtime; the helper confirming a switch only records it', async () => {
+  const { service, storage } = await setup({ stored: { [SETTINGS_KEY]: TWO_LOCAL } });
+  const port = fakePort();
+  service.connectPort(port);
+  await settle(service);
+  const result = await service.switchProfile('haiku');
+  assert.deepEqual(result, { ok: true, runtime: 'helper' });
+  assert.equal(port.received.filter((m) => m.type === 'runtime').pop().runtime, 'helper');
+  assert.equal(storage.data[SETTINGS_KEY].provider, 'claude');
+  // A helper-side switch the panel reports: recorded only within the helper runtime.
+  const withSonnet = { ...storage.data[SETTINGS_KEY], profiles: [...storage.data[SETTINGS_KEY].profiles, { id: 'sonnet', provider: 'claude', model: 'claude-sonnet-5', label: null }] };
+  await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: { profiles: withSonnet.profiles, activeProfile: 'haiku' } } }, OPTIONS_PAGE);
+  port.send({ type: 'profile-switched', id: 'sonnet' });
+  await settle(service);
+  assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'sonnet');
+  port.send({ type: 'profile-switched', id: 'gpt' });
+  await settle(service);
+  assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'sonnet', 'a confirmation never moves the runtime');
+});
