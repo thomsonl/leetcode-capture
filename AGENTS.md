@@ -896,6 +896,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `npm run e2e:packed` in `helper/` packs, extracts, installs dependencies (`--link-deps` for offline), installs into a temp home through a bin symlink and runs the registered host with a fake client on stdio.
   Not verified: real Chrome, Firefox (optional `nativeMessaging` there), macOS, Windows, a real `npx` run from the registry.
 
+- Progress tracking (README.md, "Progress"): `extension/shared/roadmap.js` holds the NeetCode 150 (topics, prerequisite edges, `nextOnRoadmap`, `suggestAfterSolve`) and `extension/shared/solved.js` the solved store (`storage.local` `solvedProblems` slug to `{ at, count, manual? }`, `starredProblems`), the "nice job" card's content (`congratulation`) and the worker's messages, all writes in one queue.
+  Detection lives in `inject.js` (page world, injected by `content.js` at load, not at the first capture): it wraps `window.fetch` and `XMLHttpRequest.prototype.open` only to read a clone of `/submissions/detail/<id>/check/` answers, counts an all-digit id with `state` "SUCCESS" and `status_msg` "Accepted" (a Run polls the same path with a `runcode_` id), and reports each id once as `leetcode-capture:submission-accepted` (JSON string detail).
+  `content.js` sends `{ type: 'lc-tutor:accepted', submissionId }`; the worker takes the slug from `sender.url` only, dedupes per submission, stores, and answers the card, which `content.js` passes to `panel.js` as `leetcode-capture:solved`; the panel keeps it in the tab's transcript only, so it never reaches the tutor or the relay, in either runtime.
+  The options page's Progress tab is `progress.js` (an ES module next to the classic `settings.js`, which owns nothing of it) and `progress.css`; marks and stars go through `lc-tutor:solved-set` / `lc-tutor:star-set`, answered only for the extension's own pages, and the page follows `storage.onChanged`.
+  The graph's coordinates are `LAYOUT` in `progress.js`; `e2e/progress-page.e2e.mjs` fails if a line stops starting at the middle of its node's bottom, ending at the middle of the next one's top, or crosses another node, or if a node title is cut, so check it after moving a topic.
+  Tests: `solved.test.mjs` (store, service, `inject.js` in a VM against stand-in fetch and XHR, `content.js` forwarding), `e2e/solved-detection.e2e.mjs` (the real extension, scripted judge answers through CDP Fetch, both runtimes), `e2e/progress-page.e2e.mjs` and the card scenario in `panel-render.e2e.mjs`.
+  Not verified against the real site: that LeetCode still polls that path with that JSON (needs a real accepted submission, which tests must never make on leetcode.com).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

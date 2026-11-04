@@ -1,6 +1,6 @@
 # Privacy Policy for LeetCode Capture
 
-Last updated: 2026-10-29
+Last updated: 2026-11-04
 
 ## What this extension does
 
@@ -16,6 +16,9 @@ The extension reads data only on `leetcode.com/problems/*` pages, and only when 
 - The language selected in the editor, and the code currently in the editor.
 - The message you type to the tutor.
 - The page URL and a timestamp.
+
+When you submit, it also reads LeetCode's verdict for that submission (whether it was accepted) from the page's own result request, to keep track of the problems you solved.
+It reads nothing else from that request.
 
 It does not read your LeetCode account details, cookies, passwords or any other page.
 It does not read your browsing history.
@@ -46,6 +49,8 @@ The extension never shows a saved key back on the Settings page or the Tutor tab
 ## What is kept, and for how long
 
 - **Settings and keys**: kept in the browser's local extension storage (and, for the helper, in `~/.config/leetcode-capture/settings.json`) until you remove them.
+- **Solved problems**: which problems you solved (the problem's slug, when, and how many accepted submissions) and the problems you starred, kept in the browser's local extension storage until you unmark them or uninstall the extension.
+  They are never sent anywhere, including to the tutor.
 - **Tutor conversations**: kept in memory only, per problem, and forgotten when the tutor stops or the conversation is reset on a problem switch.
   In the helper runtime, the local relay keeps a short queue of your Run and Submit attempts in `relay-server/data/captures.jsonl`, cleared as the tutor reads it, and the helper writes a log (`helper.log`) in its data folder.
 - **Optional notes**: if you turn on the separate vault feature, the tutor writes notes into the Obsidian vault folder you configured.

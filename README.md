@@ -225,6 +225,22 @@ The page talks to the relay at `POST /settings/rpc`, which only answers the exte
 The relay passes each call to the companion over its existing connection and waits up to two minutes for the answer.
 Settings are never typed into the Tutor tab itself, because scripts on leetcode.com can see what is typed into the page.
 
+## Progress
+
+The settings page has a **Progress** tab (open it with `#progress`, or "See your progress" in the Tutor tab) that tracks the NeetCode 150.
+It is a picture only and changes no setting: the 18 topics as a graph with the roadmap's prerequisite lines, each node with its solved count, and the topic and problem to do next marked.
+Clicking a topic opens a side panel with its prerequisites and a table of its problems (status, star, a link to the problem on leetcode.com, difficulty).
+
+A problem counts as solved when LeetCode accepts one of your submissions on its page.
+The extension watches the page's own request for the judge's verdict (`/submissions/detail/<id>/check/`, an all-digit id with `state` "SUCCESS" and `status_msg` "Accepted"; a Run's check is ignored) and reads nothing else from it.
+This works whichever runtime runs the tutor, and needs nothing running besides the browser.
+For problems you solved before installing, click the status mark in a topic's table; click it again to unmark any problem.
+Solved problems (`solvedProblems`: slug, time, count) and stars (`starredProblems`) are kept in the extension's local storage and never sent anywhere.
+
+After an accepted submission the Tutor tab shows a short card: "Nice job completing <problem>", the next NeetCode 150 problem and one more of the same topic, as ordinary links.
+The tab builds it from the bundled roadmap; it is never sent to the tutor and never enters its context.
+For a problem that is not on the NeetCode 150, the card offers only the next roadmap problem.
+
 ## Optional features
 
 - **Local model backend.**
