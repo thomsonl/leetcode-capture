@@ -749,9 +749,22 @@ async function ask(message) {
 }
 
 // The screen changes at once; the worker's write then comes back through
-// storage.onChanged. If it fails, the old state comes back with a note.
+// storage.onChanged. If it fails, the screen takes what storage holds (not
+// a copy from before the click, which would undo a later change that was
+// saved) with a note.
+const NOT_SAVED = 'The extension did not save that change. Try again.';
+
+async function reloadMarks() {
+  try {
+    const stored = await api.storage.local.get([SOLVED_KEY, STARRED_KEY]);
+    solved = normalizeSolved(stored[SOLVED_KEY]);
+    starred = normalizeStarred(stored[STARRED_KEY]);
+  } catch {
+    // Storage cannot be read either: what the screen shows stays.
+  }
+}
+
 async function toggleSolved(slug) {
-  const before = solved;
   const on = !solved[slug];
   solved = { ...solved };
   if (on) solved[slug] = { at: new Date().toISOString(), count: 0, manual: true };
@@ -759,14 +772,13 @@ async function toggleSolved(slug) {
   notice = '';
   render();
   if (!(await ask({ type: 'lc-tutor:solved-set', slug, solved: on }))) {
-    solved = before;
-    notice = 'The extension did not save that change. Reload the page and try again.';
+    await reloadMarks();
+    notice = NOT_SAVED;
     render();
   }
 }
 
 async function toggleStar(slug) {
-  const before = starred;
   const on = !starred[slug];
   starred = { ...starred };
   if (on) starred[slug] = true;
@@ -774,8 +786,8 @@ async function toggleStar(slug) {
   notice = '';
   render();
   if (!(await ask({ type: 'lc-tutor:star-set', slug, starred: on }))) {
-    starred = before;
-    notice = 'The extension did not save that change. Reload the page and try again.';
+    await reloadMarks();
+    notice = NOT_SAVED;
     render();
   }
 }

@@ -239,6 +239,46 @@ try {
     check(!s.starredProblems['two-sum'], JSON.stringify(s.starredProblems));
   });
 
+  await scenario('a change the worker does not save goes back to what storage holds, keeping a later one that was saved', async () => {
+    // The unmark of two-sum fails after a while; the unmark of
+    // contains-duplicate, pressed meanwhile, is saved.
+    await page.eval(`(() => {
+      window.__plainSend = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = async (m) => {
+        if (m && m.slug === 'two-sum') {
+          await new Promise((r) => setTimeout(r, 400));
+          return { ok: false };
+        }
+        return window.__plainSend(m);
+      };
+    })()`);
+    const pressed = (slug, role = 'mark') => page.eval(`document.querySelector('#drawer .${role}[data-slug="${slug}"]').getAttribute('aria-pressed')`);
+    try {
+      await page.eval(`document.querySelector('#drawer .mark[data-slug="two-sum"]').click()`);
+      await page.eval(`document.querySelector('#drawer .mark[data-slug="contains-duplicate"]').click()`);
+      await page.waitFor(`/did not save/.test(document.body.textContent)`, { what: 'the note' });
+      await sleep(100);
+      const s = await stored();
+      check(s.solvedProblems['two-sum'] && !s.solvedProblems['contains-duplicate'], `stored: ${Object.keys(s.solvedProblems)}`);
+      check((await pressed('two-sum')) === 'true', 'the failed unmark is undone');
+      check((await pressed('contains-duplicate')) === 'false', 'the saved unmark stays');
+      // The same for a star.
+      await page.eval(`document.querySelector('#drawer .star[data-slug="two-sum"]').click()`);
+      await page.eval(`document.querySelector('#drawer .star[data-slug="contains-duplicate"]').click()`);
+      await sleep(700);
+      const t = await stored();
+      check(!t.starredProblems['two-sum'] && t.starredProblems['contains-duplicate'] === true, `starred: ${JSON.stringify(t.starredProblems)}`);
+      check((await pressed('two-sum', 'star')) === 'false' && (await pressed('contains-duplicate', 'star')) === 'true', 'stars follow storage');
+    } finally {
+      await page.eval(`chrome.runtime.sendMessage = window.__plainSend`);
+    }
+    // Back as before for the rest of the run.
+    await page.eval(`document.querySelector('#drawer .mark[data-slug="contains-duplicate"]').click()`);
+    await page.eval(`document.querySelector('#drawer .star[data-slug="contains-duplicate"]').click()`);
+    await page.waitFor(`document.getElementById('drawer-title').textContent === 'Arrays & Hashing (9 / 9)'`, { what: 'marked again' });
+    await sleep(200);
+  });
+
   await scenario('an accepted submission stored while the page is open shows up at once', async () => {
     await browser.serviceWorkerEval(`chrome.storage.local.get('solvedProblems').then((s) => chrome.storage.local.set({ solvedProblems: { ...s.solvedProblems, 'valid-sudoku': { at: new Date().toISOString(), count: 1 } } }))`);
     await page.waitFor(`document.querySelector('#drawer tr[data-slug="valid-sudoku"] .mark').getAttribute('aria-pressed') === 'true'`, { what: 'the live update' });
