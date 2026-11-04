@@ -9,7 +9,8 @@
 
   window.fetch is replaced before panel.js runs, so nothing here touches the
   network: /panel/events is a stream the test writes into with __push(text),
-  /panel/message answers with __postStatus after __postDelayMs, and
+  /panel/message answers with __postStatus after __postDelayMs,
+  /panel/switch-profile with __switchStatus and __switchBody, and
   __relayDown makes a new /panel/events connection fail. Served by
   panel-render.e2e.mjs under /problems/<slug>/ so the panel sees a slug.
 -->
@@ -41,6 +42,11 @@
      grey, not the tab strip's white at 60% (measured in the dark theme). */
   .border-b { display: flex; height: 32px; padding: 0 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
   .row-label { color: rgba(239, 242, 246, 0.6); }
+  /* LeetCode's language selector in the Code pane's top bar ("Python3" and
+     a chevron), whose text style, padding and radius the model switcher
+     copies. Values as measured on the real page's Tailwind classes. */
+  #lang-button { display: inline-flex; align-items: center; gap: 4px; min-width: 0; padding: 2px 6px; border: 0; border-radius: 4px; background: transparent; color: rgba(255, 255, 255, 0.75); font: 400 14px/20px -apple-system, "Segoe UI", sans-serif; }
+  html.light #lang-button { color: rgba(38, 38, 38, 0.75); }
   /* Light theme, toggled by the e2e script through a class on <html> (the
      panel re-samples its colors when that changes). */
   html.light { color-scheme: light; }
@@ -92,6 +98,14 @@
       if (url.pathname === "/capture") {
         window.__captures.push(JSON.parse(options.body));
         return new Response('{"ok":true}', { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      // The model switcher's helper path: answers __switchStatus with
+      // __switchBody after __switchDelayMs.
+      if (url.pathname === "/panel/switch-profile") {
+        window.__switches = window.__switches || [];
+        window.__switches.push(JSON.parse(options.body));
+        await new Promise((r) => setTimeout(r, window.__switchDelayMs || 0));
+        return new Response(JSON.stringify(window.__switchBody || { ok: true }), { status: window.__switchStatus || 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.pathname === "/panel/message") {
         window.__posts.push(JSON.parse(options.body));

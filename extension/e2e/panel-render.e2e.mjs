@@ -153,7 +153,7 @@ try {
       return {
         title: window.__qa('h1, h2, .title').length,
         left: window.__q('.head > .head-left > .status') !== null,
-        right: window.__q('.head > .head-right > .provider[hidden]') !== null && window.__q('.head > .head-right > button.gear') !== null,
+        right: window.__q('.head > .head-right > button.model[hidden] > .provider') !== null && window.__q('.head > .head-right > button.gear') !== null,
         // The header stays put while the transcript scrolls under it.
         outsideScroll: !scroll.contains(headNode),
         role: status.getAttribute('role'),
@@ -251,7 +251,7 @@ try {
     check(m.rowColor === 'rgba(26, 26, 26, 0.6)' && m.color === m.rowColor, `light header text ${m.color} vs the Submissions row ${m.rowColor}`);
   });
 
-  await scenario('the header names the tutor model on the right, in the row text style, with a settings gear', async () => {
+  await scenario('the header names the tutor model on the right, in the language selector\'s text style, with a settings gear', async () => {
     await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
     await page.eval(`window.__event({ type: 'config', provider: 'local', label: 'Local model', model: 'gpt-oss:20b', epoch: 'e1' })`);
     await settle();
@@ -259,18 +259,21 @@ try {
       const host = document.getElementById('lc-tutor-panel-host').getBoundingClientRect();
       const head = window.__q('.head').getBoundingClientRect();
       const provider = window.__q('.provider');
+      const button = window.__q('button.model');
       const gear = window.__q('button.gear');
-      const pr = provider.getBoundingClientRect();
+      const pr = button.getBoundingClientRect();
       const gr = gear.getBoundingClientRect();
       const ps = getComputedStyle(provider);
       const gs = getComputedStyle(gear);
       const icon = gear.querySelector('svg').getBoundingClientRect();
       return {
         text: provider.textContent,
-        hidden: provider.hidden,
-        title: provider.title,
+        hidden: button.hidden,
+        title: button.title,
         font: ps.fontSize + '/' + ps.lineHeight,
         color: ps.color,
+        langFont: getComputedStyle(document.getElementById('lang-button')).fontSize + '/' + getComputedStyle(document.getElementById('lang-button')).lineHeight,
+        langColor: getComputedStyle(document.getElementById('lang-button')).color,
         statusColor: getComputedStyle(window.__q('.status')).color,
         providerMid: pr.top + pr.height / 2 - (head.top + head.height / 2),
         gap: gr.left - pr.right,
@@ -283,7 +286,9 @@ try {
     })()`);
     check(m.text === 'Local model · gpt-oss:20b' && !m.hidden, `provider label: ${JSON.stringify(m)}`);
     check(m.title === 'The tutor uses Local model, gpt-oss:20b', `provider tooltip: ${m.title}`);
-    check(m.font === '12px/16px' && m.color === m.statusColor, `provider text style: ${m.font} ${m.color} vs ${m.statusColor}`);
+    // Without a list of saved models (no worker here) the switcher shows what
+    // the tutor reported, in the language selector's text style.
+    check(m.font === m.langFont && m.color === m.langColor, `provider text style: ${m.font} ${m.color} vs the language selector ${m.langFont} ${m.langColor}`);
     check(Math.abs(m.providerMid) <= 0.5, `provider label centered: ${m.providerMid}`);
     check(m.label === 'Tutor settings' && m.tip === 'Tutor settings' && m.type === 'button', `gear a11y: ${JSON.stringify(m)}`);
     // 1px header margin plus 12px padding, less the 4px the icon sits inside
@@ -353,25 +358,26 @@ try {
   await scenario('offline, the model is not named (it may be stale) but the gear stays', async () => {
     await page.eval(`window.__event({ type: 'status', companionOnline: false, epoch: 'e1' })`);
     await settle();
-    const m = await page.eval(`({ hidden: window.__q('.provider').hidden, display: getComputedStyle(window.__q('.provider')).display, gear: getComputedStyle(window.__q('button.gear')).display })`);
+    const m = await page.eval(`({ hidden: window.__q('button.model').hidden, display: getComputedStyle(window.__q('button.model')).display, gear: getComputedStyle(window.__q('button.gear')).display })`);
     check(m.hidden && m.display === 'none' && m.gear !== 'none', `offline header: ${JSON.stringify(m)}`);
     await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
     await settle();
-    check(!(await page.eval(`window.__q('.provider').hidden`)), 'the label comes back when the companion does');
+    check(!(await page.eval(`window.__q('button.model').hidden`)), 'the label comes back when the companion does');
   });
 
-  await scenario('light mode: the model label and the gear take the light row color', async () => {
+  await scenario('light mode: the model button follows the language selector and the gear the light row color', async () => {
     await page.eval(`document.documentElement.classList.add('light')`);
     await settle();
     const m = await page.eval(`({
-      provider: getComputedStyle(window.__q('.provider')).color,
+      provider: getComputedStyle(window.__q('button.model')).color,
+      lang: getComputedStyle(document.getElementById('lang-button')).color,
       gear: getComputedStyle(window.__q('button.gear')).color,
       row: getComputedStyle(document.querySelector('#pane-subs .row-label')).color,
     })`);
     await page.screenshot(path.join(SHOTS, '02g-header-provider-light.png'), { width: 1100, height: 760 });
     await page.eval(`document.documentElement.classList.remove('light')`);
     await settle();
-    check(m.row === 'rgba(26, 26, 26, 0.6)' && m.provider === m.row && m.gear === m.row, `light: ${JSON.stringify(m)}`);
+    check(m.row === 'rgba(26, 26, 26, 0.6)' && m.provider === m.lang && m.gear === m.row, `light: ${JSON.stringify(m)}`);
   });
 
   await scenario('header text before Submissions was ever opened: the measured row color in dark, the tab strip in light', async () => {
@@ -754,6 +760,10 @@ try {
     await page.send('Browser.grantPermissions', {
       origin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
     });
+    // The clipboard refuses a page without focus ("Document is not focused"),
+    // which another scenario's screenshot or a slow start can leave behind.
+    await page.send('Page.bringToFront');
+    await page.eval(`(() => { window.focus(); window.__q('textarea').focus(); })()`);
     await page.eval(`navigator.clipboard.writeText(${JSON.stringify(pasted)})`);
     await page.eval(`window.__q('textarea').focus()`);
     await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 });

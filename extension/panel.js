@@ -1241,10 +1241,40 @@
     .head-left, .head-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .head-left { flex: 0 1 auto; min-width: 8px; }
     .head-right { flex: 1 1 0; justify-content: flex-end; gap: 4px; min-width: 24px; }
-    /* Which model the tutor uses: the same muted secondary text as the
-       status, cut with an ellipsis when the pane is narrow (the full name is
-       in the tooltip). */
-    .provider { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; color: var(--muted); }
+    /* The model switcher: a button like LeetCode's own language selector in
+       the editor's top bar (its text style, padding and radius are sampled
+       from that button when the page has one, see sampleTheme), the model's
+       name cut with an ellipsis when the pane is narrow, then a chevron.
+       It opens a listbox of the saved models. */
+    button.model {
+      flex: 0 1 auto; min-width: 0; width: auto; height: auto; gap: 4px; justify-content: flex-start;
+      padding: var(--sel-pad, 2px 6px); border-radius: var(--sel-radius, 4px); color: var(--sel-color, var(--muted));
+      font: var(--sel-weight, 400) var(--sel-size, 14px) / var(--sel-line, 20px) var(--font);
+    }
+    button.model[hidden] { display: none; }
+    button.model:hover:not(:disabled), button.model[aria-expanded="true"] { color: var(--fg); background: var(--fill); }
+    button.model:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
+    .provider { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    button.model svg { flex: none; }
+    .menu {
+      position: absolute; z-index: 5; top: 30px; right: 8px; box-sizing: border-box;
+      width: max-content; min-width: min(220px, calc(100% - 16px)); max-width: min(320px, calc(100% - 16px));
+      max-height: calc(100% - 46px); overflow-y: auto; padding: 4px; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--pop-bg); box-shadow: var(--pop-shadow); color: var(--body); font-size: 14px; line-height: 20px; overflow-wrap: normal;
+    }
+    .menu[hidden] { display: none; }
+    .opt { display: flex; align-items: flex-start; gap: 8px; min-height: 32px; padding: 6px 8px; border-radius: 6px; cursor: pointer; outline: 0; }
+    /* One highlighted row, keyboard or pointer: moving the pointer over an
+       entry focuses it (see wireSwitcher), so only focus paints. */
+    .opt:focus { background: color-mix(in srgb, var(--body) 9%, transparent); }
+    .opt[aria-disabled="true"] { cursor: not-allowed; }
+    .opt[aria-disabled="true"] .opt-name { color: var(--muted); }
+    .opt .check { flex: none; width: 16px; height: 20px; display: flex; align-items: center; justify-content: center; color: var(--body); visibility: hidden; }
+    .opt[aria-selected="true"] .check { visibility: visible; }
+    .opt-text { display: flex; flex-direction: column; min-width: 0; }
+    .opt-name, .opt-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .opt-meta { font-size: 12px; line-height: 16px; color: var(--muted); }
+    .menu .sep { height: 1px; margin: 4px 0; background: var(--line); }
     /* An icon button like LeetCode's own pane-header icons: muted, brighter on
        hover over a faint fill. Pulled 4px right so the 16px icon itself, not
        its hover box, lines up with the row's 12px padding, as the status
@@ -1332,6 +1362,9 @@
     .box:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 45%, transparent); }
     textarea { flex: 1; min-width: 0; min-height: 28px; max-height: min(140px, max(28px, 30cqh)); margin: 0; padding: 4px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--body); font: inherit; }
     textarea::placeholder { color: var(--muted); }
+    /* A placeholder longer than a narrow pane is cut, never wrapped into a
+       scrolling second line. */
+    textarea:placeholder-shown { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     textarea:disabled { cursor: not-allowed; }
     button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--green); cursor: pointer; }
     button:hover:not(:disabled) { background: var(--fill); }
@@ -1468,7 +1501,41 @@
     // LeetCode's own "Medium" yellow in the dark theme; on white a darker
     // shade, so the light keeps at least 3:1 against the panel.
     style.setProperty("--yellow", light ? "#b97c00" : "#ffc01e");
+    // The switcher's popover: a raised surface like LeetCode's own menus.
+    style.setProperty("--pop-bg", light ? "#ffffff" : "rgb(48, 48, 48)");
+    style.setProperty("--pop-shadow", light ? "0 4px 16px rgba(0, 0, 0, 0.12)" : "0 4px 16px rgba(0, 0, 0, 0.4)");
+    sampleLanguageSelector(style);
     document.documentElement.style.setProperty("--lc-tutor-muted", tabMuted);
+  }
+
+  // LeetCode's language selector in the editor's top bar ("C++", "Python3"
+  // and a chevron): the model switcher copies its text style, padding and
+  // radius. Found by its label among the page's buttons; each value falls
+  // back to the switcher's own default when the page has no such button.
+  const LANGUAGES = new Set(["C++", "Java", "Python", "Python3", "C", "C#", "JavaScript", "TypeScript", "PHP", "Swift", "Kotlin", "Dart", "Go", "Ruby", "Scala", "Rust", "Racket", "Erlang", "Elixir", "Pandas", "MySQL", "MS SQL Server", "Oracle", "PostgreSQL", "Bash"]);
+  function languageSelector() {
+    for (const button of document.querySelectorAll(".flexlayout__tab button")) {
+      if (button.closest(`#${HOST_ID}`)) continue;
+      if (LANGUAGES.has((button.textContent || "").trim())) return button;
+    }
+    return null;
+  }
+
+  function sampleLanguageSelector(style) {
+    const button = languageSelector();
+    const cs = button ? getComputedStyle(button) : null;
+    const set = (name, value, ok) => {
+      if (cs && value && ok) style.setProperty(name, value);
+      else style.removeProperty(name);
+    };
+    const px = (v) => /^\d+(\.\d+)?px$/.test(v);
+    set("--sel-color", cs && cs.color, cs && cs.color !== "rgba(0, 0, 0, 0)");
+    set("--sel-size", cs && cs.fontSize, cs && px(cs.fontSize) && parseFloat(cs.fontSize) >= 11 && parseFloat(cs.fontSize) <= 16);
+    set("--sel-line", cs && cs.lineHeight, cs && px(cs.lineHeight) && parseFloat(cs.lineHeight) <= 24);
+    set("--sel-weight", cs && cs.fontWeight, cs && /^\d+$/.test(cs.fontWeight));
+    const pad = cs ? `${cs.paddingTop} ${cs.paddingRight} ${cs.paddingBottom} ${cs.paddingLeft}` : "";
+    set("--sel-pad", pad, cs && [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].every((v) => px(v) && parseFloat(v) <= 8));
+    set("--sel-radius", cs && cs.borderTopLeftRadius, cs && px(cs.borderTopLeftRadius) && parseFloat(cs.borderTopLeftRadius) <= 8);
   }
 
   // ---- the tab button --------------------------------------------------
@@ -1579,8 +1646,26 @@
     status.appendChild(statusText);
     headLeft.appendChild(status);
     const headRight = el("div", "head-right");
+    // The model switcher (see "The model switcher" below).
+    const model = document.createElement("button");
+    model.type = "button";
+    model.className = "model";
+    model.hidden = true;
+    model.setAttribute("aria-haspopup", "listbox");
+    model.setAttribute("aria-expanded", "false");
     const provider = el("span", "provider", "");
-    provider.hidden = true;
+    model.appendChild(provider);
+    // Feather's "chevron-down" (MIT), drawn in the text color.
+    model.insertAdjacentHTML(
+      "beforeend",
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>'
+    );
+    const menu = el("div", "menu");
+    menu.hidden = true;
+    menu.id = "lc-tutor-models";
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", "Tutor model");
+    model.setAttribute("aria-controls", menu.id);
     const gear = document.createElement("button");
     gear.type = "button";
     gear.className = "gear";
@@ -1593,7 +1678,7 @@
       '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' +
       "</svg>";
     gear.addEventListener("click", openSettings);
-    headRight.append(provider, gear);
+    headRight.append(model, gear);
     head.append(headLeft, headRight);
 
     const banner = el("div", "banner");
@@ -1666,7 +1751,7 @@
     counter.setAttribute("aria-live", "polite");
     composer.appendChild(counter);
 
-    wrap.append(head, scroll, composer);
+    wrap.append(head, scroll, composer, menu);
     root.append(style, wrap);
 
     // LeetCode binds many single-key shortcuts on the page, and this script's
@@ -1674,7 +1759,9 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    return { host, wrap, status, statusText, headRight, provider, gear, banner, scroll, view, feed, box, input, send, hint, counter };
+    const p = { host, wrap, status, statusText, headRight, model, provider, menu, gear, banner, scroll, view, feed, box, input, send, hint, counter };
+    wireSwitcher(p);
+    return p;
   }
 
   // ---- live resizing ----------------------------------------------------
@@ -1843,6 +1930,7 @@
         banner: "The relay is running but the tutor isn't. Start the companion with `leetcode` to chat and get your attempts reviewed here.",
       };
     }
+    if (switching) return { label: "Switching", ok: true, light: "busy", banner: null };
     if (state.companionOnline === null) return { label: "Connecting", ok: false, light: "neutral", banner: null };
     if (state.companionBusy) return { label: "Processing", ok: true, light: "busy", banner: null };
     return { label: "Connected", ok: true, light: "ok", banner: null };
@@ -1991,14 +2079,24 @@
     if (p.status.dataset.state !== conn.light) p.status.dataset.state = conn.light;
     renderBanner(p.banner, conn.banner);
 
-    // The model is only named while the companion that reported it is online.
+    // The switcher names the active saved model; without a list of them (no
+    // extension worker) it names what the tutor reported it runs on, and
+    // only while that tutor is online.
     const config = state.companionOnline ? state.displayConfig : null;
-    const providerText = config ? (config.model ? `${config.label} \u00b7 ${config.model}` : config.label) : "";
-    if (p.provider.textContent !== providerText) {
-      p.provider.textContent = providerText;
-      p.provider.title = config ? `The tutor uses ${config.model ? `${config.label}, ${config.model}` : config.label}` : "";
-    }
-    p.provider.hidden = !providerText;
+    const entry = activeEntry();
+    const providerText = entry ? entry.name : config ? (config.model ? `${config.label} \u00b7 ${config.model}` : config.label) : "";
+    const tip = entry
+      ? `The tutor uses ${entry.model && entry.model !== entry.name ? `${entry.name} (${entry.providerLabel}, ${entry.model})` : `${entry.name} (${entry.providerLabel})`}. Click to switch.`
+      : config
+        ? `The tutor uses ${config.model ? `${config.label}, ${config.model}` : config.label}`
+        : "";
+    if (p.provider.textContent !== providerText) p.provider.textContent = providerText;
+    if (p.model.title !== tip) p.model.title = tip;
+    const aria = `Tutor model: ${providerText}`;
+    if (p.model.getAttribute("aria-label") !== aria) p.model.setAttribute("aria-label", aria);
+    p.model.hidden = !providerText;
+    if (p.model.hidden && !p.menu.hidden) closeMenu(p, false);
+    if (!p.menu.hidden) renderMenu(p);
 
     const canSend = conn.ok && Boolean(slug);
     p.input.disabled = !canSend;
@@ -2597,6 +2695,272 @@
     p.input.focus({ preventScroll: true });
   }
 
+  // ---- the model switcher ----------------------------------------------------
+  //
+  // The header's model button opens a listbox of the saved models (profiles,
+  // see shared/profiles.js) the worker lists on its port: only non-secret
+  // fields (id, name, provider, model, where it runs, whether it can be used
+  // and why not). Choosing one switches with one click: through the worker
+  // for the browser runtime, through the relay's POST /panel/switch-profile
+  // for one that runs through the helper while the helper is in use. Either
+  // way the switch waits for a reply already running, the light says
+  // "Switching" meanwhile, and the chat and the code move to the new model.
+  // Moving between the browser and the helper starts the other runtime's own
+  // session, since the two keep separate conversations.
+  // Keyboard: Enter, Space or the arrows open it; arrows, Home and End move;
+  // Enter or Space choose; Escape closes and puts focus back on the button.
+
+  let profiles = []; // the worker's entries
+  let activeProfileId = null;
+  let switching = null; // the id being switched to
+  let relaySwitchPending = null; // an id the helper's companion should take once it is here
+  const pendingSwitches = new Map(); // reqId -> { resolve, reject, timer }
+  let nextSwitchId = 1;
+  // A switch waits behind a reply that may run for minutes.
+  const SWITCH_TIMEOUT_MS = 180000;
+  const MANAGE = "\u0000manage";
+
+  function validEntry(e) {
+    return e && typeof e.id === "string" && typeof e.name === "string" && (e.runtime === "extension" || e.runtime === "helper");
+  }
+
+  function activeEntry() {
+    return profiles.find((e) => e.id === activeProfileId) || null;
+  }
+
+  // Why an entry cannot be chosen right now, or null. The worker says so for
+  // what it can see; the panel knows whether the helper's tutor answers.
+  function entryReason(entry) {
+    if (!entry.available) return entry.reason || "Not available";
+    if (entry.runtime === "helper" && transport === relayTransport && (sourceReachable === false || state.companionOnline === false)) {
+      return "Helper app isn't running";
+    }
+    return null;
+  }
+
+  function entryMeta(entry) {
+    const reason = entryReason(entry);
+    if (reason) return reason;
+    const parts = [entry.providerLabel];
+    if (entry.model && entry.model !== entry.name) parts.push(entry.model);
+    return parts.join(" \u00b7 ");
+  }
+
+  function optionNodes(p) {
+    return [...p.menu.querySelectorAll('.opt:not([aria-disabled="true"])')];
+  }
+
+  function renderMenu(p) {
+    const focusedId = p.menu.contains(p.menu.getRootNode().activeElement) ? p.menu.getRootNode().activeElement.dataset.id : null;
+    const items = [];
+    for (const entry of profiles) {
+      const reason = entryReason(entry);
+      const opt = el("div", "opt");
+      opt.setAttribute("role", "option");
+      opt.tabIndex = -1;
+      opt.dataset.id = entry.id;
+      opt.id = `lc-tutor-model-${entry.id}`;
+      opt.setAttribute("aria-selected", String(entry.id === activeProfileId));
+      if (reason) opt.setAttribute("aria-disabled", "true");
+      const check = el("span", "check");
+      check.innerHTML =
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>';
+      const text = el("span", "opt-text");
+      text.append(el("span", "opt-name", entry.name), el("span", "opt-meta", entryMeta(entry)));
+      opt.title = reason ? `${entry.name}: ${reason}` : entry.name;
+      opt.append(check, text);
+      items.push(opt);
+    }
+    if (items.length) {
+      const sep = el("div", "sep");
+      sep.setAttribute("role", "separator");
+      items.push(sep);
+    }
+    const manage = el("div", "opt manage");
+    manage.setAttribute("role", "option");
+    manage.setAttribute("aria-selected", "false");
+    manage.tabIndex = -1;
+    manage.dataset.id = MANAGE;
+    const pad = el("span", "check");
+    manage.append(pad, el("span", "opt-text", "Manage models..."));
+    items.push(manage);
+    // Rebuilt only when what it shows changed, so focus and hover stay put.
+    const key = JSON.stringify(items.map((n) => n.outerHTML));
+    if (p.menu.dataset.key === key) return;
+    p.menu.dataset.key = key;
+    p.menu.replaceChildren(...items);
+    const again = focusedId && optionNodes(p).find((n) => n.dataset.id === focusedId);
+    if (again) again.focus({ preventScroll: true });
+  }
+
+  function openMenu(p, focus = "active") {
+    renderMenu(p);
+    p.menu.hidden = false;
+    p.model.setAttribute("aria-expanded", "true");
+    const opts = optionNodes(p);
+    const target =
+      focus === "last" ? opts[opts.length - 1] : opts.find((n) => n.getAttribute("aria-selected") === "true") || opts[0];
+    if (target) {
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function closeMenu(p, returnFocus) {
+    if (p.menu.hidden) return;
+    p.menu.hidden = true;
+    p.model.setAttribute("aria-expanded", "false");
+    if (returnFocus) p.model.focus({ preventScroll: true });
+  }
+
+  function activateOption(p, node) {
+    if (!node || node.getAttribute("aria-disabled") === "true") return;
+    closeMenu(p, true);
+    if (node.dataset.id === MANAGE) openSettings();
+    else chooseProfile(node.dataset.id);
+  }
+
+  function wireSwitcher(p) {
+    p.model.addEventListener("click", () => {
+      if (p.menu.hidden) openMenu(p);
+      else closeMenu(p, true);
+    });
+    p.model.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        openMenu(p, e.key === "ArrowUp" ? "last" : "active");
+      }
+    });
+    p.menu.addEventListener("keydown", (e) => {
+      const opts = optionNodes(p);
+      const root = p.menu.getRootNode();
+      const i = opts.indexOf(root.activeElement);
+      const move = (to) => {
+        e.preventDefault();
+        const node = opts[(to + opts.length) % opts.length];
+        if (node) {
+          node.focus({ preventScroll: true });
+          node.scrollIntoView({ block: "nearest" });
+        }
+      };
+      if (e.key === "ArrowDown") move(i + 1);
+      else if (e.key === "ArrowUp") move(i < 0 ? opts.length - 1 : i - 1);
+      else if (e.key === "Home") move(0);
+      else if (e.key === "End") move(opts.length - 1);
+      else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        activateOption(p, opts[i]);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeMenu(p, true);
+      } else if (e.key === "Tab") {
+        closeMenu(p, false);
+      }
+    });
+    p.menu.addEventListener("click", (e) => {
+      const node = e.target.closest(".opt");
+      if (node) activateOption(p, node);
+    });
+    // Moving the pointer over an entry moves the focus there too, as in a
+    // native select, so the keyboard carries on from where the pointer is.
+    p.menu.addEventListener("pointermove", (e) => {
+      const node = e.target.closest('.opt:not([aria-disabled="true"])');
+      if (node && p.menu.getRootNode().activeElement !== node) node.focus({ preventScroll: true });
+    });
+    // A press anywhere else closes it.
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (p.menu.hidden) return;
+        const path = e.composedPath();
+        if (!path.includes(p.menu) && !path.includes(p.model)) closeMenu(p, false);
+      },
+      true
+    );
+  }
+
+  function workerSwitch(id) {
+    return new Promise((resolve, reject) => {
+      const reqId = nextSwitchId++;
+      const timer = setTimeout(() => {
+        pendingSwitches.delete(reqId);
+        reject(new Error("timed out"));
+      }, SWITCH_TIMEOUT_MS);
+      pendingSwitches.set(reqId, { resolve, reject, timer });
+      if (!postToWorker({ type: "switch-profile", reqId, id })) {
+        pendingSwitches.delete(reqId);
+        clearTimeout(timer);
+        reject(new Error("no worker"));
+      }
+    });
+  }
+
+  async function relaySwitch(id) {
+    const res = await fetch(`${RELAY_BASE}/panel/switch-profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(SWITCH_TIMEOUT_MS),
+    });
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+    if (res.status === 200 && body && body.ok) return { ok: true, runtime: "helper" };
+    if (res.status === 503) return { ok: false, message: "The helper app isn't running, so the model wasn't switched." };
+    const message = body && body.error && typeof body.error.message === "string" ? body.error.message : "Couldn't switch models.";
+    return { ok: false, message };
+  }
+
+  function showSwitchHint(text) {
+    if (!mounted) return;
+    const p = mounted.panel;
+    p.hint.textContent = text;
+    p.hint.hidden = !text;
+  }
+
+  // One click switches. A second choice while one is switching waits its turn
+  // (the first one finishes, then this one runs).
+  let switchChain = Promise.resolve();
+  function chooseProfile(id, { followUp = false } = {}) {
+    if (!followUp && (id === activeProfileId || switching === id)) return Promise.resolve();
+    const run = switchChain.then(() => runSwitch(id, followUp));
+    switchChain = run.catch(() => {});
+    return run;
+  }
+
+  async function runSwitch(id, followUp) {
+    const entry = profiles.find((e) => e.id === id);
+    if (!entry && !followUp) return;
+    switching = id;
+    if (!followUp) showSwitchHint("");
+    scheduleRender();
+    const fromTransport = transport;
+    try {
+      let result;
+      if (followUp || (entry.runtime === "helper" && transport === relayTransport)) {
+        result = await relaySwitch(id);
+        if (result.ok) postToWorker({ type: "profile-switched", id });
+      } else {
+        result = await workerSwitch(id);
+        if (result.ok && result.runtime === "helper" && fromTransport !== relayTransport) relaySwitchPending = id;
+      }
+      if (result.ok) {
+        if (!followUp) activeProfileId = id;
+      } else {
+        showSwitchHint(result.message || "Couldn't switch models.");
+      }
+    } catch {
+      showSwitchHint("Couldn't switch models. Try again.");
+    } finally {
+      switching = null;
+      scheduleRender();
+    }
+  }
+
   // ---- transports ----------------------------------------------------------
   //
   // A transport follows the tutor's events (start/stop) and sends a typed
@@ -2613,6 +2977,13 @@
   }
   function deliver(event) {
     if (event.type === "status") suppressUnread = false;
+    if (event.type === "status" && event.companionOnline && transport === relayTransport && relaySwitchPending) {
+      // The switch moved the tutor to the helper; now that its companion is
+      // here, it is asked to use the chosen model too.
+      const id = relaySwitchPending;
+      relaySwitchPending = null;
+      setTimeout(() => chooseProfile(id, { followUp: true }), 0);
+    }
     const affected = applyEvent(state, event);
     if (event.type === "turn-end" && !suppressUnread && !active && affected === currentSlug()) setUnread(true);
     noteApplied(affected);
@@ -2777,6 +3148,16 @@
       } else if (message.type === "helper") {
         helperState = typeof message.state === "string" ? message.state : null;
         scheduleRender();
+      } else if (message.type === "profiles") {
+        profiles = Array.isArray(message.profiles) ? message.profiles.filter(validEntry) : [];
+        activeProfileId = typeof message.active === "string" ? message.active : null;
+        scheduleRender();
+      } else if (message.type === "switch-result") {
+        const pending = pendingSwitches.get(message.reqId);
+        if (!pending) return;
+        pendingSwitches.delete(message.reqId);
+        clearTimeout(pending.timer);
+        pending.resolve(message);
       } else if (message.type === "event" && transport === extensionTransport && message.event) {
         if (sourceReachable !== true) {
           sourceReachable = true;
@@ -2794,10 +3175,12 @@
     port.onDisconnect.addListener(() => {
       if (port !== bgPort) return;
       bgPort = null;
-      for (const [id, pending] of pendingReplies) {
-        pendingReplies.delete(id);
-        clearTimeout(pending.timer);
-        pending.reject(new Error("disconnected"));
+      for (const map of [pendingReplies, pendingSwitches]) {
+        for (const [id, pending] of map) {
+          map.delete(id);
+          clearTimeout(pending.timer);
+          pending.reject(new Error("disconnected"));
+        }
       }
       if (transport === extensionTransport) {
         sourceReachable = false;
