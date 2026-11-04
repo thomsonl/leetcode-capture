@@ -227,19 +227,27 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
 
 ## Progress
 
-The settings page has a **Progress** tab (open it with `#progress`, or "See your progress" in the Tutor tab) that tracks the NeetCode 150.
-It is a picture only and changes no setting: the 18 topics as a graph with the roadmap's prerequisite lines, each node with its solved count, and the topic and problem to do next marked.
-Clicking a topic opens a side panel with its prerequisites and a table of its problems (status, star, a link to the problem on leetcode.com, difficulty).
+The settings page has a **Progress** tab (open it with `#progress`, or "See your progress" in the Tutor tab) that tracks a problem list of your choice.
+It is a picture only and changes no setting.
+"Working on" at the top picks the list: NeetCode 150 (the default; the expanded Blind 75, also called Blind 150), Blind 75, Grind 75 (its default eight week schedule), LeetCode's Top Interview 150 or LeetCode's SQL 50.
+The choice is kept in the extension's local storage (`activeProgressList`) and drives the whole tab and the Tutor tab's card.
+NeetCode 150 is drawn as its roadmap: the 18 topics as a graph with the prerequisite lines, each node with its solved count.
+Every other list is drawn as its own groups (categories, weeks or sections, as the list's publisher groups it) in the publisher's order, each card with its solved count and a part per difficulty; the next group is simply the first one not finished.
+The topic or group and the problem to do next are marked.
+Clicking a topic or group opens a side panel with its prerequisites (or the group before it) and a table of its problems (status, star, a link to the problem on leetcode.com, difficulty).
+Every list refers to one shared catalog of problems (`extension/shared/catalog.js`), so a problem solved once counts in every list that has it.
 
 A problem counts as solved when LeetCode accepts one of your submissions on its page.
 The extension watches the page's own request for the judge's verdict (`/submissions/detail/<id>/check/`, an all-digit id with `state` "SUCCESS" and `status_msg` "Accepted"; a Run's check is ignored) and reads nothing else from it.
 This works whichever runtime runs the tutor, and needs nothing running besides the browser.
-For problems you solved before installing, click the status mark in a topic's table; click it again to unmark any problem.
-Solved problems (`solvedProblems`: slug, time, count) and stars (`starredProblems`) are kept in the extension's local storage and never sent anywhere.
+For problems you solved before installing, click the status mark in a topic's or group's table; click it again to unmark any problem.
+Solved problems (`solvedProblems`: slug, time, count), stars (`starredProblems`) and the chosen list (`activeProgressList`) are kept in the extension's local storage and never sent anywhere.
+Changing the list never changes the solved problems.
 
-After an accepted submission the Tutor tab shows a short card: "Nice job completing <problem>", the next NeetCode 150 problem and one more of the same topic, as ordinary links.
-The tab builds it from the bundled roadmap; it is never sent to the tutor and never enters its context.
-For a problem that is not on the NeetCode 150, the card offers only the next roadmap problem.
+After an accepted submission the Tutor tab shows a short card: "Nice job completing <problem>", the next problem on the list you work on ("Next up on Blind 75") and one more of the same topic or group, as ordinary links.
+The newest card also has a small "Working on" menu that switches lists right there, and the card follows.
+The tab builds it from the bundled lists; it is never sent to the tutor and never enters its context.
+For a problem that is not on the chosen list, the card offers only that list's next problem.
 
 ## Optional features
 
