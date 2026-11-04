@@ -886,9 +886,20 @@
     renderProfiles();
   }
 
-  function iconButton(id, label, path, onclick, disabled = false) {
+  // `paths` are the icon's path data (Feather icons, MIT), drawn as strokes.
+  function iconButton(id, label, paths, onclick, disabled = false) {
     const button = h("button", { type: "button", class: "iconbtn", id, "aria-label": label, title: label, disabled, onclick });
-    button.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    for (const [name, value] of Object.entries({ viewBox: "0 0 24 24", width: "16", height: "16", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) {
+      svg.setAttribute(name, value);
+    }
+    for (const d of paths) {
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    }
+    button.appendChild(svg);
     return button;
   }
 
@@ -934,16 +945,16 @@
       actions.appendChild(h("button", { type: "button", class: "btn", id: `profile-${profile.id}-done`, text: "Done", onclick: () => finishRename(profile.id, $(`profile-${profile.id}-label`).value) }));
     } else {
       actions.append(
-        iconButton(`profile-${profile.id}-rename`, `Rename ${name}`, '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>', () => {
+        iconButton(`profile-${profile.id}-rename`, `Rename ${name}`, ["M12 20h9", "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"], () => {
           renaming = profile.id;
           renderProfiles();
           const input = $(`profile-${profile.id}-label`);
           input.focus();
           input.select();
         }),
-        iconButton(`profile-${profile.id}-up`, `Move ${name} up`, '<path d="M18 15l-6-6-6 6"/>', () => moveProfile(profile.id, -1), index === 0),
-        iconButton(`profile-${profile.id}-down`, `Move ${name} down`, '<path d="M6 9l6 6 6-6"/>', () => moveProfile(profile.id, 1), index === draftProfiles.length - 1),
-        iconButton(`profile-${profile.id}-remove`, `Remove ${name}`, '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>', () => removeProfile(profile.id))
+        iconButton(`profile-${profile.id}-up`, `Move ${name} up`, ["M18 15l-6-6-6 6"], () => moveProfile(profile.id, -1), index === 0),
+        iconButton(`profile-${profile.id}-down`, `Move ${name} down`, ["M6 9l6 6 6-6"], () => moveProfile(profile.id, 1), index === draftProfiles.length - 1),
+        iconButton(`profile-${profile.id}-remove`, `Remove ${name}`, ["M18 6L6 18", "M6 6l12 12"], () => removeProfile(profile.id))
       );
     }
     return h("div", { class: "profile", "data-default": isDefault, "data-id": profile.id }, radio, text, actions);
@@ -1239,6 +1250,7 @@
       forgetKeyActions("extension");
       ext = res.result;
       loadDraft(ext.settings);
+      profilesNote(null, "");
       render();
       showResult("save-result", "ok", `Saved. The tutor now runs in the browser with ${activeLabel(ext.active)}.`);
       syncHelperProfiles(plan);
@@ -1259,6 +1271,7 @@
     if (routed.ok) {
       ext = routed.result;
       loadDraft(ext.settings);
+      profilesNote(null, "");
     }
     forgetKeyActions("helper");
     selected = provider;

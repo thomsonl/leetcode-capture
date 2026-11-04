@@ -192,8 +192,24 @@ The providers:
 
 "Test connection" sends one short prompt with what is on the page, without saving anything.
 "Save" checks that the choice can work, writes it, and switches the tutor over between turns, never in the middle of a reply.
-The new model starts a fresh conversation and gets your full code with your next message.
+The new model carries on the same conversation, with the problem statement and your current code.
 The page also has the auto-clear and vault options described below.
+
+### Switching models from the Tutor tab
+
+The model name in the Tutor tab's header is a menu, like LeetCode's language selector.
+It lists the models saved on the settings page under "Models in the Tutor tab", where you can add several per provider (for example two local models and a Claude model), name, reorder and remove them, and choose the default.
+Each model uses its provider's saved server, key and runtime.
+Choosing one in the menu switches with one click: the light shows "Switching" until a reply that is already running has finished, then the next message goes to the new model with the whole chat, the problem statement and your current code.
+A model that cannot be used right now (no API key saved, the browser has not allowed the server yet, the helper app is not set up or not running) is shown greyed out with the reason.
+"Manage models..." at the bottom opens the settings page.
+Moving between a model that runs in the browser and one that runs through the helper starts that runtime's own session, since the two keep separate conversations.
+
+The tab only ever sees each model's name, provider and model id, never a key or a server address.
+In the helper runtime the tab asks the relay (`POST /panel/switch-profile` with just the model's id), and the companion accepts only an id it already has saved, which changes nothing but which saved model is in use.
+So a script on leetcode.com can at most switch between models you saved yourself.
+The extension keeps the whole list; the companion keeps the ones that run through it, sent with each save.
+Settings saved before this existed become one saved model, the default.
 
 In the browser runtime, settings and keys are saved in the extension's storage (two separate records, so a key never travels with anything else), and the page only ever gets back whether a key is saved.
 In the helper runtime, settings are saved in `~/.config/leetcode-capture/settings.json` (`%APPDATA%` on Windows, or the path in `LEETCODE_CAPTURE_SETTINGS`), readable only by you (mode 0600).
