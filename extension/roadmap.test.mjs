@@ -6,6 +6,20 @@ import { CATALOG, catalogEntry } from './shared/catalog.js';
 import { listSlugs, OUT } from './scripts/list-slugs.mjs';
 
 const R = NEETCODE_150;
+
+// The publishers' own data as fetched (see each file's first line):
+// { planId: [{ title, slugs: [[slug, 'E' | 'M' | 'H']] }] }.
+function snapshot(name) {
+  const plans = {};
+  let plan = null;
+  for (const line of fs.readFileSync(new URL(`./e2e/${name}`, import.meta.url), 'utf8').split('\n').slice(1)) {
+    if (line.startsWith('=== ')) plans[line.slice(4).trim()] = plan = [];
+    else if (line.startsWith('#')) plan.push({ title: line.slice(1), slugs: [] });
+    else if (line.trim()) plan.at(-1).slugs.push(line.split('|'));
+  }
+  return plans;
+}
+const DIFFICULTY = { E: 'Easy', M: 'Medium', H: 'Hard' };
 const all = R.topics.flatMap((t) => t.problems);
 
 test('NeetCode 150 has 18 topics and exactly 150 unique problems', () => {
@@ -104,6 +118,18 @@ test('the publishers\' groups, as they name them', () => {
   assert.equal(GRIND_75.topics[0].problems[0].slug, 'two-sum');
   assert.equal(TOP_INTERVIEW_150.topics[0].problems[0].slug, 'merge-sorted-array');
   assert.equal(SQL_50.topics[0].problems[0].slug, 'recyclable-and-low-fat-products');
+});
+
+test('LeetCode\'s study plans match LeetCode\'s own data: sections, their order, the problems in order and their difficulty', () => {
+  const plans = snapshot('leetcode-study-plans.txt');
+  for (const [planId, list] of [['top-interview-150', TOP_INTERVIEW_150], ['top-sql-50', SQL_50]]) {
+    const plan = plans[planId];
+    assert.deepEqual(list.topics.map((t) => t.title), plan.map((g) => g.title), list.id);
+    list.topics.forEach((t, i) => {
+      assert.deepEqual(t.problems.map((p) => p.slug), plan[i].slugs.map(([slug]) => slug), `${list.id}/${t.title}`);
+      assert.deepEqual(t.problems.map((p) => p.difficulty), plan[i].slugs.map(([, d]) => DIFFICULTY[d]), `${list.id}/${t.title} difficulty`);
+    });
+  }
 });
 
 test('only NeetCode 150 has prerequisite lines, and they join its own topics', () => {

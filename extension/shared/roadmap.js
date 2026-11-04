@@ -429,7 +429,9 @@ export const GRIND_75 = defineList({
   ],
 });
 
-// LeetCode's own Top Interview 150 study plan, with its sections.
+// LeetCode's own Top Interview 150 study plan, with its sections, as
+// LeetCode's GraphQL (studyPlanV2Detail, plan top-interview-150) gave them on
+// 2026-11-04: e2e/leetcode-study-plans.txt, which roadmap.test.mjs compares.
 export const TOP_INTERVIEW_150 = defineList({
   id: 'top-interview-150',
   title: 'Top Interview 150',
@@ -612,7 +614,8 @@ export const TOP_INTERVIEW_150 = defineList({
   ],
 });
 
-// LeetCode's own SQL 50 study plan (database problems), with its sections.
+// LeetCode's own SQL 50 study plan (database problems, plan top-sql-50), with
+// its sections, checked against e2e/leetcode-study-plans.txt the same way.
 export const SQL_50 = defineList({
   id: 'sql-50',
   title: 'SQL 50',
