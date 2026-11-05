@@ -35,10 +35,11 @@ test('no test, e2e, tooling or doc files leak, and runtime files are present', (
     const files = walk(join(tmp, browser));
     for (const f of files) {
       assert.doesNotMatch(f, /\.test\.(js|mjs)$/, f);
-      assert.doesNotMatch(f, /(^|\/)(e2e|scripts|node_modules|web-ext-artifacts)(\/|$)/, f);
+      assert.doesNotMatch(f, /(^|\/)(e2e|scripts|node_modules|web-ext-artifacts|store-assets)(\/|$)/, f);
       assert.doesNotMatch(f, /(^|\/)package\.json$/, f);
       assert.doesNotMatch(f, /_CHECKLIST\.md$|PRIVACY_POLICY\.md$/, f);
       assert.doesNotMatch(f, /^icons\/screenshot/, f);
+      assert.doesNotMatch(f, /dev-seed\.json$|\.map$/, f);
     }
     for (const f of ['manifest.json', 'background.js', 'content.js', 'shared/tutor-engine.js']) {
       assert.ok(files.includes(f), `${browser} build is missing ${f}`);

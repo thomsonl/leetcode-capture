@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Names excluded at any depth.
-const EXCLUDED_NAMES = new Set(['e2e', 'package.json', 'PRIVACY_POLICY.md', 'web-ext-artifacts', 'node_modules', 'scripts']);
+const EXCLUDED_NAMES = new Set(['e2e', 'package.json', 'PRIVACY_POLICY.md', 'web-ext-artifacts', 'node_modules', 'scripts', 'store-assets']);
 
 export function isExcluded(relPath) {
   const parts = relPath.split(sep);
