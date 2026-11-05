@@ -177,7 +177,7 @@ try {
     check(m.sub === 'Your Blind 75 progress' && m.title === 'Blind 75' && m.nodes === 0, JSON.stringify(m));
     check(m.help === 0, 'no description under the title');
     check(m.total === `${all.solved} / 75 solved`, `total: ${m.total}`);
-    check(m.next === `Next up${next.title}${next.difficulty}inArray`, `next: ${m.next}`);
+    check(m.next === `Next up${next.title}inArray`, `next: ${m.next}`);
     check(m.cards.map((c) => c.title).join() === BLIND_75.topics.map((t) => t.title).join(), 'cards in the list order');
     check(m.cards.map((c) => c.step).join() === '1,2,3,4,5,6,7,8,9,10', 'numbered');
     check(m.cards[0].count === '9 / 10' && m.cards[0].next && m.cards.filter((c) => c.next).length === 1, JSON.stringify(m.cards[0]));
@@ -290,7 +290,7 @@ try {
     const m = await page.eval(`({ titles: [...document.querySelectorAll('.group-title')].map((n) => n.textContent), sub: document.getElementById('page-sub').textContent, next: document.querySelector('.next-up').textContent })`);
     const next = nextOnRoadmap(GRIND_75, Object.keys(seed))[0];
     check(m.titles.join() === 'Week 1,Week 2,Week 3,Week 4,Week 5,Week 6,Week 7,Week 8' && m.sub === 'Your Grind 75 progress', JSON.stringify(m));
-    check(m.next === `Next up${next.title}${next.difficulty}inWeek 1`, m.next);
+    check(m.next === `Next up${next.title}inWeek 1`, m.next);
     await key(page, 'Tab');
     check((await focused(page)) !== null && !(await focused(page)).startsWith('list:'), `Tab leaves the menu: ${await focused(page)}`);
     await page.screenshot(path.join(shots, 'grind-dark.png'), { width: 1280, height: 1000, scheme: 'dark' });
@@ -317,7 +317,7 @@ try {
     check(m.titles.join() === GRIND_75.subjects.map((t) => t.title).join(), `titles: ${m.titles}`);
     const want = progress({ topics: GRIND_75.subjects }, Object.keys(seed)).topics.map((t) => `${t.id}:${t.solved} / ${t.total}`);
     check(m.counts.join() === want.join(), `counts: ${m.counts}`);
-    check(m.nextCards.join() === next.subject && m.next === `Next up${next.title}${next.difficulty}in${subject.title}`, JSON.stringify(m));
+    check(m.nextCards.join() === next.subject && m.next === `Next up${next.title}in${subject.title}`, JSON.stringify(m));
     check(m.help === 0 && m.heading === 'Grind 75 subjects', JSON.stringify(m));
     check(m.label.startsWith(`Arrays & Hashing, subject 1 of ${GRIND_75.subjects.length},`), m.label);
     check(m.saved === '{"grind-75":"subject"}', `remembered: ${m.saved}`);

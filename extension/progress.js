@@ -396,7 +396,6 @@ function renderSummary() {
             { class: 'next-up' },
             h('span', { class: 'next-label', text: 'Next up' }),
             h('a', { href: problemUrl(next.slug), target: '_blank', rel: 'noopener noreferrer', text: next.title }),
-            difficulty(next.difficulty),
             h('span', { class: 'next-in', text: 'in' }),
             h('button', { type: 'button', class: 'linkbtn', onclick: (e) => openDrawer(groupOf(next), e.currentTarget), text: topicById(groupOf(next)).title })
           )

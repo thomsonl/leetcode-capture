@@ -87,7 +87,7 @@ try {
     check(m.total === '11 / 150 solved', `total (the problem off the roadmap does not count): ${m.total}`);
     const easy = NEETCODE_150.topics.flatMap((t) => t.problems).filter((p) => p.difficulty === 'Easy');
     check(m.levels[0] === `Easy${easy.filter((p) => seed[p.slug]).length} / ${easy.length}`, `levels: ${JSON.stringify(m.levels)}`);
-    check(m.next === `Next up${expectedNext.title}${expectedNext.difficulty}inArrays & Hashing`, `next: ${m.next}`);
+    check(m.next === `Next up${expectedNext.title}inArrays & Hashing`, `next: ${m.next}`);
     check(m.nextHref === `https://leetcode.com/problems/${expectedNext.slug}/`, `next link: ${m.nextHref}`);
   });
 
