@@ -230,11 +230,18 @@ Settings are never typed into the Tutor tab itself, because scripts on leetcode.
 The settings page has a **Progress** tab (open it with `#progress`, or "See your progress" in the Tutor tab) that tracks a problem list of your choice.
 It is a picture only and changes no setting.
 "Working on" at the top picks the list: NeetCode 150 (the default; NeetCode's expanded Blind 75), NeetCode 250 (NeetCode 150 and 100 more), Blind 75, Grind 75 (its default eight week schedule), or one of LeetCode's own study plans: Top 100 Liked, Top Interview 150 or SQL 50.
-NeetCode's lists follow neetcode.io's own list data and LeetCode's follow its study plan data, membership and order included; neetcode.io has no "NeetCode 75" list, so there is none here.
+Every list follows its own publisher's data, membership, groups and order included, last checked against each site on 2026-11-04:
+- NeetCode 150 and NeetCode 250: neetcode.io's own list data (https://neetcode.io/practice); neetcode.io has no "NeetCode 75" list, so there is none here.
+- Blind 75: the original 2018 Blind post (https://www.teamblind.com/post/New-Year-Gift---Curated-List-of-Top-75-LeetCode-Questions-to-Save-Your-Time-OaM1orEU) with its categories; neetcode.io's Blind 75 differs by one problem (Combination Sum where the post links Combination Sum IV), and the post's own link is kept.
+- Grind 75: what https://www.techinterviewhandbook.org/grind75 shows at its default settings (8 weeks, 8 hours a week, ordered by difficulty, grouped by weeks), computed from the site's own data the way the site does; other settings on that site give a different set and different weeks.
+- Top 100 Liked, Top Interview 150 and SQL 50: LeetCode's own study plan data.
+
+Titles and difficulty always come from LeetCode itself, so a list whose site grades a problem differently (Grind 75 still calls Lowest Common Ancestor of a Binary Search Tree Easy) shows LeetCode's grade.
+To check the lists against the sites again, run `node extension/scripts/list-sources.mjs --check`; without `--check` it rewrites the saved copies in `extension/e2e/`, and `npm test` then fails on any list that no longer matches.
 The choice is kept in the extension's local storage (`activeProgressList`) and drives the whole tab and the Tutor tab's card.
 NeetCode 150 and NeetCode 250 are drawn as NeetCode's roadmap: the same 18 topics as a graph with the prerequisite lines, each node with its solved count.
 Every other list is drawn as its own groups (categories, topics or sections, as the list's publisher groups it) in the publisher's order, each card with its solved count and a part per difficulty; the next group is simply the first one not finished.
-Grind 75 groups only by week, so a "Group by" switch also shows it by subject (NeetCode's topic names, one subject per problem); the next problem is still the first unsolved one in the weekly order, and the switch is remembered per list in that page only.
+Grind 75 groups only by week, so a "Group by" switch also shows it by subject (the topic neetcode.io gives each problem, one subject per problem); the next problem is still the first unsolved one in the weekly order, and the switch is remembered per list in that page only.
 The topic or group and the problem to do next are marked.
 Clicking a topic or group opens a side panel with its prerequisites (or the group before it) and a table of its problems (status, star, a link to the problem on leetcode.com, difficulty).
 Every list refers to one shared catalog of problems (`extension/shared/catalog.js`), so a problem solved once counts in every list that has it.
