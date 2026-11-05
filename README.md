@@ -5,6 +5,19 @@ Independent project, not affiliated with LeetCode.
 
 ## Install
 
+The easy way: clone the repo and run the install script. It adds the extension to Chrome from the Web Store and sets up the helper for Claude and ChatGPT subscriptions. It needs Node.
+
+```sh
+git clone https://github.com/thomsonl/leetcode-capture.git
+cd leetcode-capture
+sh install.sh
+```
+
+On Windows: `powershell -ExecutionPolicy Bypass -File install.ps1`.
+Then restart Chrome and click Enable.
+
+## Install by hand
+
 ```sh
 git clone https://github.com/thomsonl/leetcode-capture.git
 ```
@@ -19,5 +32,3 @@ For a Claude or ChatGPT subscription, install Node, sign in to `claude` or `code
 ```sh
 npx leetcode-capture-helper install --chrome-id <your extension id>
 ```
-
-More in [docs/DETAILS.md](docs/DETAILS.md).
