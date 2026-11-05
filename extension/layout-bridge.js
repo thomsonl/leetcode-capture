@@ -613,7 +613,7 @@
   // layout without the Tutor is not kept. Native mode gives up (which takes
   // the tab out and puts the native weights back) and the clone takes over.
   function unsafeSplit(reason) {
-    console.warn(`LeetCode Capture: the Tutor tab left the page's layout because ${reason}, so the layout LeetCode saves stays as it was.`);
+    console.warn(`Thomson's LeetCode Tutor: the Tutor tab left the page's layout because ${reason}, so the layout LeetCode saves stays as it was.`);
     giveUp("unsafe-layout");
   }
 
@@ -826,7 +826,7 @@
       at: Date.now(),
     };
     const again = PERMANENT.has(reason) || retries >= MAX_RETRIES ? "" : " It tries again when the page's layout changes.";
-    console.warn(`LeetCode Capture: the Tutor tab is not a real tab of the page's layout now (${reason}), so the injected copy stands in.${again}`);
+    console.warn(`Thomson's LeetCode Tutor: the Tutor tab is not a real tab of the page's layout now (${reason}), so the injected copy stands in.${again}`);
     if (model) removeTab(model);
     release();
     unmark();

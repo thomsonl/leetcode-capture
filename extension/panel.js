@@ -3137,7 +3137,7 @@
   let nativeReason = null;
   function setNativeReason(reason) {
     if (reason && reason !== nativeReason) {
-      console.warn(`LeetCode Capture: the Tutor tab is the injected copy, not a real tab of the page's layout (${reason}).`);
+      console.warn(`Thomson's LeetCode Tutor: the Tutor tab is the injected copy, not a real tab of the page's layout (${reason}).`);
     }
     nativeReason = reason || null;
     const host = mounted && mounted.host;

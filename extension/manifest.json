@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "LeetCode Capture",
+  "name": "Thomson's LeetCode Tutor",
   "version": "1.2.0",
   "description": "A tutor for LeetCode problems: hints and Submit reviews from a local model, your API key or subscription, plus progress tracking.",
   "icons": {

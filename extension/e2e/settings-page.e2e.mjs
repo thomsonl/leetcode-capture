@@ -135,6 +135,9 @@ const lastCall = (page, method) => [...page.mockedRequests].reverse().find((r) =
 
 await scenario('first run shows the historic default (Claude subscription) and the running provider', companion(), async (page) => {
   assert.equal(await page.eval(`document.querySelector('input[name=provider]:checked').value`), 'claude');
+  // The page carries the store name (the manifest's), in its heading and tab title.
+  assert.equal(await text(page, 'h1'), "Thomson's LeetCode Tutor");
+  assert.equal(await page.eval('document.title'), "Thomson's LeetCode Tutor settings");
   assert.match(await text(page, '#connection-text'), /Tutor running: Claude subscription/);
   assert.equal(await page.eval(`document.querySelectorAll('input[name=provider]').length`), 5);
   assert.match(await text(page, '#path'), /settings\.json/);

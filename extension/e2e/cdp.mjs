@@ -202,7 +202,9 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
   const deadline = Date.now() + 15000;
   let extensionId = null;
   // Chromium ships built-in extensions with their own workers, so identify ours
-  // by asking each worker for its manifest name.
+  // by asking each worker for its manifest name and matching the name in the
+  // loaded folder's manifest (so a rename never needs a change here).
+  const ourName = extensionDir ? JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8')).name : null;
   const nameOf = async (target) => {
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     try {
@@ -243,7 +245,7 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
       const targets = await json('/json/list');
       for (const t of targets.filter((x) => x.type === 'service_worker' && x.url.startsWith('chrome-extension://'))) {
         // eslint-disable-next-line no-await-in-loop
-        if ((await nameOf(t)) === 'LeetCode Capture') {
+        if ((await nameOf(t)) === ourName) {
           extensionId = new URL(t.url).host;
           break;
         }

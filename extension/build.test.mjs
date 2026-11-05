@@ -14,6 +14,12 @@ test('source manifest declares both background keys', () => {
   assert.ok(Array.isArray(source.background.scripts));
 });
 
+test('the store name is the chosen one and fits both stores', () => {
+  // Chrome Web Store allows 75 characters, addons.mozilla.org 50.
+  assert.equal(source.name, "Thomson's LeetCode Tutor");
+  assert.ok(source.name.length <= 50, source.name);
+});
+
 test('chrome build drops background.scripts and keeps the rest', () => {
   const out = build({ browser: 'chrome', out: join(tmp, 'chrome') });
   const m = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'));
