@@ -1284,10 +1284,10 @@
     button.gear:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
     /* "Practice a skill" next to the gear: the same icon button, without the
        gear's pull to the right edge. */
-    button.practice-open { flex: none; width: 24px; height: 24px; border-radius: 4px; color: var(--muted); }
-    button.practice-open:hover { color: var(--fg); background: var(--fill); }
-    button.practice-open:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
-    button.practice-open[hidden] { display: none; }
+    button.practice-open, button.progress-open { flex: none; width: 24px; height: 24px; border-radius: 4px; color: var(--muted); }
+    button.practice-open:hover, button.progress-open:hover { color: var(--fg); background: var(--fill); }
+    button.practice-open:focus-visible, button.progress-open:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 0; }
+    button.practice-open[hidden], button.progress-open[hidden] { display: none; }
     .status { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; }
     .status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     /* The status light: neutral (the text color) while connecting or with
@@ -1770,7 +1770,20 @@
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
     practice.addEventListener("click", () => openPractice());
-    headRight.append(model, practice, gear);
+    // The Progress page: an options-page tab of its own, so it needs the
+    // extension's worker like "Practice a skill".
+    const progress = document.createElement("button");
+    progress.type = "button";
+    progress.className = "progress-open";
+    progress.hidden = true;
+    progress.setAttribute("aria-label", "Your progress");
+    progress.title = "Your progress";
+    // Feather's "bar-chart-2" (MIT), drawn in the text color.
+    progress.innerHTML =
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
+    progress.addEventListener("click", () => sendToWorker({ type: "lc-tutor:open-progress" }));
+    headRight.append(model, practice, progress, gear);
     head.append(headLeft, headRight);
 
     const banner = el("div", "banner");
@@ -1851,7 +1864,7 @@
     // here must trigger neither, so keys stop at the host.
     for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
 
-    const p = { host, wrap, status, statusText, headRight, model, provider, menu, gear, practice, banner, scroll, view, feed, box, input, send, hint, counter };
+    const p = { host, wrap, status, statusText, headRight, model, provider, menu, gear, practice, progress, banner, scroll, view, feed, box, input, send, hint, counter };
     wireSwitcher(p);
     return p;
   }
@@ -2696,6 +2709,8 @@
 
     const practiceHidden = !slug || !messagingRuntime();
     if (p.practice.hidden !== practiceHidden) p.practice.hidden = practiceHidden;
+    const progressHidden = !messagingRuntime();
+    if (p.progress.hidden !== progressHidden) p.progress.hidden = progressHidden;
 
     const canSend = conn.ok && Boolean(slug);
     p.input.disabled = !canSend;
@@ -3469,7 +3484,7 @@
         // instead, to the next header button (Shift+Tab stays on the button).
         e.preventDefault();
         closeMenu(p, true);
-        if (!e.shiftKey) (p.practice.hidden ? p.gear : p.practice).focus({ preventScroll: true });
+        if (!e.shiftKey) (p.practice.hidden ? (p.progress.hidden ? p.gear : p.progress) : p.practice).focus({ preventScroll: true });
       }
     });
     p.menu.addEventListener("click", (e) => {

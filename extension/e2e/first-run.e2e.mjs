@@ -142,13 +142,13 @@ try {
   });
 
   await scenario('the gear opens the options page', async () => {
-    const before = (await browser.listTargets()).filter((t) => t.url.endsWith('/settings.html')).length;
+    const before = (await browser.listTargets()).filter((t) => /\/settings\.html(#settings)?$/.test(t.url)).length;
     await page.eval(`window.__q('.gear').click()`);
     const deadline = Date.now() + 5000;
     let after = before;
     while (Date.now() < deadline && after === before) {
       await pause(200);
-      after = (await browser.listTargets()).filter((t) => t.url.endsWith('/settings.html')).length;
+      after = (await browser.listTargets()).filter((t) => /\/settings\.html(#settings)?$/.test(t.url)).length;
     }
     check(after === before + 1, `options pages: ${before} then ${after}`);
   });

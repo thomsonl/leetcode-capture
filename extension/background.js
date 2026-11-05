@@ -179,16 +179,38 @@ async function syncNow() {
   return { ok: false, reason: reached ? "failed" : "no-tab" };
 }
 
+// The extension's page on one of its tabs ("settings" or "progress"): a page
+// already open is moved to that tab and brought forward (the browser's own
+// openOptionsPage would leave it on whichever tab it was showing), or a new
+// tab opens. Without a tabs permission tab addresses are hidden, but the
+// extension can list its own pages with runtime.getContexts.
+async function openOurPage(which) {
+  const base = api.runtime.getURL("settings.html");
+  const url = `${base}#${which}`;
+  try {
+    const contexts = api.runtime.getContexts ? await api.runtime.getContexts({ contextTypes: ["TAB"] }) : [];
+    const open = contexts.find((c) => typeof c.documentUrl === "string" && c.documentUrl.split("#")[0] === base && c.tabId >= 0);
+    if (open) {
+      await api.tabs.update(open.tabId, { url, active: true });
+      if (api.windows && open.windowId >= 0) await api.windows.update(open.windowId, { focused: true });
+      return;
+    }
+  } catch {
+    // fall through to a new tab
+  }
+  await api.tabs.create({ url });
+}
+
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== api.runtime.id) return undefined;
   if (message && message.type === "lc-tutor:open-settings") {
-    api.runtime.openOptionsPage();
+    openOurPage("settings");
     return undefined;
   }
   // The Tutor panel's "See your progress" link: the options page on its
   // Progress tab (an extension page of its own, so no permission is needed).
   if (message && message.type === "lc-tutor:open-progress") {
-    api.tabs.create({ url: api.runtime.getURL("settings.html#progress") });
+    openOurPage("progress");
     return undefined;
   }
   // The Progress tab's "Sync from LeetCode": ask an open problem tab (it is

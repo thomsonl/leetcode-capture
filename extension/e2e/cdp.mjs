@@ -284,6 +284,22 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
       }
       return page;
     },
+    // A page that is already open (a tab the extension opened itself) whose
+    // address matches `test`, attached like one opened here.
+    async attachPage(test) {
+      const target = (await json('/json/list')).find((t) => t.type === 'page' && test(t.url));
+      if (!target) throw new Error('no open page matches');
+      const ws = new WebSocket(target.webSocketDebuggerUrl);
+      await new Promise((resolve, reject) => {
+        ws.addEventListener('open', resolve, { once: true });
+        ws.addEventListener('error', reject, { once: true });
+      });
+      const page = new Page(ws);
+      await page.send('Runtime.enable');
+      await page.send('Page.enable');
+      pages.push(page);
+      return page;
+    },
     async serviceWorkerEval(expression) {
       const targets = await json('/json/list');
       const sw = targets.find((t) => t.type === 'service_worker' && t.url.includes(extensionId));
