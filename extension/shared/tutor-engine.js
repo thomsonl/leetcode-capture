@@ -20,6 +20,10 @@
 //     panel.
 //   - Every capture, message, reset and settings swap runs in one queue, so a
 //     reset or a swap never lands in the middle of a backend call.
+//   - Every reply goes through the post-check guard (reply-guard.js, the
+//     companion uses the same one): rule repairs everywhere, hint and stuck
+//     replies held and re-asked once when broken, other replies released
+//     sentence by sentence with broken parts dropped.
 //   - Message limits match the relay's (relay-server/panel-broker.js): 8000
 //     characters of text, 100,000 of snapshot code, 50,000 of description.
 // Nothing is persisted: the conversation lives in memory only, and the
@@ -38,6 +42,7 @@ import {
 } from './code-ledger.js';
 import { transferConversation } from './conversation.js';
 import { sanitizeCapture, stripControlChars, oneLine } from './sanitize.js';
+import { createReplyGuard, guardedSend } from './reply-guard.js';
 import { SUBMIT_ADDENDUM, captureHeaderLine, captureProblemId, captureProblemContext } from './tutor-prompt.js';
 
 export const MAX_MESSAGE_CHARS = 8000;
@@ -88,6 +93,9 @@ export function createTutorEngine({ hub, log = () => {} }) {
   // Attempt numbers per problem, like the relay's attemptSeq, in memory only.
   const attempts = new Map();
   let turnCounter = 0;
+  // Hint count and what the student named or saw, for the post-check guard;
+  // reset with the conversation.
+  const guard = createReplyGuard();
 
   // ---- the turn queue ----------------------------------------------------
   let chain = Promise.resolve();
@@ -137,6 +145,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
     const result = ledger.activate(problemId, { slug, resetOnSwitch: options.autoClearContext });
     if (!result.reset) return result;
     if (backend) backend.resetContext();
+    guard.reset();
     parked = null;
     if (result.dropped && result.dropped.slug) {
       hub.dropProblem(result.dropped.slug);
@@ -149,10 +158,12 @@ export function createTutorEngine({ hub, log = () => {} }) {
   }
 
   // ---- one tutor turn ----------------------------------------------------
-  // Publishes turn-start, each chunk, then turn-end with the whole text or
-  // the error. Resolves true only for a real reply, so the caller commits the
-  // code as held only then.
-  async function sendTurn(text, { problemContext, currentCode, compactText, problemSlug }) {
+  // Publishes turn-start, each chunk the guard releases, then turn-end with
+  // the whole text as shown (exactly the chunks) or the error. Resolves true
+  // only for a real reply, so the caller commits the code as held only then.
+  // `studentText` is the student's own words (null for a Submit) and
+  // `trigger` 'submit' or null, for the guard.
+  async function sendTurn(text, { problemContext, currentCode, compactText, problemSlug, studentText = null, trigger = null }) {
     const turnId = newTurnId();
     publish({ type: 'turn-start', turnId, problemSlug });
     const end = (fields) => publish({ type: 'turn-end', turnId, problemSlug, ...fields });
@@ -162,13 +173,15 @@ export function createTutorEngine({ hub, log = () => {} }) {
     }
     let reply;
     try {
-      reply = await backend.sendMessage(text, {
-        onChunk: (chunk) => {
+      reply = await guardedSend({
+        backend,
+        text,
+        options: { problemContext, currentCode, compactText },
+        turn: guard.begin({ text: studentText, trigger, code: currentCode && typeof currentCode.code === 'string' ? currentCode.code : null }),
+        onText: (chunk) => {
           if (problemSlug) hub.publish({ type: 'chunk', turnId, text: chunk });
         },
-        problemContext,
-        currentCode,
-        compactText,
+        log,
       });
     } catch (err) {
       end({ error: `Error talking to the backend (${label}): ${explain(err.message)}` });
@@ -191,6 +204,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
       currentCode: turn.currentCode,
       compactText: turn.message.compactText,
       problemSlug,
+      studentText: text,
     });
     if (ok && (turn.plan.kind === 'full' || turn.plan.kind === 'diff')) ledger.commit(problemId, turn.plan);
   }
@@ -295,6 +309,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
             currentCode: turn.currentCode,
             compactText: turn.message.compactText,
             problemSlug: slug,
+            trigger: 'submit',
           });
           if (ok) ledger.commit(problemId, plan);
         } finally {

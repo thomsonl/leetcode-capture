@@ -32,22 +32,39 @@ function memoryStorage(initial = {}) {
 }
 
 // A backend that records every call and answers "reply N", streamed in two
-// chunks.
+// chunks, or the next of `script` (streamed four characters at a time). It
+// supports the post-check guard's re-ask (the next of `script`) and records
+// each replaced reply.
 function recordingBackends() {
   const built = [];
+  const script = [];
   function make(settings) {
     const backend = {
       model: settings.providers[settings.provider].model,
       calls: [],
       resets: 0,
+      revisions: [],
+      replaced: [],
       async sendMessage(text, options) {
         backend.calls.push({ text, options });
+        if (script.length) {
+          const reply = script.shift();
+          for (let i = 0; i < reply.length; i += 4) options.onChunk?.(reply.slice(i, i + 4));
+          return reply;
+        }
         const reply = `reply ${backend.calls.length}`;
         if (options.onChunk) {
           options.onChunk('reply ');
           options.onChunk(String(backend.calls.length));
         }
         return reply;
+      },
+      async reviseLastReply(instruction) {
+        backend.revisions.push(instruction);
+        return script.shift();
+      },
+      replaceLastReply(text) {
+        backend.replaced.push(text);
       },
       resetContext() {
         backend.resets += 1;
@@ -59,6 +76,7 @@ function recordingBackends() {
   }
   return {
     built,
+    script,
     impl(settings, secrets, opts) {
       // Validates like the real one, then hands back the stub.
       buildBackend(settings, secrets, { probe: async () => null, ...(opts || {}) });
@@ -147,7 +165,9 @@ test('a panel port gets the runtime, a replay, config and status, and a message 
   await settle(service);
   assert.deepEqual(port.received.find((m) => m.type === 'reply'), { type: 'reply', id: 7, ok: true });
   const kinds = port.events().filter((e) => typeof e.seq === 'number').map((e) => e.type);
-  assert.deepEqual(kinds, ['user', 'turn-start', 'chunk', 'chunk', 'turn-end']);
+  // The post-check guard releases a chat reply sentence by sentence, so the
+  // two raw chunks of one short sentence arrive as one.
+  assert.deepEqual(kinds, ['user', 'turn-start', 'chunk', 'turn-end']);
   const end = port.events().find((e) => e.type === 'turn-end');
   assert.equal(end.text, 'reply 1');
   assert.equal(end.problemSlug, 'two-sum');
@@ -525,4 +545,59 @@ test('switching to a helper profile moves the runtime; the helper confirming a s
   port.send({ type: 'profile-switched', id: 'gpt' });
   await settle(service);
   assert.equal(storage.data[SETTINGS_KEY].activeProfile, 'sonnet', 'a confirmation never moves the runtime');
+});
+
+test('the post-check guard: a leaking first hint is re-asked and the panel never sees the leak', async () => {
+  const { service, backends } = await setup();
+  await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: LOCAL } }, OPTIONS_PAGE);
+  const port = fakePort();
+  service.connectPort(port);
+  port.send({ type: 'subscribe', after: 0 });
+  await settle(service);
+  backends.script.push('Use a hash map to look up each complement in constant time.', 'What does your inner loop do for every i?');
+  port.send({ type: 'message', id: 1, text: 'Give me a hint.', problemSlug: 'two-sum', snapshot: { code: code1, language: 'python3' } });
+  await settle(service);
+  const backend = backends.built.at(-1);
+  assert.equal(backend.revisions.length, 1);
+  assert.match(backend.revisions[0], /hash map/);
+  const turn = port.events().filter((e) => e.type === 'chunk' || e.type === 'turn-end');
+  assert.ok(!JSON.stringify(turn).includes('hash map'), 'no event carried the rejected hint');
+  assert.deepEqual(turn.map((e) => e.type), ['chunk', 'turn-end']);
+  assert.equal(turn.at(-1).text, 'What does your inner loop do for every i?');
+  assert.deepEqual(backend.replaced, ['What does your inner loop do for every i?']);
+
+  // A chat reply streams in sentences, with an unrequested fix dropped, and
+  // the turn-end text is exactly what streamed.
+  backends.script.push('Yes, it can. To fix this, start j at i + 1. Your loops check pairs.');
+  port.send({ type: 'message', id: 2, text: 'Can my code use the same element twice?', problemSlug: 'two-sum', snapshot: { code: code1, language: 'python3' } });
+  await settle(service);
+  const events = port.events();
+  const start = events.findLastIndex((e) => e.type === 'turn-start');
+  const chunks = events.slice(start).filter((e) => e.type === 'chunk').map((e) => e.text);
+  const end = events.slice(start).find((e) => e.type === 'turn-end');
+  assert.equal(end.text, 'Yes, it can. Your loops check pairs.');
+  assert.equal(chunks.join(''), end.text);
+  assert.ok(chunks.length >= 2);
+});
+
+test('the post-check guard counts hints per problem and starts over on a problem switch', async () => {
+  const { service, backends } = await setup();
+  await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: LOCAL } }, OPTIONS_PAGE);
+  const port = fakePort();
+  service.connectPort(port);
+  port.send({ type: 'subscribe', after: 0 });
+  await settle(service);
+  // A second hint may be longer and more concrete than a first.
+  const second = `Look at the line that starts j. ${'It decides which pairs you compare. '.repeat(14)}`.trim();
+  assert.ok(second.length > 450);
+  backends.script.push('What does j start at?', second);
+  port.send({ type: 'message', id: 1, text: 'Give me a hint.', problemSlug: 'two-sum', snapshot: { code: code1 } });
+  port.send({ type: 'message', id: 2, text: 'Another hint.', problemSlug: 'two-sum', snapshot: { code: code1 } });
+  await settle(service);
+  assert.equal(backends.built.at(-1).revisions.length, 0, 'the second hint was held to the later-hint limit');
+  // On another problem the same long reply is a first hint again: re-asked.
+  backends.script.push(second, 'What does your code return first?');
+  port.send({ type: 'message', id: 3, text: 'Give me a hint.', problemSlug: 'house-robber', snapshot: { code: code1 } });
+  await settle(service);
+  assert.equal(backends.built.at(-1).revisions.length, 1);
 });
