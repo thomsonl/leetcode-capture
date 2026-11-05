@@ -1,13 +1,14 @@
 # Chrome Web Store submission checklist
 
-Nothing has been submitted yet, as far as this repository records.
+The Web Store already has this extension published as "LeetCode Capture" 1.0.0 (item ID klolbndoiokcflamiielknjgoojjkbdc, seen in the dashboard on 2026-11-05).
+This release is an update to that item: upload the zip on its Package tab, then update the Store listing, Privacy and Distribution tabs.
 Every dashboard field below has final text ready to paste.
 The listing text, single purpose and permission justifications are shared with Firefox, so `AMO_SUBMISSION_CHECKLIST.md` points back here for them.
 
 ## Version
 
 `manifest.json` is at `1.2.0`, and that is the version for this upload.
-The repository records no earlier store upload (the store-prep commits only drafted text), so no bump is needed.
+The dashboard shows version 1.0.0 as the live version, so 1.2.0 is higher and needs no bump.
 The store only requires each upload to carry a higher version than the last one; bump before any later upload.
 
 ## Must be done before you press Submit
