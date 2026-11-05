@@ -1,5 +1,5 @@
 // Regression test for the CORS/preflight handling that Firefox and Zen
-// Browser need (see README.md and the CORS_HEADERS comment in server.js).
+// Browser need (see the CORS_HEADERS comment in server.js).
 //
 // Chrome's content-script fetch() bypasses CORS entirely via the
 // extension's host_permissions grant, so a same-origin curl-style POST

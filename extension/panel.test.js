@@ -1,8 +1,7 @@
 // Unit tests for panel.js's pure logic: the SSE parser, the transcript
 // reducer, and the markdown parser. The DOM side (incremental rendering, the
 // header row, pane choice) is covered by e2e/panel-render.e2e.mjs in a real
-// headless Chromium, and by the live check against the real page (see
-// README.md, "Tutor tab on LeetCode").
+// headless Chromium, and by the live check against the real page.
 //
 // Run with: node --test panel.test.js
 

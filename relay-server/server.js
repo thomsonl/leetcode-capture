@@ -5,7 +5,7 @@
 // a per-problem monotonic attempt sequence number.
 //
 // Log file location: ./data/captures.jsonl (relative to this file), unless
-// overridden with the CAPTURE_LOG_PATH environment variable. See README.md.
+// overridden with the CAPTURE_LOG_PATH environment variable.
 // The log is cleared as the companion consumes it (see trimCaptureLog).
 
 const http = require("http");

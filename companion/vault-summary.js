@@ -3,9 +3,8 @@
 // Split out from companion.js so this feature's actual logic (building the
 // addendum, parsing the model's reply, writing the notes) can be exercised
 // directly by tests without booting companion.js's interactive readline
-// loop or relay-server lifecycle. See README.md → "Vault auto-summary" for
-// the full design and companion.js for how this gets wired into the capture
-// handling path.
+// loop or relay-server lifecycle. See companion.js for how this gets wired
+// into the capture handling path.
 //
 // The core constraint shaping this file: reuse the same backend response
 // already being shown in the terminal for a Submit, and never make a

@@ -5,7 +5,7 @@
 // key it didn't just receive from the user's keyboard: whoever stores the key
 // only ever reports whether one exists (`hasKey`).
 //
-// The tutor runs in one of two places (see README.md, "Runtimes"):
+// The tutor runs in one of two places (browser or helper):
 //   - In the browser (the "extension" runtime): the extension's background
 //     worker runs it, for a local model or an API key, nothing to install.
 //     Settings and keys live in the extension's own storage, and this page
@@ -723,7 +723,7 @@
         "Save Submit reviews to my Obsidian vault",
         inBrowser
           ? "Needs the helper app, which can write to your vault folder. Choose \"Through the helper app\" above to use it."
-          : "Turns the tutor's review of each Submit into a note. Needs a vault folder (see the README).",
+          : "Turns the tutor's review of each Submit into a note. Needs a vault folder.",
         inBrowser ? false : o.vaultAutoSummary,
         { locked: !inBrowser && helperLocked("vaultAutoSummary"), disabled: inBrowser || off }
       )

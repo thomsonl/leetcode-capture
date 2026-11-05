@@ -24,8 +24,7 @@
 //     built-in fetch. "openai" is the same backend against OpenAI's API.
 //   - "chatgpt": the Codex CLI on a ChatGPT sign-in (codex-backend.js).
 //
-// See the "Companion" section of the top-level README.md for setup,
-// environment variables, and exactly what credentials each backend needs.
+// Setup: the environment variables, and exactly what credentials each backend needs.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -202,7 +201,7 @@ const LOCAL_RESERVE_TOKENS = Number(process.env.COMPANION_LOCAL_RESERVE_TOKENS |
 // The other options also come from settings.js (`effective.options`):
 //   - vaultAutoSummary (VAULT_AUTO_SUMMARY), off by default: a portable
 //     checkout won't have this vault's Study/Algorithms structure, or even
-//     use Obsidian. See "Vault auto-summary" below and README.md.
+//     use Obsidian.
 //   - autoClearContext (COMPANION_AUTO_CLEAR_CONTEXT), on by default: see the
 //     "automatic context reset on problem switch" section below for why
 //     leaving it on is the safer default (a stale problem's code and
@@ -467,9 +466,8 @@ function backendLabel() {
 // it exits - one command instead of two. If a server was already running
 // (started separately, or left over from another companion instance), this
 // instance leaves it alone on both ends: it doesn't spawn a second one, and
-// it doesn't stop it on exit. See the "Companion" section of the top-level
-// README.md for the durability tradeoff this implies (captures during a gap
-// where companion.js isn't running are no longer durably logged).
+// it doesn't stop it on exit. The tradeoff: captures during a gap
+// where companion.js isn't running are no longer durably logged.
 
 // Set only if *this* process spawned the relay server; stays null if an
 // already-running server was found instead, so the exit handler below knows
@@ -678,8 +676,7 @@ function resetTutorContext() {
 // session progresses. The actual logic (building the addendum, parsing the
 // model's reply, writing the notes) lives in vault-summary.js, split out so
 // it can be unit-tested without booting this file's readline loop / relay
-// server lifecycle - see that file's header for the full design, and
-// README.md → "Vault auto-summary" for user-facing docs.
+// server lifecycle - see that file's header for the full design.
 
 // --- terminal chat loop ------------------------------------------------------
 //
