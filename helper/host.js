@@ -45,6 +45,7 @@ export const DEFAULTS = {
   relayIdleExitMs: 5 * 60 * 1000,
   stopTimeoutMs: 3000,
   startTimeoutMs: 5000,
+  reviveMs: 10 * 1000,
 };
 
 // Where the companion and relay live: LEETCODE_CAPTURE_ROOT, else the `root`
@@ -107,6 +108,7 @@ export function createHost({
   relayIdleExitMs = DEFAULTS.relayIdleExitMs,
   stopTimeoutMs = DEFAULTS.stopTimeoutMs,
   startTimeoutMs = DEFAULTS.startTimeoutMs,
+  reviveMs = DEFAULTS.reviveMs,
   rootError = null,
 }) {
   const port = env.CAPTURE_PORT ? Number(env.CAPTURE_PORT) : 8135;
@@ -118,6 +120,18 @@ export function createHost({
   let starting = null;
   let shuttingDown = null;
   let lastHeard = now();
+  let wantRunning = false;
+  let lastRevive = 0;
+
+  // One line in helper.log for each thing that matters when a start goes wrong.
+  function note(text) {
+    if (typeof logFd !== 'number') return;
+    try {
+      fs.writeSync(logFd, `[host ${new Date(now()).toISOString()}] ${text}\n`);
+    } catch {
+      // no log then
+    }
+  }
 
   function send(message) {
     try {
@@ -154,6 +168,36 @@ export function createHost({
     }
   }
 
+  // Whether a tutor (the companion) is attached to the relay: true, false, or
+  // null when that cannot be told. The relay's panel stream opens with a
+  // status event that says so.
+  async function companionOnline() {
+    const controller = new AbortController();
+    const timer = timers.setTimeout(() => controller.abort(), 1500);
+    try {
+      const response = await fetchImpl(`${base}/panel/events?after=0`, { signal: controller.signal });
+      if (!response || !response.body || typeof response.body.getReader !== 'function') return null;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      for (;;) {
+        // eslint-disable-next-line no-await-in-loop
+        const { done, value } = await reader.read();
+        if (done) return null;
+        text += decoder.decode(value, { stream: true });
+        const match = /"companionOnline":(true|false)/.exec(text);
+        if (match) {
+          controller.abort();
+          return match[1] === 'true';
+        }
+      }
+    } catch {
+      return null;
+    } finally {
+      timers.clearTimeout(timer);
+    }
+  }
+
   function startChild(script, extraEnv) {
     const child = spawn(execPath, [path.basename(script)], {
       cwd: path.join(root, path.dirname(script)),
@@ -167,8 +211,10 @@ export function createHost({
     if (child.stdin) child.stdin.on('error', () => {});
     child.on('error', (err) => {
       lastError = `could not start ${script}: ${err.message}`;
+      note(lastError);
     });
-    child.on('exit', () => {
+    child.on('exit', (code, signal) => {
+      note(`${script} exited (code ${code}, signal ${signal})`);
       if (!shuttingDown) send(status());
     });
     return child;
@@ -180,6 +226,15 @@ export function createHost({
       relayExternal = false;
       if (await relayUp()) {
         relayExternal = true;
+        note('a relay already answers on this port; leaving it alone');
+        // A relay somebody else started may have no tutor attached: then the
+        // extension's Settings page stays locked. Start one unless it is there.
+        if (!alive(companion) && (await companionOnline()) === false) {
+          note('no tutor is attached to that relay; starting the companion');
+          companion = startChild('companion/companion.js', { COMPANION_HEADLESS: '1' });
+        }
+        lastError = null;
+        send(status());
         return;
       }
       relay = startChild('relay-server/server.js', {
@@ -196,12 +251,14 @@ export function createHost({
       }
       if (!up) {
         lastError = `the relay did not start on ${base}`;
+        note(lastError);
         return;
       }
     }
     if (!alive(companion)) {
       companion = startChild('companion/companion.js', { COMPANION_HEADLESS: '1' });
     }
+    note(`started: relay pid ${relay && relay.pid}, companion pid ${companion && companion.pid}`);
     lastError = null;
     send(status());
   }
@@ -265,6 +322,8 @@ export function createHost({
         send(status(id));
         return;
       case 'start':
+        wantRunning = true;
+        note('start requested');
         await ensureStarted();
         send(status(id));
         return;
@@ -294,7 +353,22 @@ export function createHost({
     if (alive(relay)) {
       fetchImpl(`${base}/helper/keepalive`, { method: 'POST', headers: { 'x-lc-companion': '1' } }).catch(() => {});
     }
+    revive();
   }, Math.min(keepaliveMs, idleMs));
+
+  // Once asked to start, notice a relay or tutor that has gone away (a relay
+  // that was somebody else's and stopped, a child that crashed) and bring it
+  // back, at most every reviveMs.
+  async function revive() {
+    if (!wantRunning || starting || shuttingDown || rootError || now() - lastRevive < reviveMs) return;
+    const relayGone = relayExternal ? !(await relayUp()) : !alive(relay);
+    const companionGone = !relayExternal && !alive(companion);
+    if (relayGone || companionGone) {
+      lastRevive = now();
+      note('something went away; starting it again');
+      await ensureStarted().catch(() => {});
+    }
+  }
 
   const decoder = createDecoder({
     onMessage: (message) => {

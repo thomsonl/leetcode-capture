@@ -43,7 +43,7 @@ class FakeChild extends EventEmitter {
   }
 }
 
-function setup({ relayAlreadyUp = false, ignoresTerm = false, rootError = null, idleMs = 60000 } = {}) {
+function setup({ relayAlreadyUp = false, ignoresTerm = false, rootError = null, idleMs = 60000, panelStatus = null } = {}) {
   const input = new PassThrough();
   const output = new PassThrough();
   const received = [];
@@ -70,6 +70,11 @@ function setup({ relayAlreadyUp = false, ignoresTerm = false, rootError = null, 
     fetchImpl: async (url, init) => {
       fetches.push({ url, init });
       if (url.endsWith('/capture') && !relayListening) throw new Error('ECONNREFUSED');
+      if (url.includes('/panel/events') && panelStatus !== null) {
+        const chunk = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'status', companionOnline: panelStatus })}\n\n`);
+        let sent = false;
+        return { ok: true, status: 200, body: { getReader: () => ({ read: async () => (sent ? { done: true } : ((sent = true), { done: false, value: chunk })) }) } };
+      }
       return { ok: true, status: 204 };
     },
     now: () => clock,
@@ -85,6 +90,7 @@ function setup({ relayAlreadyUp = false, ignoresTerm = false, rootError = null, 
     exit: (code) => exits.push(code),
     idleMs,
     keepaliveMs: 1000,
+    reviveMs: 0,
     stopTimeoutMs: 50,
     rootError,
   });
@@ -108,6 +114,7 @@ function setup({ relayAlreadyUp = false, ignoresTerm = false, rootError = null, 
     exits,
     request,
     tick: () => intervals.forEach((i) => i.fn()),
+    setRelayListening: (on) => (relayListening = on),
     advance: (ms) => (clock += ms),
   };
 }
@@ -159,6 +166,41 @@ test('a relay that already answers is left alone, with no second companion', asy
   assert.equal(h.spawned.length, 0);
   assert.equal(reply.relay.state, 'external');
   assert.equal(reply.companion.state, 'stopped');
+});
+
+test('a relay started by someone else with no tutor attached gets the companion', async () => {
+  const h = setup({ relayAlreadyUp: true, panelStatus: false });
+  const reply = await h.request({ type: 'start', id: 1 });
+  assert.equal(h.spawned.length, 1);
+  assert.deepEqual(h.spawned[0].args, ['companion.js']);
+  assert.equal(reply.relay.state, 'external');
+  assert.equal(reply.companion.state, 'running');
+});
+
+test('a relay started by someone else that already has a tutor gets nothing added', async () => {
+  const h = setup({ relayAlreadyUp: true, panelStatus: true });
+  const reply = await h.request({ type: 'start', id: 1 });
+  assert.equal(h.spawned.length, 0);
+  assert.equal(reply.companion.state, 'stopped');
+});
+
+test('once asked to start, a relay that went away is started again', async () => {
+  const h = setup({ relayAlreadyUp: true, panelStatus: true });
+  await h.request({ type: 'start', id: 1 });
+  assert.equal(h.spawned.length, 0);
+  h.setRelayListening(false);
+  h.advance(20000);
+  h.tick();
+  await waitFor(() => h.spawned.length === 2, 'the relay and companion starting again');
+  assert.ok(h.spawned[0].options.cwd.endsWith('relay-server'));
+});
+
+test('before any start request nothing is brought back', async () => {
+  const h = setup();
+  h.advance(20000);
+  h.tick();
+  await sleep(30);
+  assert.equal(h.spawned.length, 0);
 });
 
 test('a missing checkout is reported and nothing is started', async () => {

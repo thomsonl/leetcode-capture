@@ -22,4 +22,4 @@ export const CHROME_EXTENSION_IDS = [];
 
 export const CHROME_ID_RE = /^[a-p]{32}$/;
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
