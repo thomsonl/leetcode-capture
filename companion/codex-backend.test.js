@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CodexBackend, buildCodexArgs, checkCodexLogin, codexSubscriptionEnv, parseCodexOutput } from './codex-backend.js';
+import { CodexBackend, buildCodexArgs, checkCodexLogin, codexSubscriptionEnv, parseCodexOutput, pathWithCodexDirs } from './codex-backend.js';
 import { SUMMARIZER_SYSTEM, SUMMARY_HEADER } from '../extension/shared/context-summary.js';
 
 const FAKE = `
@@ -89,8 +89,32 @@ test('parseCodexOutput takes the last agent message and reports failures', () =>
 });
 
 test('the subscription environment drops API keys so a ChatGPT sign-in is never swapped for billing', () => {
-  const env = codexSubscriptionEnv({ PATH: '/bin', CODEX_API_KEY: 'a', OPENAI_API_KEY: 'b', HOME: '/h' });
-  assert.deepEqual(env, { PATH: '/bin', HOME: '/h' });
+  const env = codexSubscriptionEnv({ PATH: '/bin', CODEX_API_KEY: 'a', OPENAI_API_KEY: 'b', HOME: '/h' }, { platform: 'linux' });
+  assert.equal(env.CODEX_API_KEY, undefined);
+  assert.equal(env.OPENAI_API_KEY, undefined);
+  assert.equal(env.HOME, '/h');
+  assert.ok(env.PATH.startsWith('/bin:'), 'the real PATH stays first');
+});
+
+test('codex is also searched for where npm -g puts it, after the real PATH, without duplicates', () => {
+  const { value } = pathWithCodexDirs({ PATH: '/usr/bin:/h/.npm-global/bin', HOME: '/h' }, { platform: 'linux' });
+  const parts = value.split(':');
+  assert.deepEqual(parts.slice(0, 2), ['/usr/bin', '/h/.npm-global/bin']);
+  assert.equal(parts.filter((p) => p === '/h/.npm-global/bin').length, 1);
+  assert.ok(parts.includes('/h/.local/bin') && parts.includes('/usr/local/bin'));
+  const win = pathWithCodexDirs({ Path: 'C:\\Windows', APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }, { platform: 'win32' });
+  assert.equal(win.key, 'Path');
+  assert.ok(win.value.split(';').some((d) => d.startsWith('C:\\Users\\a\\AppData\\Roaming') && d.endsWith('npm')));
+});
+
+test('a codex installed in a user npm folder is found although the helper was started with a desktop PATH', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const bin = path.join(home, '.npm-global', 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\necho "Logged in using ChatGPT"\n', { mode: 0o755 });
+  const login = await checkCodexLogin({ env: { PATH: '/usr/bin:/bin', HOME: home } });
+  assert.deepEqual(login, { ok: true, message: 'Logged in using ChatGPT' });
 });
 
 test('a turn spawns codex with the right arguments, the prompt on stdin, and no API keys in its environment', async (t) => {

@@ -26,6 +26,8 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { buildMessages } from '../extension/shared/context-budget.js';
 import { formatPinnedCode } from '../extension/shared/code-ledger.js';
 import { flattenMessages, normalizeConversation } from '../extension/shared/conversation.js';
@@ -38,9 +40,50 @@ const MAX_STDERR_CHARS = 2000;
 // ChatGPT sign-in the user picked this provider for.
 const API_KEY_ENV = ['CODEX_API_KEY', 'OPENAI_API_KEY'];
 
-export function codexSubscriptionEnv(env = process.env) {
+// A helper started by the browser (or a desktop launcher) gets the session's
+// PATH, not the shell profile's, so a Codex installed with `npm install -g`
+// into a user folder (~/.npm-global, nvm, volta) is invisible to it and was
+// reported as "not installed". These are the usual places, appended after the
+// real PATH so a system install still wins.
+export function codexSearchDirs({ env = process.env, home = env.HOME || env.USERPROFILE || os.homedir(), platform = process.platform } = {}) {
+  const dirs = [];
+  if (platform === 'win32') {
+    if (env.APPDATA) dirs.push(path.join(env.APPDATA, 'npm'));
+    if (env.LOCALAPPDATA) dirs.push(path.join(env.LOCALAPPDATA, 'Programs', 'codex'));
+    return dirs;
+  }
+  if (env.npm_config_prefix) dirs.push(path.join(env.npm_config_prefix, 'bin'));
+  dirs.push(
+    path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.local', 'bin'),
+    path.join(home, '.volta', 'bin'),
+    path.join(home, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin'
+  );
+  try {
+    const nvm = path.join(home, '.nvm', 'versions', 'node');
+    for (const version of fs.readdirSync(nvm)) dirs.push(path.join(nvm, version, 'bin'));
+  } catch {
+    // no nvm
+  }
+  return dirs;
+}
+
+export function pathWithCodexDirs(env = process.env, options = {}) {
+  const platform = options.platform || process.platform;
+  const delimiter = platform === 'win32' ? ';' : ':';
+  const key = platform === 'win32' ? Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'Path' : 'PATH';
+  const have = String(env[key] || '').split(delimiter).filter(Boolean);
+  const extra = codexSearchDirs({ env, ...options }).filter((d) => !have.includes(d));
+  return { key, value: [...have, ...extra].join(delimiter) };
+}
+
+export function codexSubscriptionEnv(env = process.env, options = {}) {
   const out = { ...env };
   for (const name of API_KEY_ENV) delete out[name];
+  const { key, value } = pathWithCodexDirs(out, options);
+  out[key] = value;
   return out;
 }
 
