@@ -537,7 +537,8 @@ await scenario('models card: subscription models are kept by the helper too, and
   let rows = await profileRows(page);
   assert.deepEqual(rows.map((r) => [r.name, r.isDefault]), [['claude-haiku-5-5', true]], 'the old setting is one default model');
   await page.eval(`(() => { const s = document.getElementById('add-provider'); s.value = 'claude'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await page.type('#add-model', 'claude-sonnet-5');
+  assert.deepEqual(await page.eval(`[...document.getElementById('add-model').options].map((o) => o.textContent)`), ['Default', 'Sonnet (latest)', 'Opus (latest)', 'Haiku (latest)', 'Other (type a name)...'], 'the Claude subscription offers its models in a dropdown');
+  await page.eval(`(() => { const s = document.getElementById('add-model'); s.value = 'sonnet'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await page.type('#add-label', 'Sonnet');
   await page.click('#add-profile-button');
   await page.eval(`(() => { const s = document.getElementById('add-provider'); s.value = 'local'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
@@ -553,12 +554,24 @@ await scenario('models card: subscription models are kept by the helper too, and
   await page.click('#save');
   await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'save confirmation' });
   const patch = lastCall(page, 'save').body.params.patch;
-  assert.deepEqual(patch.profiles.map((p) => p.model), ['claude-haiku-5-5', 'claude-sonnet-5'], 'only the helper\'s models go to the helper');
+  assert.deepEqual(patch.profiles.map((p) => p.model), ['claude-haiku-5-5', 'sonnet'], 'only the helper\'s models go to the helper');
   assert.equal(patch.activeProfile, rows[0].id);
   const stored = await browser.serviceWorkerEval(`chrome.storage.local.get(null)`);
-  assert.deepEqual(stored.tutorSettings.profiles.map((p) => p.model), ['claude-haiku-5-5', 'claude-sonnet-5', 'llama3.2'], 'the extension keeps the whole list');
+  assert.deepEqual(stored.tutorSettings.profiles.map((p) => p.model), ['claude-haiku-5-5', 'sonnet', 'llama3.2'], 'the extension keeps the whole list');
   assert.equal(stored.tutorSettings.activeProfile, rows[0].id);
   await page.screenshot(path.join(shots, 'models-card-helper-dark.png'), { scheme: 'dark' });
+});
+
+await scenario('the Claude subscription card: a dropdown of Claude Code model names, a saved alias is selected, Other types one', companion({
+  stored: applyPatch(emptySettings(), { provider: 'claude', providers: { claude: { model: 'opus' } } }),
+}), async (page) => {
+  const m = await page.eval(`(() => { const s = document.getElementById('claude-model'); return { tag: s.tagName, value: s.value, options: [...s.options].map((o) => o.textContent) }; })()`);
+  assert.equal(m.tag, 'SELECT');
+  assert.equal(m.value, 'opus', 'a saved alias is the selected one');
+  assert.deepEqual(m.options, ['Default', 'Sonnet (latest)', 'Opus (latest)', 'Haiku (latest)', 'Other (type a name)...']);
+  await page.eval(`(() => { const s = document.getElementById('claude-model'); s.value = '__other__'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  assert.equal(await page.eval(`document.getElementById('claude-model').tagName`), 'INPUT', '"Other" turns it into a text box');
+  await page.screenshot(path.join(shots, 'claude-model-dark.png'), { scheme: 'dark' });
 });
 
 // ---- live: the real relay and companion ------------------------------------------

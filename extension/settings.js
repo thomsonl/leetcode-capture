@@ -555,6 +555,32 @@
     return select;
   }
 
+  // The Claude subscription's models: Claude Code's own aliases, which always
+  // mean the newest of that kind, so the list never goes out of date.
+  const CLAUDE_PRESETS = [
+    ["", "Default"],
+    ["sonnet", "Sonnet (latest)"],
+    ["opus", "Opus (latest)"],
+    ["haiku", "Haiku (latest)"],
+  ];
+
+  // A dropdown of those, keeping a name typed earlier, with "Other" to type one.
+  function presetSelect(value, attrs, flag) {
+    const select = h("select", { ...attrs, onchange: () => {
+      if (select.value === OTHER) {
+        typeModelByHand[flag] = true;
+        const box = h("input", { ...attrs, type: "text", value: "", placeholder: "Model name" });
+        select.replaceWith(box);
+        box.focus();
+      }
+    } });
+    const known = CLAUDE_PRESETS.some(([v]) => v === value);
+    for (const [v, text] of CLAUDE_PRESETS) select.appendChild(h("option", { value: v, text, selected: v === value }));
+    if (!known) select.appendChild(h("option", { value, text: value, selected: true }));
+    select.appendChild(h("option", { value: OTHER, text: "Other (type a name)..." }));
+    return select;
+  }
+
   // On opening the page, fill the dropdown without asking for anything: only
   // when the browser already lets the extension reach the server.
   const autoFound = new Set();
@@ -591,6 +617,8 @@
       input = h("input", { ...attrs, type: "number", min: "1024", max: "2000000", step: "1024", value });
     } else if (field === "model" && id === "local" && !typeModelByHand[id]) {
       input = modelSelect(id, value, attrs);
+    } else if (field === "model" && id === "claude" && !typeModelByHand[id]) {
+      input = presetSelect(value, attrs, id);
     } else {
       input = h("input", {
         ...attrs,
@@ -1059,6 +1087,8 @@
     if (addProvider === "local" && !typeModelByHand.add) {
       // "Other" in this dropdown types a name here, not in the card.
       model = modelSelect("local", keepModel && (foundModels.local || []).includes(keepModel) ? keepModel : "", { id: "add-model", autocomplete: "off", spellcheck: "false" }, "add");
+    } else if (addProvider === "claude" && !typeModelByHand.add) {
+      model = presetSelect(keepModel && CLAUDE_PRESETS.some(([v]) => v === keepModel) ? keepModel : "", { id: "add-model", autocomplete: "off", spellcheck: "false" }, "add");
     } else {
       const required = catalog[addProvider].requires.includes("model");
       model = h("input", {
