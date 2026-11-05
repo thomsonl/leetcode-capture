@@ -2008,6 +2008,14 @@
   }
 
   function describeConnection() {
+    if (extensionGone) {
+      return {
+        label: "Offline",
+        ok: false,
+        light: "bad",
+        banner: "The extension was updated, reloaded or turned off. Reload this page to use the tutor again.",
+      };
+    }
     if (sourceReachable === false && transport === extensionTransport) {
       return {
         label: "Offline",
@@ -2068,6 +2076,10 @@
   }
 
   function emptyStateText(conn, slug) {
+    if (extensionGone) return "After you reload this page, your Run and Submit attempts and the tutor's replies show up here.";
+    if (sourceReachable === false && transport === extensionTransport) {
+      return "Once the extension's tutor is back, your Run and Submit attempts and the tutor's replies show up here.";
+    }
     if (sourceReachable === false && providerChosen === false) {
       return "Once you choose a model in the extension options, your Run and Submit attempts and the tutor's replies show up here.";
     }
@@ -2690,7 +2702,11 @@
     p.send.disabled = !canSend || sending || !p.input.value.trim() || p.input.value.length > MAX_MESSAGE_CHARS;
     p.input.placeholder = canSend
       ? "Ask the tutor about this problem"
-      : sourceReachable === false && providerChosen === false
+      : extensionGone
+        ? "Reload the page to chat"
+        : sourceReachable === false && transport === extensionTransport
+          ? "Waiting for the tutor"
+          : sourceReachable === false && providerChosen === false
         ? "Choose a model to chat"
         : "Start the companion to chat";
   }
@@ -3727,6 +3743,9 @@
   let bgPort = null;
   let bgDelay = 500;
   let providerChosen = null; // from the worker: whether a provider is chosen at all
+  // The extension was reloaded, updated or turned off under this page: the
+  // browser never reconnects an old page's scripts, so only a reload helps.
+  let extensionGone = false;
   // From the worker: the Native Messaging helper's state when the extension
   // is set to launch it ("not-installed", "error", ...), or null.
   let helperState = null;
@@ -3811,10 +3830,17 @@
         noteApplied(streamLost(state));
       }
       // The extension was reloaded or removed under this page: there is no
-      // worker to come back to.
-      if (!extensionRuntime()) return;
+      // worker to come back to. The browser drops the runtime only after
+      // this event, so the retry looks again.
+      const gone = () => {
+        extensionGone = true;
+        scheduleRender();
+      };
+      if (!extensionRuntime()) return void gone();
       setTimeout(() => {
-        if (!bgPort) connectWorker();
+        if (bgPort) return;
+        if (!extensionRuntime()) gone();
+        else connectWorker();
       }, bgDelay);
       bgDelay = Math.min(bgDelay * 2, 10000);
     });
