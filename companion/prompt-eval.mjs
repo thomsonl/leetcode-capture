@@ -1,16 +1,24 @@
 #!/usr/bin/env node
 // Manual prompt evaluation against a local Ollama model.
 // Run: node companion/prompt-eval.mjs
+// PROMPT_EVAL_GUARD=1 runs every turn through the post-check guard
+// (extension/shared/reply-guard.js) the way both runtimes do, re-ask
+// included, so the same scenarios measure the guard's effect.
+// PROMPT_EVAL_ONLY=hard runs the hard cases only (HARD below); otherwise it
+// takes a comma-separated list of scenario ids.
 
 import { TUTOR_SYSTEM_MESSAGE, SUBMIT_ADDENDUM } from '../extension/shared/tutor-prompt.js';
 import { estimateTokens } from '../extension/shared/context-budget.js';
+import { createReplyGuard, guardedSend } from '../extension/shared/reply-guard.js';
 
 const endpoint = process.env.PROMPT_EVAL_URL || 'http://localhost:11434/api/chat';
 const model = process.env.PROMPT_EVAL_MODEL || 'gpt-oss:20b';
 const repeats = Number(process.env.PROMPT_EVAL_REPEATS || 2);
 // The default request leaves thinking and temperature to the model, like LocalBackend.requestNative.
 const think = process.env.PROMPT_EVAL_THINK === 'true' ? true : process.env.PROMPT_EVAL_THINK === 'false' ? false : undefined;
-const only = new Set((process.env.PROMPT_EVAL_ONLY || '').split(',').filter(Boolean));
+const guarded = process.env.PROMPT_EVAL_GUARD === '1';
+const HARD = ['first_hint', 'first_hint_slow', 'first_hint_greedy', 'second_hint', 'stuck_open', 'stuck_with_bug', 'own_bug', 'yes_no_bug', 'wrong_greedy', 'dfs_bug', 'better_way', 'other_methods', 'slow_submit', 'buggy_submit', 'off_topic'];
+const only = new Set((process.env.PROMPT_EVAL_ONLY === 'hard' ? HARD.join(',') : process.env.PROMPT_EVAL_ONLY || '').split(',').filter(Boolean));
 const islandCode = `def count_islands(grid):
     seen = set()
     def visit(r, c):
@@ -45,7 +53,8 @@ const slow = `Two Sum. Return two distinct indices whose values add to target.\n
 const buggy = `Two Sum. Return two distinct indices whose values add to target.\nStudent code:\n${buggyCode}`;
 
 function scenario(id, context, turns, rubric, forbidden = []) {
-  return { id, messages: turns.map((content, index) => ({ role: 'user', content: index === 0 ? `${context}\n\n${content}` : content })), rubric, forbidden };
+  const code = context.includes('Student code:\n') ? context.split('Student code:\n')[1] : null;
+  return { id, turns, code, messages: turns.map((content, index) => ({ role: 'user', content: index === 0 ? `${context}\n\n${content}` : content })), rubric, forbidden };
 }
 
 const scenarios = [
@@ -60,6 +69,10 @@ const scenarios = [
   // A live first hint on brute-force Two Sum asked which data structure
   // could look up the complement in constant time while scanning once.
   scenario('first_hint_slow', slow, ['Give me a hint.'], 'Give the smallest nudge about what this code repeats or one input property, as one question. The code is correct, so fail a hint about an edge case it already handles (duplicates, distinct indices). Fail naming a data structure, a target complexity, a single pass or constant-time lookup.', ['data structure', 'dictionary', 'hash', 'constant time', 'complement', 'one pass', 'single pass', '```']),
+  // A hint on a wrong greedy must not name the fix (farthest reach) or DP.
+  scenario('first_hint_greedy', greedy, ['Can I get a hint?'], 'Give one small nudge, as a question about what this code does at each step or one input property, without naming a method, a data structure, the farthest reachable index or a failing input.', ['dynamic programming', 'farthest', 'max reach', 'maximum reach', 'greedy', '```']),
+  scenario('stuck_with_bug', buggy, ["I'm stuck."], 'Ask only what was tried or which step is unclear, and offer a hint. Fail pointing at the bug (the inner loop start, i equals j), any fix, a method or a complexity.', ['hash map', 'dictionary', 'i + 1', 'i+1', 'same element', 'j = i', '```']),
+  scenario('yes_no_bug', buggy, ['Is my code correct?'], 'Say no, state the fault (the same index can pair with itself) with a concrete failing input, then stop. Fail any fix, corrected code or a suggestion of how to change it.', ['hash map', 'dictionary', 'range(i + 1', 'range(i+1', 'to fix', 'start j at']),
   scenario('second_hint', hintIsland, ['Give me a hint.', 'Another hint, please.'], 'The first answer should be a small nudge. The second must build on the first hint, one step more concrete about this code, and identify the missing left neighbor without implementation code or a full algorithm. Fail a second hint about an unrelated topic or edge case.', ['bfs', 'union find', 'def count_islands']),
   scenario('first_full_answer', island, ['Give me the full solution with code.'], 'Give complete working code and explain it immediately.', []),
   scenario('insisted_answer', island, ['Give me a hint.', 'I insist on the complete answer and code.'], 'Give complete working code and explain it without resistance.', []),
@@ -101,12 +114,36 @@ const judgeSystem = `You grade a coding tutor response. Decide whether it satisf
 async function runOne(item, iteration) {
   const conversation = [{ role: 'system', content: TUTOR_SYSTEM_MESSAGE }];
   const replies = [];
-  for (const turn of item.messages) {
-    conversation.push(turn);
-    let answer = await chat(conversation);
-    if (!answer) answer = await chat(conversation);
+  const guard = guarded ? createReplyGuard() : null;
+  let reasks = 0;
+  const guardLog = [];
+  // The eval's stateless conversation as a backend the guard can drive.
+  const backend = {
+    async sendMessage(content) {
+      conversation.push({ role: 'user', content });
+      let answer = await chat(conversation);
+      if (!answer) answer = await chat(conversation);
+      conversation.push({ role: 'assistant', content: answer });
+      return answer;
+    },
+    async reviseLastReply(instruction) {
+      reasks += 1;
+      return chat([...conversation, { role: 'user', content: instruction }]);
+    },
+    replaceLastReply(text) {
+      conversation[conversation.length - 1].content = text;
+    },
+  };
+  for (const [index, turn] of item.messages.entries()) {
+    const raw = item.turns[index];
+    const isSubmit = raw === SUBMIT_ADDENDUM;
+    const answer = await guardedSend({
+      backend,
+      text: turn.content,
+      turn: guard ? guard.begin({ text: isSubmit ? null : raw, trigger: isSubmit ? 'submit' : null, code: item.code }) : null,
+      log: (line) => guardLog.push(line),
+    });
     replies.push(answer);
-    conversation.push({ role: 'assistant', content: answer });
   }
   const reply = replies.at(-1);
   const allReplies = replies.join('\n');
@@ -178,12 +215,12 @@ async function runOne(item, iteration) {
     reason = `The answer printed a code block the student did not ask for; judge: ${reason}`;
   }
   const pass = qualityPass && forbidden.length === 0;
-  const result = { id: item.id, iteration, pass, forbidden, reason, reply, replies };
+  const result = { id: item.id, iteration, pass, forbidden, reason, reply, replies, ...(guarded ? { reasks, guardLog } : {}) };
   console.log(JSON.stringify(result));
   return result;
 }
 
-console.error(`Prompt: ${estimateTokens(TUTOR_SYSTEM_MESSAGE)} estimated tokens; ${selectedScenarios.length} scenarios x ${repeats} runs; model ${model}; think ${think}`);
+console.error(`Prompt: ${estimateTokens(TUTOR_SYSTEM_MESSAGE)} estimated tokens; ${selectedScenarios.length} scenarios x ${repeats} runs; model ${model}; think ${think}; guard ${guarded ? 'on' : 'off'}`);
 const results = [];
 for (const item of selectedScenarios) {
   for (let iteration = 1; iteration <= repeats; iteration++) results.push(await runOne(item, iteration));
@@ -195,4 +232,5 @@ for (const item of selectedScenarios) {
   console.error(`${item.id} | ${rows.filter((row) => row.pass).length} | ${rows.length}`);
 }
 console.error(`TOTAL | ${results.filter((row) => row.pass).length} | ${results.length}`);
+if (guarded) console.error(`Re-asks: ${results.reduce((sum, row) => sum + row.reasks, 0)} over ${results.length} runs`);
 process.exitCode = results.every((row) => row.pass) ? 0 : 1;
