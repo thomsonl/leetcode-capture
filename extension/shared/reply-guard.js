@@ -244,6 +244,20 @@ export function repairProse(text) {
     .join('');
 }
 
+// A fenced block as shown: program code is never touched; in a trace or a
+// diagram, a Unicode arrow becomes ASCII only on a line with no box drawing
+// or pipe, where the extra character cannot break an alignment.
+export function repairBlock(unit) {
+  if (isCodeBlock(unit.info, unit.body)) return unit.text;
+  return unit.text
+    .split('\n')
+    .map((line) => (/[\u2500-\u257F|]/.test(line) ? line : line
+      .replace(/\u2192|\u27F6|\u279C|\u2794/g, '->')
+      .replace(/\u2190|\u27F5/g, '<-')
+      .replace(/\u21D2|\u27F9/g, '=>')))
+    .join('\n');
+}
+
 // ---- policies ----------------------------------------------------------------------
 
 // What a turn of each kind may and may not contain. `mode` is how the gate
@@ -504,7 +518,7 @@ function createGate(policy, context, { collect = false } = {}) {
       afterDrop = true;
       return '';
     }
-    const text = unit.type === 'fence' ? unit.text : repairProse(unit.text);
+    const text = unit.type === 'fence' ? repairBlock(unit) : repairProse(unit.text);
     if (leadIn !== null && unit.type === 'prose' && !text.trim()) {
       leadIn += text;
       return '';
@@ -807,7 +821,7 @@ function heldStop(policy) {
 // A held reply's text as shown: prose repaired, code blocks as they are.
 function repairHeld(text) {
   return splitUnits(text)
-    .map((unit) => (unit.type === 'fence' ? unit.text : repairProse(unit.text)))
+    .map((unit) => (unit.type === 'fence' ? repairBlock(unit) : repairProse(unit.text)))
     .join('')
     .trim();
 }

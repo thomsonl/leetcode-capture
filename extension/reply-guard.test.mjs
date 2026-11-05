@@ -355,3 +355,11 @@ test('a hard-wrapped sentence is checked and dropped whole, never cut in half', 
     assert.equal(shown, 'No. Your DFS goes as deep as the island is big, so the\ncall stack passes the limit. \n\n- First point.\n- Second point\n');
   }
 });
+
+test('arrows in a trace block become ASCII, but never in code or a box diagram', async () => {
+  const reply = 'Trace:\n\n```\npos = 0 \u2192 pos = 2\n```\n\n```\n\u250C\u2500\u2500\u2510 \u2192 \u250C\u2500\u2500\u2510\n```\n';
+  const backend = { async sendMessage(_t, { onChunk }) { onChunk(reply); return reply; } };
+  const shown = await guardedSend({ backend, text: 'q', turn: createReplyGuard().begin({ text: 'Trace my code on [2, 0].', code: islandCode }) });
+  assert.match(shown, /pos = 0 -> pos = 2/);
+  assert.match(shown, /\u2510 \u2192 \u250C/);
+});
