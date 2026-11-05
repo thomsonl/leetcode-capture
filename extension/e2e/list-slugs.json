@@ -828,13 +828,13 @@
             "find-all-anagrams-in-a-string",
             "minimum-height-trees",
             "task-scheduler",
-            "lru-cache",
-            "kth-smallest-element-in-a-bst"
+            "lru-cache"
           ]
         },
         {
           "title": "Week 8",
           "slugs": [
+            "kth-smallest-element-in-a-bst",
             "minimum-window-substring",
             "serialize-and-deserialize-binary-tree",
             "trapping-rain-water",

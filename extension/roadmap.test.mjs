@@ -166,6 +166,18 @@ test('Blind 75 is the original post: its categories, their order and each one\'s
   assert.deepEqual([...nc].filter((s) => !ours.has(s)), ['combination-sum']);
 });
 
+test('Grind 75 is the site\'s default schedule: its weeks, the problems in order and their difficulty', () => {
+  const site = snapshot('grind-75.txt')['grind-75'];
+  assert.deepEqual(GRIND_75.topics.map((t) => t.title), site.map((g) => g.title));
+  // The site still grades this one Easy; LeetCode (and so the catalog) says Medium.
+  const regraded = { 'lowest-common-ancestor-of-a-binary-search-tree': 'Medium' };
+  GRIND_75.topics.forEach((t, i) => {
+    assert.deepEqual(t.problems.map((p) => p.slug), site[i].slugs.map(([slug]) => slug), t.title);
+    for (const [slug, d] of site[i].slugs) assert.equal(GRIND_75.topics[i].problems.find((p) => p.slug === slug).difficulty, regraded[slug] || DIFFICULTY[d], slug);
+  });
+  assert.deepEqual(GRIND_75.topics.map((t) => t.problems.length), [13, 12, 8, 8, 8, 9, 7, 10]);
+});
+
 test('the source script reads each site the way the site does', () => {
   // Grind 75: by priority while the budget lasts (120 minutes: b and c fit,
   // a would not), then by difficulty
@@ -282,10 +294,20 @@ test('every list groups by subject: Grind 75, whose groups are weeks, also has o
   const nc = NEETCODE_150.topics.map((t) => t.id);
   assert.deepEqual(subjects.map((s) => s.id), nc.filter((id) => subjects.some((s) => s.id === id)));
   for (const s of subjects) assert.equal(s.title, NEETCODE_150.topics.find((t) => t.id === s.id).title);
+  // Each problem's subject is the topic neetcode.io gives it (NeetCode 150,
+  // else NeetCode 250, else neetcode.io's full catalog); only the four
+  // neetcode.io does not have are judgment calls (see the data's comment).
+  const site = snapshot('neetcode-lists.txt');
+  const titleOf = new Map(subjects.map((s) => [s.id, s.title]));
+  const judged = { '01-matrix': 'graphs', 'first-bad-version': 'binary-search', 'string-to-integer-atoi': 'arrays-hashing', 'basic-calculator': 'stack' };
   for (const p of problems) {
-    const inNc = problemInList(NEETCODE_150, p.slug);
+    const inNc = problemInList(NEETCODE_150, p.slug) || problemInList(NEETCODE_250, p.slug);
+    const other = site['grind75-others'].find((g) => g.slugs.some(([slug]) => slug === p.slug));
     if (inNc) assert.equal(p.subject, inNc.topic, p.slug);
+    else if (other) assert.equal(titleOf.get(p.subject), other.title, p.slug);
+    else assert.equal(p.subject, judged[p.slug], `${p.slug} is on no neetcode.io list`);
   }
+  assert.equal(problems.filter((p) => judged[p.slug]).length, 4);
   // The weeks stay the order: what comes next does not change with subjects.
   assert.equal(nextOnRoadmap(GRIND_75, ['two-sum'])[0].slug, 'valid-parentheses');
   assert.equal(moreOfTopic(GRIND_75, [], 'two-sum').topic.id, 'arrays-hashing');

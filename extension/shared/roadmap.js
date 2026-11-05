@@ -657,12 +657,22 @@ export const BLIND_75 = defineList({
   ],
 });
 
-// Grind 75 (Yangshun Tay, techinterviewhandbook.org/grind75) in its default
-// schedule: 8 weeks at 8 hours a week, in its order.
+// Grind 75 (Yangshun Tay, https://www.techinterviewhandbook.org/grind75) as
+// the site shows it at its defaults: 8 weeks at 8 hours a week, ordered by
+// difficulty, grouped by weeks. The site computes that from its own data (169
+// questions): it takes questions by priority while 1.96 minutes per minute of
+// each one's duration fit in 60 * 8 * 8, which gives exactly these 75, orders
+// them Easy, Medium, Hard (keeping priority order inside each), and starts a
+// new week once the next one would pass 60 * 8. Other settings change both
+// the set and the weeks (12 weeks gives 111 questions), so this list is only
+// the default. e2e/grind-75.txt is that result, written by
+// scripts/list-sources.mjs, and roadmap.test.mjs compares it. The site still
+// grades Lowest Common Ancestor of a Binary Search Tree Easy; LeetCode now
+// says Medium, and the catalog keeps LeetCode's grade.
 export const GRIND_75 = defineList({
   id: 'grind-75',
   title: 'Grind 75',
-  description: 'Yangshun Tay\'s updated Blind 75, in eight weekly sets or by subject.',
+  description: 'By the Blind 75 author: the site\'s default eight weeks, or by subject.',
   groupNoun: 'week',
   groups: [
   ['week-1', 'Week 1', `
@@ -736,9 +746,9 @@ export const GRIND_75 = defineList({
     find-all-anagrams-in-a-string
     minimum-height-trees
     task-scheduler
-    lru-cache
-    kth-smallest-element-in-a-bst`],
+    lru-cache`],
   ['week-8', 'Week 8', `
+    kth-smallest-element-in-a-bst
     minimum-window-substring
     serialize-and-deserialize-binary-tree
     trapping-rain-water
@@ -750,16 +760,16 @@ export const GRIND_75 = defineList({
     largest-rectangle-in-histogram`],
   ],
   // Grind 75 groups by week only, so each problem also gets one subject, in
-  // NeetCode's topic names and order: its NeetCode 150 topic; else its
-  // Blind 75 category, Top Interview 150 section or Top 100 Liked group, put
-  // under the NeetCode topic of the same name (Hashmap and Array / String are
-  // Arrays & Hashing, Binary Tree General is Trees); else by judgment (Flood
-  // Fill, 01 Matrix, Accounts Merge and Minimum Height Trees are Graphs,
-  // Implement Queue using Stacks is Stack, First Bad Version is Binary Search,
-  // Longest Palindrome is Arrays & Hashing, Middle of the Linked List is
-  // Linked List, Sort Colors is Two Pointers, String to Integer (atoi) is Math
-  // & Geometry, Maximum Profit in Job Scheduling is 1-D Dynamic Programming).
-  // roadmap.test.mjs checks the first rule.
+  // NeetCode's topic names and order: the topic neetcode.io itself gives the
+  // problem (its NeetCode 150 topic, else its NeetCode 250 topic, else the
+  // topic in neetcode.io's full catalog; e2e/neetcode-lists.txt has all three,
+  // and roadmap.test.mjs checks the rule). Four are not on neetcode.io at all
+  // and follow their LeetCode tags (shared/problem-index.js): 01 Matrix (Array,
+  // Dynamic Programming, Matrix, Breadth-First Search) is Graphs, a grid BFS
+  // like Rotting Oranges; First Bad Version (Binary Search, Interactive) is
+  // Binary Search; String to Integer (atoi) (String only) is Arrays & Hashing,
+  // where NeetCode puts plain string problems; Basic Calculator (String, Math,
+  // Stack, Recursion) is Stack.
   subjects: [
   ['arrays-hashing', 'Arrays & Hashing', `
     two-sum
@@ -768,17 +778,18 @@ export const GRIND_75 = defineList({
     longest-palindrome
     majority-element
     contains-duplicate
-    product-of-array-except-self`],
+    product-of-array-except-self
+    sort-colors
+    string-to-integer-atoi
+    find-all-anagrams-in-a-string`],
   ['two-pointers', 'Two Pointers', `
     valid-palindrome
     3sum
-    sort-colors
     container-with-most-water
     trapping-rain-water`],
   ['sliding-window', 'Sliding Window', `
     best-time-to-buy-and-sell-stock
     longest-substring-without-repeating-characters
-    find-all-anagrams-in-a-string
     minimum-window-substring`],
   ['stack', 'Stack', `
     valid-parentheses
@@ -851,7 +862,6 @@ export const GRIND_75 = defineList({
   ['bit-manipulation', 'Bit Manipulation', `
     add-binary`],
   ['math-geometry', 'Math & Geometry', `
-    string-to-integer-atoi
     spiral-matrix`],
   ],
 });
