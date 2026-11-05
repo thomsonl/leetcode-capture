@@ -10,38 +10,34 @@ Optional add-ons can also log your progress as notes into an Obsidian vault.
 
 ## Install
 
-With a local model or an API key you only need the browser extension: skip to "Then load the browser extension" below.
-For a Claude or ChatGPT subscription, pick your OS and run its commands first.
+1. Get the code:
 
-**macOS**
 ```sh
-brew install node
-curl -fsSL https://claude.ai/install.sh | bash
+git clone https://github.com/thomsonl/leetcode-capture.git
+cd leetcode-capture
 ```
 
-**Linux**
+2. Load the extension.
+
+**Chrome:** open `chrome://extensions`, turn on "Developer mode", click "Load unpacked" and pick the `extension/` folder.
+**Firefox:** open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on" and pick `extension/manifest.json`.
+
+3. Open any problem on leetcode.com.
+The Tutor tab is next to Description, and its gear opens Settings.
+Pick a model there: a local model (Ollama, LM Studio) or an API key works with nothing else to install.
+
+4. For a Claude or ChatGPT subscription, install Node, sign in to `claude` or `codex` once, then run the command shown on the Settings page, Helper card:
+
 ```sh
-sudo apt install nodejs npm   # or your distro's package manager
-curl -fsSL https://claude.ai/install.sh | bash
+npx leetcode-capture-helper install --chrome-id <your extension id>
 ```
 
-**Windows (PowerShell)**
-```powershell
-winget install OpenJS.NodeJS.LTS
-irm https://claude.ai/install.ps1 | iex
+Chrome warns about `background.scripts` when it loads the repo folder, because the manifest lists that key for Firefox.
+To avoid the warning, build a Chrome folder and load that instead:
+
+```sh
+node extension/scripts/build.mjs --browser chrome --out ~/leetcode-tutor-build
 ```
-
-Then load the browser extension.
-
-**Chrome:** open `chrome://extensions`, enable "Developer mode", click "Load unpacked", and select the `extension/` folder.
-**Firefox:** open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on", and select `extension/manifest.json`.
-
-It shows as "Thomson's LeetCode Tutor" in the extensions list.
-Open any `leetcode.com/problems/<slug>/` page to confirm it loaded.
-
-Chrome prints a warning about `background.scripts` when it loads the repo folder, because the manifest lists that key for Firefox.
-For a warning-free Chrome folder, run `node extension/scripts/build.mjs --browser chrome --out <dir>` and load `<dir>` instead.
-It copies only the files the browser needs and drops `background.scripts` from the copy; `--browser firefox` copies the manifest unchanged.
 
 ## Runtimes
 
