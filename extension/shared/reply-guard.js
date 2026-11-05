@@ -601,8 +601,8 @@ function createGate(policy, context, { collect = false } = {}) {
 
 // Where the first complete prose unit at the start of `text` ends (an index
 // past it), or 0 when none is complete yet. A unit ends after a newline, or
-// (sentence units) after a sentence end (. ! ? and closing marks) followed by
-// spaces and more text on the same line, or (word units) before the last
+// (sentence units) after a sentence end (. ! ? and closing marks) and the
+// spaces after it, or (word units) before the last
 // space that has a plain character after it and no dash before it. Inline
 // code spans are never split.
 function proseUnitEnd(text, final, word) {
@@ -635,7 +635,12 @@ function proseUnitEnd(text, final, word) {
         while (k < text.length && SPACE_RE.test(text[k])) k += 1;
         // "e.g." and the like are not sentence ends.
         if (ch === '.' && /\b(?:e\.g|i\.e|etc|vs|approx|Dr|Mr|Ms|Mrs)$/i.test(text.slice(Math.max(0, i - 6), i))) continue;
-        if (k < text.length && text[k] !== '\n') return k;
+        // Nor is a list marker ("1. ") at the start of a line.
+        if (ch === '.' && /^[ \t]*\d+$/.test(text.slice(text.lastIndexOf('\n', i) + 1, i))) continue;
+        // Released as soon as its trailing space arrives (more spaces, or a
+        // newline, start the next unit), so a sentence never waits for the
+        // next one to begin.
+        if (k === text.length || text[k] !== '\n') return k;
       }
     }
   }
