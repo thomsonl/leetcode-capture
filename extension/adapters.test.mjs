@@ -254,3 +254,46 @@ test('the system message carries the diagram and table formatting rules', () => 
   assert.match(m, /no Mermaid, LaTeX, HTML, images or Unicode arrows/);
   assert.ok(m.indexOf('Draw ASCII') > m.indexOf('Never output an em dash'), 'format follows style');
 });
+
+test('post-check guard support: shouldStop aborts a runaway stream, a re-ask leaves history alone, replaceLastReply swaps the reply', async () => {
+  let aborted = false;
+  const server = await stub((req, body, res) => {
+    if (req.url !== '/v1/chat/completions') return void res.writeHead(404).end();
+    if (!body.stream) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: 'What does seen hold?' }, finish_reason: 'stop' }] }));
+      return;
+    }
+    // A slow, endless stream: only an abort ends it.
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const timer = setInterval(() => res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'word ' } }] })}\n\n`), 5);
+    res.on('close', () => {
+      aborted = true;
+      clearInterval(timer);
+    });
+  });
+  try {
+    const backend = new LocalBackend({ baseUrl: `${server.url}/v1`, model: 'm', apiStyle: 'openai', numCtx: 8192, probe: noProbe });
+    const reply = await backend.sendMessage('Give me a hint.', { onChunk: () => {}, shouldStop: (soFar) => soFar.length > 40 });
+    assert.ok(reply.startsWith('word word'));
+    assert.ok(reply.length <= 60);
+    for (let i = 0; i < 100 && !aborted; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(aborted, 'the request was really aborted');
+    assert.equal(backend.history.at(-1).content, reply);
+
+    const before = JSON.stringify(backend.history);
+    const revised = await backend.reviseLastReply('Your reply above breaks the tutoring rules.');
+    assert.equal(revised, 'What does seen hold?');
+    assert.equal(JSON.stringify(backend.history), before, 'the re-ask changes no history');
+    const sent = server.requests.at(-1).body.messages;
+    assert.equal(sent.at(-2).role, 'assistant');
+    assert.equal(sent.at(-2).content, reply);
+    assert.deepEqual(sent.at(-1), { role: 'user', content: 'Your reply above breaks the tutoring rules.' });
+
+    backend.replaceLastReply(revised);
+    assert.deepEqual(backend.history.slice(-2).map((m) => m.content), ['Give me a hint.', 'What does seen hold?']);
+    assert.equal(backend.exportConversation().turns.at(-1).content, 'What does seen hold?');
+  } finally {
+    await server.close();
+  }
+});

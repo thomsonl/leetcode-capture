@@ -8,7 +8,7 @@
 // AbortController, which a browser's service worker has too
 // (extension/shared.test.js checks that).
 
-import { buildMessages as buildLocalMessages, resolveContextWindow } from './context-budget.js';
+import { buildMessages as buildLocalMessages, resolveContextWindow, estimateMessagesTokens } from './context-budget.js';
 import { fitWithSummary } from './context-summary.js';
 import { probeServer, serverRoot } from './local-server.js';
 import { formatPinnedCode } from './code-ledger.js';
@@ -270,7 +270,10 @@ export class LocalBackend {
   // code for this request (code-ledger.js's currentCodeFor: `{ code,
   // language, stale }` or null), and `compactText` what this turn becomes
   // once it is older (see context-budget.js's buildMessages).
-  async sendMessage(text, { onChunk, problemContext, currentCode, compactText } = {}) {
+  // `shouldStop(contentSoFar)`, when given (the post-check guard, see
+  // reply-guard.js), ends a streamed request early once it returns true; the
+  // content so far is then the reply.
+  async sendMessage(text, { onChunk, problemContext, currentCode, compactText, shouldStop } = {}) {
     await this.ready;
     // Pin the description the first time we see one for whichever problem
     // is now current - ignored on every later turn for the same problem,
@@ -334,7 +337,7 @@ export class LocalBackend {
     // never actually answered.
     let raw;
     try {
-      raw = await this.request(onChunk, fit.messages);
+      raw = await this.requestStoppable(onChunk, fit.messages, shouldStop);
     } catch (err) {
       this.history.pop();
       throw err;
@@ -364,6 +367,59 @@ export class LocalBackend {
     }
     this.history.push({ role: 'assistant', content: replyText });
     return replyText;
+  }
+
+  // One request that `shouldStop(contentSoFar)` may end early (it aborts the
+  // request, which also stops a local server generating). The content
+  // streamed so far then stands as the reply, with finishReason 'stop'.
+  // Without `shouldStop` this is just request().
+  async requestStoppable(onChunk, messages, shouldStop) {
+    if (typeof shouldStop !== 'function') return this.request(onChunk, messages);
+    const controller = new AbortController();
+    let soFar = '';
+    let stopped = false;
+    const watch = (chunk) => {
+      if (stopped) return;
+      soFar += chunk;
+      if (onChunk) onChunk(chunk);
+      if (shouldStop(soFar)) {
+        stopped = true;
+        controller.abort();
+      }
+    };
+    try {
+      const raw = await this.request(watch, messages, { signal: controller.signal });
+      return stopped ? { ...raw, content: soFar, finishReason: 'stop' } : raw;
+    } catch (err) {
+      if (stopped) return { content: soFar, reasoning: '', finishReason: 'stop', promptTokens: null };
+      throw err;
+    }
+  }
+
+  // The post-check guard's one re-ask (reply-guard.js): the last request
+  // again, with the rejected reply and `instruction` after it. History is
+  // left as it is (the guard then calls replaceLastReply), so neither the
+  // rejected reply nor the instruction is ever kept. Not streamed.
+  async reviseLastReply(instruction, { shouldStop } = {}) {
+    const last = this.history[this.history.length - 1];
+    if (!last || last.role !== 'assistant' || this.history.length < 3) throw new Error('there is no reply to revise');
+    const messages = buildLocalMessages({
+      history: [...this.history, { role: 'user', content: instruction }],
+      pinnedProblemContext: this.pinnedProblemContext,
+      pinnedCode: this.pinnedCode,
+      summary: this.summary,
+    });
+    if (estimateMessagesTokens(messages) > this.promptBudget()) throw new Error('the re-ask would not fit the context window');
+    const raw = await this.requestStoppable(null, messages, shouldStop);
+    return resolveReplyText({ content: raw.content, reasoning: raw.reasoning, finishReason: raw.finishReason, advice: '' });
+  }
+
+  // Puts `text` in place of the last reply in history (what the student was
+  // shown, see reply-guard.js). Does nothing when the last turn is not a
+  // reply.
+  replaceLastReply(text) {
+    const last = this.history[this.history.length - 1];
+    if (last && last.role === 'assistant' && typeof text === 'string' && text.trim()) last.content = text;
   }
 
   // The summary call (context-summary.js's condense): the same model and

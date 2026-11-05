@@ -217,3 +217,20 @@ test('checkCodexLogin reports the sign-in state and a missing binary', async (t)
   assert.equal(missing.ok, false);
   assert.match(missing.message, /not found/);
 });
+
+test('the post-check guard re-ask carries the rejected reply and the rule, and only the shown text stays', async (t) => {
+  const { backend, calls } = setup(t);
+  await backend.sendMessage('Give me a hint.');
+  const revised = await backend.reviseLastReply('Your reply above breaks the tutoring rules.');
+  assert.equal(revised, 'FAKE-REPLY-2');
+  const reask = calls()[1].prompt;
+  assert.match(reask, /Student: Give me a hint\.\n\nTutor: FAKE-REPLY-1/);
+  assert.match(reask, /Student: Your reply above breaks the tutoring rules\./);
+  assert.equal(backend.history.length, 2, 'the re-ask is not kept');
+  backend.replaceLastReply(revised);
+  await backend.sendMessage('next');
+  const next = calls()[2].prompt;
+  assert.match(next, /Tutor: FAKE-REPLY-2/);
+  assert.ok(!next.includes('FAKE-REPLY-1'));
+  assert.ok(!next.includes('breaks the tutoring rules'));
+});

@@ -157,6 +157,21 @@ export class CodexBackend {
     return reply;
   }
 
+  // The post-check guard's one re-ask (extension/shared/reply-guard.js): the
+  // same prompt with the rejected reply and `instruction` after it. History
+  // is left as it is; the guard then calls replaceLastReply.
+  async reviseLastReply(instruction) {
+    const last = this.history[this.history.length - 1];
+    if (!last || last.role !== 'assistant') throw new Error('there is no reply to revise');
+    return this.runCodex(this.buildPrompt(instruction));
+  }
+
+  // Puts `text` (what the student was shown) in place of the last reply.
+  replaceLastReply(text) {
+    const last = this.history[this.history.length - 1];
+    if (last && last.role === 'assistant' && typeof text === 'string' && text.trim()) last.content = text;
+  }
+
   // The conversation in the shape every backend shares (conversation.js).
   exportConversation() {
     return normalizeConversation({ turns: this.history, summary: this.summary, problem: this.pinnedProblemContext });
