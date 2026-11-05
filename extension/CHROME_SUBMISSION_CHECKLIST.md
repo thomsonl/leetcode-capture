@@ -91,7 +91,7 @@ Tutor
 
 Progress
 - When a submission is accepted, the problem is marked solved and a short card suggests what to try next.
-- The Progress page shows how far you are through NeetCode 150, NeetCode 250, Blind 75, Grind 75, Top 100 Liked, Top Interview 150 or SQL 50, and which problem comes next. You can also mark problems solved or starred by hand.
+- The Progress page shows how far you are through NeetCode 150, NeetCode 250, Blind 75, Grind 75, Top 100 Liked, Top Interview 150 or SQL 50, and which problem comes next. "Sync from LeetCode" pulls in the problems your account already solved, and you can mark problems solved or starred by hand.
 
 Practice a skill
 - Pick a skill such as hash maps, two pointers or dynamic programming and get three problems near your level, chosen from problem data that ships with the extension. Problems you solved are left out.

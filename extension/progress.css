@@ -65,32 +65,9 @@ body[data-tab="progress"] main { max-width: 1120px; }
 body[data-tab="progress"] #connection { display: none; }
 [role="tabpanel"][hidden] { display: none; }
 
-/* ---- the list choice --------------------------------------------------------- */
-
-.list-picker { margin: 0; padding: 0; border: 0; min-width: 0; }
-.list-picker legend { margin: 0 0 12px; padding: 0; font-size: 16px; line-height: 24px; font-weight: 600; }
-/* Four columns, two, or one, never three: seven or eight lists then fill
-   their rows evenly (4 + 3 or 4 + 4, then pairs) at every width. */
-.list-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-@media (max-width: 999px) { .list-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.list-option {
-  display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
-}
-.list-option:hover { background: var(--fill); }
-.list-option[data-selected] { border-color: var(--node-b); background: color-mix(in srgb, var(--node-a) 9%, transparent); box-shadow: inset 0 0 0 1px var(--node-b); }
-.list-option input { flex: none; margin: 3px 0 0; accent-color: var(--node-b); }
-.list-option:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
-.list-option input:focus-visible { outline: none; }
-.list-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.list-line { display: flex; flex-direction: column; }
-.list-name { font-weight: 600; }
-.list-size { color: var(--muted); font-size: 13px; line-height: 18px; font-variant-numeric: tabular-nums; }
-.list-desc { color: var(--muted); font-size: 13px; line-height: 18px; }
-
 /* ---- summary ---------------------------------------------------------------- */
 
-.summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.summary-head .help { margin-bottom: 12px; max-width: 560px; }
+.summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .total { margin: 0; flex: none; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
 .total-done { color: var(--text); font-size: 24px; line-height: 28px; font-weight: 600; }
 
@@ -284,8 +261,7 @@ html.drawer-open { overflow: hidden; }
 }
 
 @media (max-width: 520px) {
-  .summary-head { flex-direction: column; gap: 0; }
-  .total { order: -1; margin-bottom: 4px; }
+  .summary-head { display: flex; flex-direction: column; gap: 0; }
   .drawer-head { padding: 16px 16px 12px; }
   .drawer-body { padding: 0 16px 20px; }
   .problems th, .problems td { padding-left: 4px; padding-right: 4px; }
@@ -296,14 +272,24 @@ html.drawer-open { overflow: hidden; }
 
 @media (max-width: 520px) {
   .groups { gap: 18px 12px; padding: 24px 16px 16px; }
-  .list-options { grid-template-columns: minmax(0, 1fr); }
-  /* One card a row: the size goes on the name's line, so seven lists take
-     less of a phone's height. */
-  .list-line { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 8px; }
-  .list-size { flex: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .node, .group { transition: none; }
   .node:hover, .group:hover { transform: none; }
+}
+
+/* The summary's title is the menu of problem sets. */
+#summary-heading { margin: 0 0 4px; }
+.title-select { position: relative; left: -12px; height: 32px; margin: 0; padding: 0 4px 0 8px; border: 1px solid transparent; border-radius: 6px; background-color: transparent; color: var(--text); font: inherit; font-size: 16px; line-height: 24px; font-weight: 600; color-scheme: light dark; cursor: pointer; width: auto; field-sizing: content; }
+.title-select:hover { border-color: var(--line-strong); background-color: var(--fill); }
+.title-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.total-box { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: none; }
+.total-box .total { margin: 0; }
+.sync-btn { height: 28px; padding: 0 12px; font-size: 13px; }
+.sync-status { margin: 0; max-width: 260px; text-align: right; color: var(--muted); font-size: 13px; line-height: 18px; }
+.sync-status:empty { display: none; }
+@media (max-width: 760px) {
+  .total-box { align-items: flex-start; margin: 4px 0 8px; }
+  .sync-status { text-align: left; }
 }

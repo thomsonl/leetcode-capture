@@ -1,5 +1,5 @@
 // End-to-end check of the Progress tab's lists in the REAL unpacked
-// extension (Playwright's cached Chromium): the "Working on" choice (first
+// extension (Playwright's cached Chromium): the "Problem Sets" choice (first
 // run default, every list with its size and description, mouse and
 // keyboard, stored in storage.local through the worker, never touching the
 // solved problems, kept across a reload, followed when another page changes
@@ -46,7 +46,7 @@ async function key(page, name, { shift = false } = {}) {
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
   await sleep(40);
 }
-const focused = (page) => page.eval(`(() => { const a = document.activeElement; return a ? (a.dataset.topic || (a.name === 'progress-list' && 'list:' + a.value) || (a.dataset.slug && a.dataset.role + ':' + a.dataset.slug) || a.id || a.className || a.tagName) : null; })()`);
+const focused = (page) => page.eval(`(() => { const a = document.activeElement; return a ? (a.dataset.topic || (a.id === 'list-select' && 'list:' + a.value) || (a.dataset.slug && a.dataset.role + ':' + a.dataset.slug) || a.id || a.className || a.tagName) : null; })()`);
 
 // Shared solves: Two Sum and Best Time (on most lists), Climbing Stairs, one
 // SQL problem, Combination Sum IV (Blind 75 only), and the rest of Blind 75's
@@ -68,56 +68,82 @@ try {
   await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
   const open = async () => {
     await page.send('Page.navigate', { url: `chrome-extension://${browser.extensionId}/settings.html#progress` });
-    await page.waitFor(`document.querySelectorAll('.list-option').length === ${LISTS.length} && document.querySelector('.total-done')`, { what: 'the Progress tab' });
+    await page.waitFor(`(document.getElementById('list-select') || { options: [] }).options.length === ${LISTS.length} && document.querySelector('.total-done')`, { what: 'the Progress tab' });
     await sleep(150);
   };
   await open();
 
-  await scenario('first run: NeetCode 150 is chosen, every list is offered with its size and description', async () => {
+  await scenario('first run: NeetCode 150 is chosen, every list is a plain name in one menu', async () => {
     const m = await page.eval(`({
-      legend: document.querySelector('#list-picker legend').textContent,
-      options: [...document.querySelectorAll('.list-option')].map((o) => ({ id: o.dataset.list, name: o.querySelector('.list-name').textContent, size: o.querySelector('.list-size').textContent, desc: o.querySelector('.list-desc').textContent, checked: o.querySelector('input').checked, selected: o.hasAttribute('data-selected'), described: document.getElementById(o.querySelector('input').getAttribute('aria-describedby'))?.textContent })),
+      label: document.getElementById('list-select').getAttribute('aria-label'),
+      options: [...document.getElementById('list-select').options].map((o) => ({ id: o.value, name: o.textContent })),
+      value: document.getElementById('list-select').value,
+      descriptions: document.querySelectorAll('.list-desc, .list-size').length,
       nodes: document.querySelectorAll('.node').length,
       sub: document.getElementById('page-sub').textContent,
-      title: document.getElementById('summary-heading').textContent,
+      title: document.getElementById('list-select').selectedOptions[0].textContent,
+      tabs: [...document.querySelectorAll('.tab')].map((t) => t.textContent),
     })`);
-    check(m.legend === 'Working on', m.legend);
+    check(m.label === 'Problem Sets', m.label);
+    check(m.tabs.join() === 'Progress,Settings', `tab order: ${m.tabs}`);
     check(m.options.map((o) => o.id).join() === LISTS.map((l) => l.id).join(), `order: ${m.options.map((o) => o.id)}`);
-    for (const [i, o] of m.options.entries()) {
-      check(o.name === LISTS[i].title && o.size === `${LISTS[i].size} problems` && o.desc === LISTS[i].description && o.described === o.desc, JSON.stringify(o));
-      check(o.checked === (i === 0) && o.selected === (i === 0), `checked: ${JSON.stringify(o)}`);
-    }
-    check(/NeetCode 150 extends it/.test(m.options.find((o) => o.id === 'blind-75').desc), 'the Blind 75 note');
-    check(!m.options.some((o) => /\b150\b/.test(o.name) && o.id !== 'neetcode-150' && o.id !== 'top-interview-150'), 'no other 150 list');
+    for (const [i, o] of m.options.entries()) check(o.name === LISTS[i].title, JSON.stringify(o));
+    check(m.options.find((o) => o.id === 'top-100-liked').name === 'Top 100 Liked by LeetCode' && m.options.find((o) => o.id === 'top-interview-150').name === 'Top Interview 150 by LeetCode', 'by LeetCode names');
+    check(m.value === 'neetcode-150' && m.descriptions === 0, JSON.stringify(m));
     check(m.nodes === 18 && m.sub === 'Your NeetCode 150 progress' && m.title === 'NeetCode 150', JSON.stringify(m));
     check((await stored()).activeProgressList === undefined, 'nothing stored before a choice');
     await page.screenshot(path.join(shots, 'picker-neetcode-dark.png'), { width: 1280, height: 700, scheme: 'dark' });
   });
 
-  // Four cards a row, then two, then one: seven lists never leave a row of
-  // one under a row of three, and every card in a row has the same height.
-  const pickerRows = () => page.eval(`(() => {
-    const cards = [...document.querySelectorAll('.list-option')];
-    const rows = new Map();
-    for (const c of cards) { const r = c.getBoundingClientRect(); const top = Math.round(r.top); rows.set(top, [...(rows.get(top) || []), Math.round(r.height)]); }
-    return { counts: [...rows.values()].map((r) => r.length), even: [...rows.values()].every((r) => new Set(r).size === 1) };
-  })()`);
-  for (const [width, counts] of [[1280, '4,3'], [720, '2,2,2,1'], [400, '1,1,1,1,1,1,1']]) {
-    await scenario(`the list picker at ${width} px: rows of ${counts.split(',')[0]}, even heights`, async () => {
+  // Every list's name fits its menu: the selected text is never cut, at any width.
+  await scenario('each list name shows whole in the title menu at 1280 and 400 px', async () => {
+    for (const width of [1280, 400]) {
+      await page.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      for (const list of LISTS) {
+        await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = '${list.id}'; s.dispatchEvent(new Event('change')); })()`);
+        await page.waitFor(`document.getElementById('list-select').value === '${list.id}' && document.querySelector('.total-done')`, { what: list.title });
+        await sleep(120);
+        const m = await page.eval(`(() => {
+          const s = document.getElementById('list-select');
+          const probe = document.createElement('span');
+          const st = getComputedStyle(s);
+          probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font-family:' + st.fontFamily + ';font-size:' + st.fontSize + ';font-weight:' + st.fontWeight;
+          probe.textContent = s.selectedOptions[0].textContent;
+          document.body.appendChild(probe);
+          const text = probe.getBoundingClientRect().width;
+          probe.remove();
+          const inner = s.getBoundingClientRect().width - parseFloat(st.paddingLeft) - parseFloat(st.paddingRight);
+          return { text: Math.ceil(text), room: Math.floor(inner) };
+        })()`);
+        check(m.room >= m.text + 12, `${width} ${list.title}: text ${m.text}px, room ${m.room}px`);
+      }
+    }
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'neetcode-150'; s.dispatchEvent(new Event('change')); })()`);
+    await page.waitFor(`document.querySelectorAll('.node').length === 18`, { what: 'NeetCode 150 again' });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
+  });
+
+  // The title is the menu: no extra card, and the sync button sits under the count.
+  for (const width of [1280, 720, 400]) {
+    await scenario(`the title menu and the sync button at ${width} px`, async () => {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       await sleep(200);
-      const m = await pickerRows();
-      check(m.counts.join() === counts && m.even, `${width}: ${JSON.stringify(m)}`);
-      await page.screenshot(path.join(shots, `picker-${width}-dark.png`), { width, height: width === 400 ? 1300 : 700, scheme: 'dark' });
-      await page.screenshot(path.join(shots, `picker-${width}-light.png`), { width, height: width === 400 ? 1300 : 700, scheme: 'light' });
-      await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+      const m = await page.eval(`(() => {
+        const box = document.getElementById('summary').getBoundingClientRect();
+        const select = document.getElementById('list-select').getBoundingClientRect();
+        const total = document.querySelector('.total').getBoundingClientRect();
+        const button = document.getElementById('sync-btn').getBoundingClientRect();
+        return { cards: document.querySelectorAll('.card.lists').length, out: select.right > box.right + 0.5 || button.right > box.right + 0.5 || button.left < box.left - 0.5, below: button.top >= total.bottom - 0.5, sameColumn: Math.abs(button.right - total.right) < 2 || ${width} < 761 };
+      })()`);
+      check(m.cards === 0 && !m.out && m.below && m.sameColumn, `${width}: ${JSON.stringify(m)}`);
+      await page.screenshot(path.join(shots, `picker-${width}-dark.png`), { width, height: width === 400 ? 700 : 500, scheme: 'dark' });
     });
   }
   await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
 
   await scenario('choosing Blind 75 with the mouse: grouped layout, summary, Next group; stored, solved problems untouched', async () => {
     const before = await stored();
-    await page.eval(`document.querySelector('.list-option[data-list="blind-75"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'blind-75'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === 10`, { what: 'the Blind 75 groups' });
     await sleep(200);
     const after = await stored();
@@ -127,8 +153,8 @@ try {
     const next = nextOnRoadmap(BLIND_75, Object.keys(seed))[0];
     const m = await page.eval(`({
       sub: document.getElementById('page-sub').textContent,
-      title: document.getElementById('summary-heading').textContent,
-      help: document.querySelector('#summary .help').textContent,
+      title: document.getElementById('list-select').selectedOptions[0].textContent,
+      help: document.querySelectorAll('#summary .help').length,
       total: document.querySelector('.total').textContent,
       next: document.querySelector('.next-up').textContent,
       nodes: document.querySelectorAll('.node').length,
@@ -136,7 +162,7 @@ try {
       foot: document.getElementById('progress-foot').textContent,
     })`);
     check(m.sub === 'Your Blind 75 progress' && m.title === 'Blind 75' && m.nodes === 0, JSON.stringify(m));
-    check(m.help.startsWith('10 categories of 75 problems'), m.help);
+    check(m.help === 0, 'no description under the title');
     check(m.total === `${all.solved} / 75 solved`, `total: ${m.total}`);
     check(m.next === `Next up${next.title}${next.difficulty}inArray`, `next: ${m.next}`);
     check(m.cards.map((c) => c.title).join() === BLIND_75.topics.map((t) => t.title).join(), 'cards in the list order');
@@ -237,10 +263,10 @@ try {
     check((await focused(page)) === 'binary', 'focus back on the card');
   });
 
-  await scenario('keyboard on the list choice: arrows move it, the layout and storage follow, Tab leaves the group', async () => {
-    await page.eval(`document.querySelector('.list-option input:checked').focus()`);
+  await scenario('keyboard on the list menu: arrows move it, the layout and storage follow, Tab leaves it', async () => {
+    await page.eval(`document.getElementById('list-select').focus()`);
     check((await focused(page)) === 'list:blind-75', `focus: ${await focused(page)}`);
-    await key(page, 'ArrowRight');
+    await key(page, 'ArrowDown');
     await page.waitFor(`document.querySelectorAll('.group').length === 8`, { what: 'Grind 75' });
     check((await focused(page)) === 'list:grind-75', `focus follows: ${await focused(page)}`);
     await sleep(150);
@@ -250,7 +276,7 @@ try {
     check(m.titles.join() === 'Week 1,Week 2,Week 3,Week 4,Week 5,Week 6,Week 7,Week 8' && m.sub === 'Your Grind 75 progress', JSON.stringify(m));
     check(m.next === `Next up${next.title}${next.difficulty}inWeek 1`, m.next);
     await key(page, 'Tab');
-    check((await focused(page)) !== null && !(await focused(page)).startsWith('list:'), `Tab leaves the radio group: ${await focused(page)}`);
+    check((await focused(page)) !== null && !(await focused(page)).startsWith('list:'), `Tab leaves the menu: ${await focused(page)}`);
     await page.screenshot(path.join(shots, 'grind-dark.png'), { width: 1280, height: 1000, scheme: 'dark' });
   });
 
@@ -267,7 +293,7 @@ try {
       counts: [...document.querySelectorAll('.group')].map((g) => g.dataset.topic + ':' + g.querySelector('.node-count').textContent),
       nextCards: [...document.querySelectorAll('.group[data-next]')].map((g) => g.dataset.topic),
       next: document.querySelector('.next-up').textContent,
-      help: document.querySelector('#summary .help').textContent,
+      help: document.querySelectorAll('#summary .help').length,
       heading: document.getElementById('roadmap-heading').textContent,
       label: document.querySelector('.group').getAttribute('aria-label'),
       saved: localStorage.getItem('lc-progress-view'),
@@ -276,7 +302,7 @@ try {
     const want = progress({ topics: GRIND_75.subjects }, Object.keys(seed)).topics.map((t) => `${t.id}:${t.solved} / ${t.total}`);
     check(m.counts.join() === want.join(), `counts: ${m.counts}`);
     check(m.nextCards.join() === next.subject && m.next === `Next up${next.title}${next.difficulty}in${subject.title}`, JSON.stringify(m));
-    check(m.help.startsWith(`${GRIND_75.subjects.length} subjects of 75 problems`) && /week by week/.test(m.help) && m.heading === 'Grind 75 subjects', JSON.stringify(m));
+    check(m.help === 0 && m.heading === 'Grind 75 subjects', JSON.stringify(m));
     check(m.label.startsWith(`Arrays & Hashing, subject 1 of ${GRIND_75.subjects.length},`), m.label);
     check(m.saved === '{"grind-75":"subject"}', `remembered: ${m.saved}`);
     check(JSON.stringify(await stored()) === JSON.stringify(before), 'the switch wrote to storage.local');
@@ -301,10 +327,10 @@ try {
     // Remembered across a reload; another list has no switch; back to Grind 75 keeps it.
     await open();
     check((await page.eval(`document.querySelectorAll('.group').length`)) === GRIND_75.subjects.length, 'subjects after a reload');
-    await page.eval(`document.querySelector('.list-option[data-list="blind-75"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'blind-75'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === 10`, { what: 'Blind 75' });
     check(await page.eval(`document.getElementById('view-bar').hidden`), 'Blind 75 has no switch');
-    await page.eval(`document.querySelector('.list-option[data-list="grind-75"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'grind-75'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${GRIND_75.subjects.length}`, { what: 'Grind 75 by subject' });
     for (const width of [400, 720]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -320,10 +346,10 @@ try {
 
   await scenario('the choice survives a reload, and a change made elsewhere is followed at once', async () => {
     await open();
-    let m = await page.eval(`({ checked: document.querySelector('.list-option input:checked').value, groups: document.querySelectorAll('.group').length, nodes: document.querySelectorAll('.node').length })`);
+    let m = await page.eval(`({ checked: document.getElementById('list-select').value, groups: document.querySelectorAll('.group').length, nodes: document.querySelectorAll('.node').length })`);
     check(m.checked === 'grind-75' && m.groups === 8 && m.nodes === 0, `after reload: ${JSON.stringify(m)}`);
     await browser.serviceWorkerEval(`chrome.storage.local.set({ activeProgressList: 'sql-50' })`);
-    await page.waitFor(`document.querySelectorAll('.group').length === 7 && document.querySelector('.list-option input:checked').value === 'sql-50'`, { what: 'SQL 50 from elsewhere' });
+    await page.waitFor(`document.querySelectorAll('.group').length === 7 && document.getElementById('list-select').value === 'sql-50'`, { what: 'SQL 50 from elsewhere' });
     m = await page.eval(`({ total: document.querySelector('.total').textContent, first: document.querySelector('.group .node-count').textContent, title: document.querySelector('.group[data-topic="advanced-string"] .group-title').textContent })`);
     check(m.total === '1 / 50 solved' && m.first === '1 / 5' && m.title === 'Advanced String Functions / Regex / Clause', JSON.stringify(m));
     await page.screenshot(path.join(shots, 'sql-dark.png'), { width: 1280, height: 1000, scheme: 'dark' });
@@ -333,7 +359,7 @@ try {
   });
 
   await scenario('Top Interview 150: 23 sections fit, the longest titles wrap inside their cards', async () => {
-    await page.eval(`document.querySelector('.list-option[data-list="top-interview-150"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-interview-150'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
     const m = await page.eval(`[...document.querySelectorAll('.group-title')].filter((n) => n.getBoundingClientRect().right > n.closest('.group').getBoundingClientRect().right - 13).map((n) => n.textContent)`);
     check(m.length === 0, `overflowing titles: ${m}`);
@@ -343,37 +369,37 @@ try {
   });
 
   await scenario('Top 100 Liked: LeetCode\'s 15 groups in its order', async () => {
-    await page.eval(`document.querySelector('.list-option[data-list="top-100-liked"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-100-liked'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_100_LIKED.topics.length}`, { what: 'Top 100 Liked' });
     const m = await page.eval(`({ titles: [...document.querySelectorAll('.group-title')].map((n) => n.textContent), total: document.querySelector('.total').textContent })`);
     const all = progress(TOP_100_LIKED, Object.keys(seed));
     check(m.titles.join() === TOP_100_LIKED.topics.map((t) => t.title).join() && m.total === `${all.solved} / 100 solved`, JSON.stringify(m));
     await page.screenshot(path.join(shots, 'top-100-liked-dark.png'), { width: 1280, height: 1300, scheme: 'dark' });
-    await page.eval(`document.querySelector('.list-option[data-list="top-interview-150"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-interview-150'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
   });
 
   await scenario('NeetCode 250: the NeetCode roadmap with its own counts, nothing cut', async () => {
-    await page.eval(`document.querySelector('.list-option[data-list="neetcode-250"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'neetcode-250'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.node').length === 18 && document.querySelectorAll('.edge').length > 0`, { what: 'the NeetCode 250 graph' });
     const all = progress(NEETCODE_250, Object.keys(seed));
     const m = await page.eval(`({
       counts: [...document.querySelectorAll('.node')].map((n) => n.dataset.topic + ':' + n.querySelector('.node-count').textContent),
       total: document.querySelector('.total').textContent,
-      help: document.querySelector('#summary .help').textContent,
+      help: document.querySelectorAll('#summary .help').length,
       cut: [...document.querySelectorAll('.node-title, .node-count')].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent),
       bar: document.getElementById('view-bar').hidden,
       next: document.querySelector('.next-up').textContent,
     })`);
     const want = Object.fromEntries(all.topics.map((t) => [t.id, `${t.solved} / ${t.total}`]));
     check(m.counts.every((c) => { const [id, text] = c.split(':'); return want[id] === text; }), `counts: ${m.counts}`);
-    check(m.total === `${all.solved} / 250 solved` && /250 problems by topic/.test(m.help) && m.cut.length === 0 && m.bar, JSON.stringify(m));
+    check(m.total === `${all.solved} / 250 solved` && m.help === 0 && m.cut.length === 0 && m.bar, JSON.stringify(m));
     const next = nextOnRoadmap(NEETCODE_250, Object.keys(seed))[0];
     check(m.next.startsWith(`Next up${next.title}`), m.next);
     await page.screenshot(path.join(shots, 'neetcode-250-dark.png'), { width: 1280, height: 1400, scheme: 'dark' });
     await page.screenshot(path.join(shots, 'neetcode-250-light.png'), { width: 1280, height: 1400, scheme: 'light' });
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
-    await page.eval(`document.querySelector('.list-option[data-list="top-interview-150"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-interview-150'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
   });
 
@@ -390,8 +416,8 @@ try {
           canvasScrolls: canvas.scrollWidth > canvas.clientWidth,
           cardsOut: cards.filter((c) => out(c, canvas)).length,
           perRow: cards.filter((c) => Math.round(c.getBoundingClientRect().top) === Math.round(cards[0].getBoundingClientRect().top)).length,
-          options: [...document.querySelectorAll('.list-option')].filter((o) => out(o, document.getElementById('list-picker'))).length,
-          cut: [...document.querySelectorAll('.group-title, .node-count, .group-level-text, .list-name, .list-size')].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent),
+          options: out(document.getElementById('list-select'), document.getElementById('summary')) ? 1 : 0,
+          cut: [...document.querySelectorAll('.group-title, .node-count, .group-level-text')].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent),
         };
       })()`);
       check(m.page <= 0 && !m.canvasScrolls && m.cardsOut === 0 && m.options === 0, `at ${width}: ${JSON.stringify(m)}`);
@@ -416,7 +442,7 @@ try {
 
   await scenario('back to NeetCode 150: the graph returns, with its lines', async () => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await page.eval(`document.querySelector('.list-option[data-list="neetcode-150"]').click()`);
+    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'neetcode-150'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`document.querySelectorAll('.node').length === 18 && document.querySelectorAll('.edge').length > 0`, { what: 'the graph' });
     const m = await page.eval(`({ groups: document.querySelectorAll('.group').length, size: document.getElementById('graph').dataset.size, sub: document.getElementById('page-sub').textContent })`);
     check(m.groups === 0 && m.size === 'wide' && m.sub === 'Your NeetCode 150 progress', JSON.stringify(m));

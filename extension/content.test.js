@@ -479,3 +479,51 @@ test('the description keeps exponents and subscripts (10^4, not 104) in a snapsh
     assert.equal(sent.length, 1);
     assert.equal(sent[0].capture.problemDescription, SUPERSCRIPT_TEXT);
   }));
+
+// ---- syncing the solved problems -------------------------------------------
+
+const { fetchSolvedSlugs, autoSync } = require(path.join(__dirname, 'content.js'));
+
+function graphqlPages(pages, { signedIn = true } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const { query, variables } = JSON.parse(init.body);
+    assert.ok(!/status:\s*"/.test(query) && /\$filters: QuestionListFilterInput/.test(query) && variables.filters.status === 'AC', 'the filter is a typed variable');
+    calls.push({ url, skip: variables.skip, limit: variables.limit, credentials: init.credentials });
+    const questions = pages[variables.skip / variables.limit] || [];
+    const total = pages.flat().length;
+    return { ok: true, json: async () => ({ data: { userStatus: { isSignedIn: signedIn }, problemsetQuestionList: { total, questions } } }) };
+  };
+  return { fetchImpl, calls };
+}
+
+test('fetchSolvedSlugs pages through every accepted problem with the page session', async () => {
+  const page = (from, n) => Array.from({ length: n }, (_, i) => ({ titleSlug: `p-${from + i}`, status: 'ac' }));
+  const { fetchImpl, calls } = graphqlPages([page(0, 100), page(100, 100), [...page(200, 22), { titleSlug: 'tried', status: 'notac' }]]);
+  const result = await fetchSolvedSlugs(fetchImpl);
+  assert.equal(result.ok, true);
+  assert.equal(result.slugs.length, 222);
+  assert.ok(!result.slugs.includes('tried'));
+  assert.deepEqual(calls.map((c) => c.skip), [0, 100, 200]);
+  assert.ok(calls.every((c) => c.url === '/graphql/' && c.credentials === 'include'));
+});
+
+test('fetchSolvedSlugs tells a signed-out page and a failing one apart', async () => {
+  assert.deepEqual(await fetchSolvedSlugs(graphqlPages([[]], { signedIn: false }).fetchImpl), { ok: false, reason: 'signed-out' });
+  assert.deepEqual(await fetchSolvedSlugs(async () => ({ ok: false })), { ok: false, reason: 'failed' });
+  assert.deepEqual(await fetchSolvedSlugs(async () => { throw new Error('offline'); }), { ok: false, reason: 'failed' });
+  assert.deepEqual(await fetchSolvedSlugs(async () => ({ ok: true, json: async () => ({ errors: [{ message: 'x' }] }) })), { ok: false, reason: 'failed' });
+});
+
+test('autoSync fetches and reports only when the worker says a sync is due', async () => {
+  const sent = [];
+  const fetchSolved = async () => ({ ok: true, slugs: ['two-sum'] });
+  const notDue = async (m) => (sent.push(m.type), { ok: true, due: false });
+  assert.equal(await autoSync({ send: notDue, fetchSolved }), false);
+  assert.deepEqual(sent, ['lc-tutor:sync-check']);
+  sent.length = 0;
+  const due = async (m) => (sent.push(m), m.type === 'lc-tutor:sync-check' ? { ok: true, due: true } : { ok: true, added: 1, total: 1 });
+  assert.equal(await autoSync({ send: due, fetchSolved }), true);
+  assert.deepEqual(sent[1], { type: 'lc-tutor:sync-solved', slugs: ['two-sum'] });
+  assert.equal(await autoSync({ send: due, fetchSolved: async () => ({ ok: false, reason: 'signed-out' }) }), false);
+});

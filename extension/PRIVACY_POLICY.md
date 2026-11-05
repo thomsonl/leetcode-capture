@@ -20,6 +20,8 @@ The extension reads data only on `leetcode.com/problems/*` pages, and only when 
 - The page URL and a timestamp.
 
 When you submit, it also reads LeetCode's verdict for that submission (whether it was accepted) from the page's own result request, to keep track of the problems you solved.
+When a LeetCode problem page is open, or when you press "Sync from LeetCode" on the Progress page, it also asks LeetCode, from that page and with your own signed-in session, which problems your account has accepted, and adds them to the solved problems kept in the browser.
+That list goes nowhere else.
 It reads nothing else from that request, and the verdict is never sent anywhere.
 
 The Tutor tab also reads the problem's slug from the page address, to show that problem's conversation and suggestions.
@@ -62,7 +64,7 @@ The extension never shows a saved key back on the Settings page or the Tutor tab
 ## What is kept, and for how long
 
 - **Settings and keys**: kept in the browser's local extension storage (and, for the helper, in `~/.config/leetcode-capture/settings.json`) until you remove them.
-- **Solved problems and progress**: which problems you solved (the problem's slug, when, how many accepted submissions, and whether you marked it by hand), the problems you starred and which problem list you chose to work on, kept in the browser's local extension storage until you unmark them or uninstall the extension.
+- **Solved problems and progress**: which problems you solved (the problem's slug, when, how many accepted submissions, and whether you marked it by hand or it came from LeetCode), the problems you starred and which problem list you chose to work on, kept in the browser's local extension storage until you unmark them or uninstall the extension.
   They are never sent anywhere, including to the tutor.
 - **Layout preferences**: where you moved the Tutor tab in LeetCode's layout (kept in the browser's local extension storage) and how the Progress tab groups a list (kept in the Settings page's local storage).
 - **Tutor conversations**: kept in memory only, per problem, and forgotten when the tutor stops, the browser ends the extension's background worker, or the conversation is reset on a problem switch.

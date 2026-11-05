@@ -44,6 +44,10 @@ import { LISTS, NEETCODE_150, ROADMAPS, listById, problemInList, suggestAfterSol
 export const SOLVED_KEY = 'solvedProblems';
 export const STARRED_KEY = 'starredProblems';
 export const ACTIVE_LIST_KEY = 'activeProgressList';
+export const SYNCED_AT_KEY = 'solvedSyncedAt';
+// How long an automatic sync waits for the next one; the button ignores it.
+export const SYNC_EVERY_MS = 12 * 60 * 60 * 1000;
+const MAX_SYNC = 6000;
 
 export function isListId(value) {
   return typeof value === 'string' && Object.hasOwn(ROADMAPS, value);
@@ -85,6 +89,7 @@ export function normalizeSolved(raw) {
     const count = Number.isInteger(entry.count) && entry.count >= 0 ? entry.count : 0;
     const clean = { at: validTime(entry.at) ? entry.at : new Date(0).toISOString(), count };
     if (entry.manual === true) clean.manual = true;
+    else if (entry.synced === true) clean.synced = true;
     out[slug] = clean;
   }
   return out;
@@ -111,6 +116,20 @@ export function markSolved(solved, slug, on, at) {
   if (!on) delete next[slug];
   else if (!next[slug]) next[slug] = { at, count: 0, manual: true };
   return next;
+}
+
+// The problems LeetCode says the account solved, added to the list as
+// "synced". Whatever is marked already stays as it is, and nothing is
+// removed. Returns the new record and how many were added.
+export function mergeSynced(solved, slugs, at) {
+  const next = { ...solved };
+  let added = 0;
+  for (const slug of slugs) {
+    if (next[slug]) continue;
+    next[slug] = { at, count: 0, synced: true };
+    added += 1;
+  }
+  return { solved: next, added };
 }
 
 export function solvedSlugs(solved) {
@@ -243,6 +262,23 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
     });
   }
 
+  // True when an automatic sync is due: never synced, or not for SYNC_EVERY_MS.
+  async function syncDue() {
+    const stored = (await storage.get([SYNCED_AT_KEY])) || {};
+    const last = Date.parse(stored[SYNCED_AT_KEY]);
+    return { ok: true, due: Number.isNaN(last) || Date.parse(now()) - last >= SYNC_EVERY_MS };
+  }
+
+  // `slugs` is what a signed-in LeetCode tab reported as accepted.
+  async function mergeFromLeetCode(slugs) {
+    if (!Array.isArray(slugs) || slugs.length > MAX_SYNC || !slugs.every(isSlug)) return { ok: false };
+    return update(async (solved) => {
+      const merged = mergeSynced(solved, slugs, now());
+      await storage.set({ [SOLVED_KEY]: merged.solved, [SYNCED_AT_KEY]: now() });
+      return { ok: true, added: merged.added, total: new Set(slugs).size };
+    });
+  }
+
   async function setStarred(message) {
     if (!isSlug(message.slug) || typeof message.starred !== 'boolean') return { ok: false };
     return update(async (_solved, starred) => {
@@ -257,9 +293,12 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
   return {
     // Resolves to the answer, or undefined when the message is not for this
     // service.
+    mergeFromLeetCode,
     async handleMessage(message, sender) {
       if (!message || typeof message !== 'object') return undefined;
       try {
+        if (message.type === 'lc-tutor:sync-check') return sender && sender.tab && slugFromUrl(sender.url) ? await syncDue() : { ok: false };
+        if (message.type === 'lc-tutor:sync-solved') return sender && sender.tab && slugFromUrl(sender.url) ? await mergeFromLeetCode(message.slugs) : { ok: false };
         if (message.type === 'lc-tutor:accepted') return await accepted(message, sender);
         if (message.type === 'lc-tutor:set-list') return await setList(message, sender);
         if (message.type === 'lc-tutor:practice') return await practice(message, sender);

@@ -155,7 +155,29 @@ const solved = createSolvedService({
   extensionOrigin: new URL(api.runtime.getURL("")).origin,
   log: (text) => console.warn(`[leetcode-capture] ${text}`),
 });
-const SOLVED_MESSAGES = new Set(["lc-tutor:accepted", "lc-tutor:solved-set", "lc-tutor:star-set", "lc-tutor:set-list", "lc-tutor:practice"]);
+const SOLVED_MESSAGES = new Set(["lc-tutor:accepted", "lc-tutor:solved-set", "lc-tutor:star-set", "lc-tutor:set-list", "lc-tutor:practice", "lc-tutor:sync-check", "lc-tutor:sync-solved"]);
+
+async function syncNow() {
+  // No tab permission, so tab addresses are hidden: every tab is asked, and
+  // only a LeetCode problem page (the content script) answers.
+  const tabs = (await api.tabs.query({})).slice(0, 200);
+  let reached = false;
+  for (const tab of tabs) {
+    let answer = null;
+    try {
+      answer = await api.tabs.sendMessage(tab.id, { type: "lc-tutor:sync-fetch" });
+    } catch {
+      answer = null;
+    }
+    if (answer) reached = true;
+    if (answer && answer.ok === false && answer.reason === "signed-out") return answer;
+    if (answer && answer.ok === true && Array.isArray(answer.slugs)) {
+      const merged = await solved.mergeFromLeetCode(answer.slugs);
+      return merged.ok ? merged : { ok: false, reason: "failed" };
+    }
+  }
+  return { ok: false, reason: reached ? "failed" : "no-tab" };
+}
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== api.runtime.id) return undefined;
@@ -168,6 +190,16 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "lc-tutor:open-progress") {
     api.tabs.create({ url: api.runtime.getURL("settings.html#progress") });
     return undefined;
+  }
+  // The Progress tab's "Sync from LeetCode": ask an open problem tab (it is
+  // signed in to LeetCode) for the accepted problems, then merge them.
+  if (message && message.type === "lc-tutor:sync-now") {
+    if (!sender.url || !sender.url.startsWith(`${new URL(api.runtime.getURL("")).origin}/`)) {
+      sendResponse({ ok: false, reason: "failed" });
+      return undefined;
+    }
+    syncNow().then(sendResponse, () => sendResponse({ ok: false, reason: "failed" }));
+    return true;
   }
   if (message && SOLVED_MESSAGES.has(message.type)) {
     solved.handleMessage(message, sender).then(sendResponse, () => sendResponse({ ok: false }));

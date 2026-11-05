@@ -2,7 +2,7 @@
 // plus the pure logic they share. No Node or browser APIs, so the options
 // page, the background worker and the companion can all import it.
 //
-// A list is { id, title, short, description, kind, topics, edges, subjects }:
+// A list is { id, title, short, kind, topics, edges, subjects }:
 //   topics    its groups in the publisher's order, each { id, title, problems }
 //             where a problem is { slug, title, difficulty, topic } (title and
 //             difficulty come from the one shared catalog, shared/catalog.js)
@@ -24,7 +24,7 @@ import { CATALOG } from './catalog.js';
 const words = (slugs) => slugs.split(/\s+/).filter(Boolean);
 
 // Each group: [id, title, slugs], the slugs one per line in the list's order.
-function defineList({ id, title, short, description, groupNoun, groups, edges = [], subjects = null }) {
+function defineList({ id, title, short, groupNoun, groups, edges = [], subjects = null }) {
   const topics = groups.map(([topicId, topicTitle, slugs]) => ({
     id: topicId,
     title: topicTitle,
@@ -35,7 +35,7 @@ function defineList({ id, title, short, description, groupNoun, groups, edges = 
     }),
   }));
   const size = topics.reduce((n, t) => n + t.problems.length, 0);
-  const list = { id, title, short: short || title, description, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges, subjects: null };
+  const list = { id, title, short: short || title, groupNoun, kind: edges.length ? 'graph' : 'groups', size, topics, edges, subjects: null };
   if (subjects) list.subjects = defineSubjects(list, subjects);
   return list;
 }
@@ -94,7 +94,6 @@ const EDGES = [
 export const NEETCODE_150 = defineList({
   id: 'neetcode-150',
   title: 'NeetCode 150',
-  description: 'NeetCode\'s expanded Blind 75, by topic on a roadmap.',
   groupNoun: 'topic',
   edges: EDGES,
   groups: [
@@ -279,7 +278,6 @@ export const NEETCODE_150 = defineList({
 export const NEETCODE_250 = defineList({
   id: 'neetcode-250',
   title: 'NeetCode 250',
-  description: 'NeetCode 150 and 100 more, by topic on the same roadmap.',
   groupNoun: 'topic',
   edges: EDGES,
   groups: [
@@ -566,7 +564,6 @@ export const NEETCODE_250 = defineList({
 export const BLIND_75 = defineList({
   id: 'blind-75',
   title: 'Blind 75',
-  description: 'The original 75 from Blind, by category. NeetCode 150 extends it.',
   groupNoun: 'category',
   groups: [
   ['array', 'Array', `
@@ -672,7 +669,6 @@ export const BLIND_75 = defineList({
 export const GRIND_75 = defineList({
   id: 'grind-75',
   title: 'Grind 75',
-  description: 'By the Blind 75 author: the site\'s default eight weeks, or by subject.',
   groupNoun: 'week',
   groups: [
   ['week-1', 'Week 1', `
@@ -872,8 +868,7 @@ export const GRIND_75 = defineList({
 // against e2e/leetcode-study-plans.txt by roadmap.test.mjs.
 export const TOP_100_LIKED = defineList({
   id: 'top-100-liked',
-  title: 'Top 100 Liked',
-  description: 'LeetCode\'s 100 most liked problems, by topic.',
+  title: 'Top 100 Liked by LeetCode',
   groupNoun: 'topic',
   groups: [
   ['backtracking', 'Backtracking', `
@@ -999,8 +994,7 @@ export const TOP_100_LIKED = defineList({
 // 2026-11-04: e2e/leetcode-study-plans.txt, which roadmap.test.mjs compares.
 export const TOP_INTERVIEW_150 = defineList({
   id: 'top-interview-150',
-  title: 'Top Interview 150',
-  description: 'LeetCode\'s own interview study plan, section by section.',
+  title: 'Top Interview 150 by LeetCode',
   groupNoun: 'section',
   groups: [
   ['array-string', 'Array / String', `
@@ -1184,7 +1178,6 @@ export const TOP_INTERVIEW_150 = defineList({
 export const SQL_50 = defineList({
   id: 'sql-50',
   title: 'SQL 50',
-  description: 'LeetCode\'s study plan for database problems.',
   groupNoun: 'section',
   groups: [
   ['select', 'Select', `

@@ -510,6 +510,56 @@
     }
   }
 
+  // Every problem the signed-in account has accepted, from LeetCode's own
+  // problem list (the page's session, same origin). Resolves to
+  // { ok: true, slugs } or { ok: false, reason: "signed-out" | "failed" }.
+  // Nothing leaves the browser: the worker only merges the slugs into the
+  // extension's own storage. `fetchImpl` is injectable for content.test.js.
+  const SYNC_QUERY =
+    "query lcTutorSolved($skip: Int, $limit: Int, $filters: QuestionListFilterInput) { userStatus { isSignedIn } " +
+    'problemsetQuestionList: questionList(categorySlug: "", limit: $limit, skip: $skip, filters: $filters) ' +
+    "{ total: totalNum questions: data { titleSlug status } } }";
+  async function fetchSolvedSlugs(fetchImpl = (...args) => fetch(...args)) {
+    const slugs = [];
+    const PAGE = 100;
+    try {
+      for (let skip = 0, total = 1; skip < total && skip < 6000; skip += PAGE) {
+        const response = await fetchImpl("/graphql/", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ query: SYNC_QUERY, variables: { skip, limit: PAGE, filters: { status: "AC" } } }),
+        });
+        if (!response.ok) return { ok: false, reason: "failed" };
+        const body = await response.json();
+        const data = body && body.data;
+        if (!data || !data.problemsetQuestionList) return { ok: false, reason: "failed" };
+        if (!data.userStatus || data.userStatus.isSignedIn !== true) return { ok: false, reason: "signed-out" };
+        const list = data.problemsetQuestionList;
+        if (!Number.isInteger(list.total) || !Array.isArray(list.questions)) return { ok: false, reason: "failed" };
+        total = list.total;
+        for (const question of list.questions) {
+          if (question && typeof question.titleSlug === "string" && question.status === "ac") slugs.push(question.titleSlug);
+        }
+        if (!list.questions.length) break;
+      }
+    } catch {
+      return { ok: false, reason: "failed" };
+    }
+    return { ok: true, slugs };
+  }
+
+  // Once every 12 hours, when a problem page opens: the worker says whether
+  // a sync is due, and if so the solved problems are merged in the background.
+  async function autoSync({ send = sendToBackground, fetchSolved = fetchSolvedSlugs } = {}) {
+    const due = await send({ type: "lc-tutor:sync-check" });
+    if (!due || due.ok !== true || due.due !== true) return false;
+    const result = await fetchSolved();
+    if (!result.ok) return false;
+    const answer = await send({ type: "lc-tutor:sync-solved", slugs: result.slugs });
+    return Boolean(answer && answer.ok === true);
+  }
+
   // Test-only hook: exposes the button matchers and the model-read
   // message-passing logic to content.test.js via plain CommonJS require(),
   // so they're unit-testable with simple mocks (no jsdom, no build step)
@@ -528,6 +578,8 @@
       sendCapture,
       handToBackground,
       handleAccepted,
+      fetchSolvedSlugs,
+      autoSync,
     };
     return;
   }
@@ -536,6 +588,18 @@
   document.addEventListener("keydown", handleShortcutKeydown, true);
   document.addEventListener("leetcode-capture:snapshot-request", (event) => answerSnapshotRequest(event));
   document.addEventListener("leetcode-capture:submission-accepted", (event) => handleAccepted(event));
+  {
+    const runtime =
+      (typeof browser !== "undefined" && browser.runtime) || (typeof chrome !== "undefined" && chrome.runtime) || null;
+    if (runtime && runtime.id && runtime.onMessage) {
+      runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (sender.id !== runtime.id || !message || message.type !== "lc-tutor:sync-fetch") return undefined;
+        fetchSolvedSlugs().then(sendResponse, () => sendResponse({ ok: false, reason: "failed" }));
+        return true;
+      });
+    }
+    autoSync().catch(() => {});
+  }
   // Right away, not at the first Run or Submit: inject.js also watches for
   // the judge's verdict, which comes after a Submit's own click.
   injectPageScript().catch((err) => console.warn("[leetcode-capture] could not load inject.js", err));

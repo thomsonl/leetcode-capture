@@ -132,7 +132,7 @@ test('the card follows the list it is given: its next problem, its group, its la
   assert.deepEqual(blind.lists.map((l) => `${l.id}:${l.size}`), ['neetcode-150:150', 'neetcode-250:250', 'blind-75:75', 'grind-75:75', 'top-100-liked:100', 'top-interview-150:150', 'sql-50:50']);
   // A list added to the picker is a list the card's menu and the worker know.
   const liked = congratulation({}, 'move-zeroes', listById('top-100-liked'));
-  assert.deepEqual(liked.roadmap, { id: 'top-100-liked', title: 'Top 100 Liked' });
+  assert.deepEqual(liked.roadmap, { id: 'top-100-liked', title: 'Top 100 Liked by LeetCode' });
   assert.equal(liked.more.label, 'More Two Pointers problems');
   assert.ok(isListId('top-100-liked'));
   assert.equal(blind.lists[2].title, 'Blind 75');
@@ -576,4 +576,33 @@ test('content.js forwards an accepted submission once and hands the card to the 
   await handleAccepted(ev(JSON.stringify({ submissionId: '503', slug: 'two-sum' })), { ...opts, send: async () => null });
   await handleAccepted(ev(JSON.stringify({ submissionId: '504', slug: 'two-sum' })), { ...opts, slugOf: () => null });
   assert.equal(solved.length, 1);
+});
+
+test('syncing adds what LeetCode says is solved, keeps marks and removes nothing', async () => {
+  const storage = fakeStorage({ [SOLVED_KEY]: { 'two-sum': { at: '2026-11-04T10:00:00.000Z', count: 2 }, '3sum': { at: '2026-11-04T10:00:00.000Z', count: 0, manual: true } } });
+  const service = createSolvedService({ storage, extensionOrigin: ORIGIN, now: () => '2026-11-05T10:00:00.000Z' });
+  const answer = await service.handleMessage({ type: 'lc-tutor:sync-solved', slugs: ['two-sum', 'valid-anagram', 'valid-anagram', 'climbing-stairs'] }, tabSender());
+  assert.deepEqual(answer, { ok: true, added: 2, total: 3 });
+  const stored = storage.data[SOLVED_KEY];
+  assert.deepEqual(stored['two-sum'], { at: '2026-11-04T10:00:00.000Z', count: 2 });
+  assert.deepEqual(stored['3sum'], { at: '2026-11-04T10:00:00.000Z', count: 0, manual: true });
+  assert.deepEqual(stored['valid-anagram'], { at: '2026-11-05T10:00:00.000Z', count: 0, synced: true });
+  assert.equal(Object.keys(stored).length, 4);
+  assert.deepEqual(normalizeSolved(stored)['climbing-stairs'], { at: '2026-11-05T10:00:00.000Z', count: 0, synced: true });
+});
+
+test('an automatic sync is due when never done or 12 hours old, and only a problem tab may ask or report', async () => {
+  const storage = fakeStorage();
+  let time = '2026-11-05T10:00:00.000Z';
+  const service = createSolvedService({ storage, extensionOrigin: ORIGIN, now: () => time });
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-check' }, tabSender()), { ok: true, due: true });
+  await service.handleMessage({ type: 'lc-tutor:sync-solved', slugs: ['two-sum'] }, tabSender());
+  time = '2026-11-05T21:59:00.000Z';
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-check' }, tabSender()), { ok: true, due: false });
+  time = '2026-11-05T22:00:00.000Z';
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-check' }, tabSender()), { ok: true, due: true });
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-check' }, pageSender), { ok: false });
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-solved', slugs: ['x'] }, pageSender), { ok: false });
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-solved', slugs: ['Bad Slug'] }, tabSender()), { ok: false });
+  assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:sync-solved', slugs: 'two-sum' }, tabSender()), { ok: false });
 });

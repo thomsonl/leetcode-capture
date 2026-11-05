@@ -100,8 +100,7 @@ test('the lists, in the selector order, with their sizes and group counts', () =
     assert.equal(new Set(slugs).size, size, `${list.id} has a problem twice`);
     assert.equal(list.topics.length, groups, list.id);
     assert.equal(new Set(list.topics.map((t) => t.id)).size, groups, `${list.id} group ids`);
-    assert.ok(list.title && list.description && list.groupNoun, list.id);
-    assert.ok(!/[\u2013\u2014]/.test(list.description), `${list.id}: no en or em dash`);
+    assert.ok(list.title && list.groupNoun, list.id);
     for (const t of list.topics) {
       assert.ok(t.problems.length > 0, `${list.id}/${t.id} is empty`);
       for (const p of t.problems) {

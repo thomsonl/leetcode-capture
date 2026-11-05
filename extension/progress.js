@@ -1,6 +1,6 @@
 // LeetCode Capture - the options page's Progress tab and its tab bar.
 //
-// A "Working on" choice of problem list (shared/roadmap.js LISTS, kept in
+// A "Problem Sets" choice of problem list (shared/roadmap.js LISTS, kept in
 // storage.local `activeProgressList`, NeetCode 150 when unset), then a
 // picture of that list: NeetCode 150 and NeetCode 250 as their roadmap graph
 // (one node per topic with its solved count and the prerequisite lines
@@ -162,7 +162,7 @@ function formatDate(iso) {
 
 // ---- the tab bar -----------------------------------------------------------
 
-const TABS = ['settings', 'progress'];
+const TABS = ['progress', 'settings'];
 const subtitle = (name) => (name === 'progress' ? `Your ${ROADMAP.title} progress` : 'Tutor settings');
 
 function selectTab(name, { focus = false, push = true } = {}) {
@@ -218,16 +218,6 @@ function build() {
   const panel = $('panel-progress');
   panel.textContent = '';
   panel.append(
-    h(
-      'section',
-      { class: 'card lists', 'aria-labelledby': 'lists-heading' },
-      h(
-        'fieldset',
-        { class: 'list-picker', id: 'list-picker' },
-        h('legend', { id: 'lists-heading', text: 'Working on' }),
-        h('div', { class: 'list-options' })
-      )
-    ),
     h('section', { class: 'card summary', id: 'summary', 'aria-labelledby': 'summary-heading' }),
     h(
       'section',
@@ -243,50 +233,17 @@ function build() {
   drawer.addEventListener('keydown', drawerKeys);
   document.body.append(backdrop, drawer);
   new ResizeObserver(() => layoutView()).observe($('canvas'));
-  renderPicker();
   render();
 }
 
 function render() {
   if (!built) return;
-  renderPicker();
   renderSummary();
   renderView();
   if (openTopic) renderDrawer();
 }
 
 // ---- the list choice -------------------------------------------------------
-
-// One radio card per list: its name, size and what it is. Native radios, so
-// the arrow keys move the choice and Tab leaves the group, as anywhere else.
-function renderPicker() {
-  const box = document.querySelector('#list-picker .list-options');
-  if (!box) return;
-  if (!box.children.length) {
-    for (const list of LISTS) {
-      const descId = `list-desc-${list.id}`;
-      box.appendChild(
-        h(
-          'label',
-          { class: 'list-option', 'data-list': list.id },
-          h('input', { type: 'radio', name: 'progress-list', value: list.id, 'aria-describedby': descId, onchange: (e) => e.currentTarget.checked && chooseList(list.id) }),
-          h(
-            'span',
-            { class: 'list-text' },
-            h('span', { class: 'list-line' }, h('span', { class: 'list-name', text: list.title }), h('span', { class: 'list-size', text: `${list.size} problems` })),
-            h('span', { class: 'list-desc', id: descId, text: list.description })
-          )
-        )
-      );
-    }
-  }
-  for (const option of box.querySelectorAll('.list-option')) {
-    const on = option.dataset.list === activeId;
-    option.toggleAttribute('data-selected', on);
-    const input = option.querySelector('input');
-    if (input.checked !== on) input.checked = on;
-  }
-}
 
 // The canvas shows one list at a time; switching lists builds it anew.
 function useList(id) {
@@ -407,25 +364,28 @@ function renderSummary() {
     }
   }
   const next = nextProblem();
+  const menuHadFocus = document.activeElement && document.activeElement.id === 'list-select';
   box.textContent = '';
   box.append(
     h(
       'div',
       { class: 'summary-head' },
       h(
-        'div',
-        {},
-        h('h2', { id: 'summary-heading', text: ROADMAP.title }),
-        h('p', {
-          class: 'help',
-          text: isGraph()
-            ? `The roadmap of ${ROADMAP.size} problems by topic. Start at the top; each line leads to a topic that builds on the one above it.`
-            : bySubject()
-              ? `${plural(shownGroups().length, noun())} of ${ROADMAP.size} problems, each under one subject. The one marked Next is still the first you have not solved in the list's order, ${ROADMAP.groupNoun} by ${ROADMAP.groupNoun}.`
-              : `${plural(ROADMAP.topics.length, noun())} of ${ROADMAP.size} problems, in the order the list gives them. Work through them in order; the one marked Next is the first you have not finished.`,
-        })
+        'h2',
+        { id: 'summary-heading' },
+        h(
+          'select',
+          { id: 'list-select', class: 'title-select', 'aria-label': 'Problem Sets', onchange: (e) => chooseList(e.currentTarget.value) },
+          ...LISTS.map((list) => h('option', { value: list.id, text: list.title, selected: list.id === ROADMAP.id }))
+        )
       ),
-      h('p', { class: 'total' }, h('span', { class: 'total-done', text: String(all.solved) }), h('span', { class: 'total-of', text: ` / ${all.total} solved` }))
+      h(
+        'div',
+        { class: 'total-box' },
+        h('p', { class: 'total' }, h('span', { class: 'total-done', text: String(all.solved) }), h('span', { class: 'total-of', text: ` / ${all.total} solved` })),
+        h('button', { type: 'button', class: 'btn sync-btn', id: 'sync-btn', onclick: () => syncFromLeetCode() }, 'Sync from LeetCode'),
+        h('p', { class: 'sync-status', id: 'sync-status', role: 'status', 'aria-live': 'polite' })
+      )
     ),
     bar(all.solved, all.total, `${ROADMAP.title} solved`),
     h(
@@ -450,6 +410,26 @@ function renderSummary() {
     ),
   );
   if (notice) box.appendChild(h('p', { class: 'result', 'data-kind': 'error', role: 'alert', text: notice }));
+  paintSync();
+  fitTitleMenu();
+  if (menuHadFocus) $('list-select').focus();
+}
+
+// The menu is as wide as the chosen name, so its arrow sits right after the
+// title and not at the far end of a box sized for the longest name.
+function fitTitleMenu() {
+  const select = $('list-select');
+  if (!select) return;
+  // Browsers that size a menu to its chosen option (field-sizing) need nothing.
+  if (typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content')) return;
+  const probe = h('span', { text: select.selectedOptions[0].textContent });
+  const style = getComputedStyle(select);
+  probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font-family:${style.fontFamily};font-size:${style.fontSize};font-weight:${style.fontWeight};letter-spacing:${style.letterSpacing};`;
+  document.body.appendChild(probe);
+  const text = probe.getBoundingClientRect().width;
+  probe.remove();
+  // The native arrow takes room of its own beside the padding.
+  select.style.width = `${Math.ceil(text + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 26)}px`;
 }
 
 // The node buttons, in reading order (row, then column) so Tab walks the
@@ -768,7 +748,7 @@ function renderDrawer() {
     const record = solved[p.slug];
     const isNext = Boolean(next && next.slug === p.slug);
     const when = record ? formatDate(record.at) : null;
-    const tip = record ? (record.manual ? 'Marked solved by hand. Click to unmark.' : `Accepted${when ? ` on ${when}` : ''}. Click to unmark.`) : 'Click to mark solved.';
+    const tip = record ? (record.manual ? 'Marked solved by hand. Click to unmark.' : record.synced ? 'Synced from LeetCode. Click to unmark.' : `Accepted${when ? ` on ${when}` : ''}. Click to unmark.`) : 'Click to mark solved.';
     return h(
       'tr',
       { 'data-slug': p.slug, 'data-solved': record ? '' : null, 'data-next': isNext ? '' : null },
@@ -831,6 +811,47 @@ async function ask(message) {
   } catch {
     return false;
   }
+}
+
+// "Sync from LeetCode": the worker asks an open LeetCode problem tab (which
+// is signed in) for every problem the account has accepted and adds the ones
+// not marked here. It never removes one.
+function syncText(answer) {
+  if (!answer || typeof answer !== 'object') return 'Could not sync. Reload this page and try again.';
+  if (answer.ok) {
+    if (!answer.added) return `Up to date: ${plural(answer.total, 'problem')} solved on LeetCode.`;
+    return `Added ${plural(answer.added, 'problem')} from LeetCode (${answer.total} solved there).`;
+  }
+  if (answer.reason === 'no-tab') return 'Open any LeetCode problem page, then sync again.';
+  if (answer.reason === 'signed-out') return 'Sign in to LeetCode in that tab, then sync again.';
+  return 'LeetCode did not answer. Reload its tab and try again.';
+}
+
+// The sync button and its note live in the summary, which is redrawn often,
+// so what they show is kept here.
+let syncing = false;
+let syncNote = '';
+function paintSync() {
+  const button = $('sync-btn');
+  const status = $('sync-status');
+  if (button) button.disabled = syncing;
+  if (status) status.textContent = syncNote;
+}
+
+async function syncFromLeetCode() {
+  if (syncing) return;
+  syncing = true;
+  syncNote = 'Syncing...';
+  paintSync();
+  let answer = null;
+  try {
+    answer = await api.runtime.sendMessage({ type: 'lc-tutor:sync-now' });
+  } catch {
+    answer = null;
+  }
+  syncing = false;
+  syncNote = syncText(answer);
+  paintSync();
 }
 
 // The screen changes at once; the worker's write then comes back through
