@@ -65,9 +65,9 @@ If it offers a caption or description field for a screenshot, paste these; other
 
 ## Store listing tab
 
-**Name:** `LeetCode Capture`
+**Name (24 characters, max 75; it is the manifest `name`):** `Thomson's LeetCode Tutor`
 
-See "Decisions" at the end about the trademark in the name.
+"Name" under "Decisions" at the end records why this wording was chosen.
 
 **Summary (129 characters, max 132; it is the manifest `description`):**
 
@@ -78,7 +78,9 @@ A tutor for LeetCode problems: hints and Submit reviews from a local model, your
 **Description:**
 
 ```
-LeetCode Capture adds a Tutor tab to each problem page on leetcode.com. It sees each Run and Submit you make and the code in your editor, and coaches you with hints and questions instead of handing you the answer. It gives a full solution only when you ask for one.
+Thomson's LeetCode Tutor adds a Tutor tab to each problem page on leetcode.com. It sees each Run and Submit you make and the code in your editor, and coaches you with hints and questions instead of handing you the answer. It gives a full solution only when you ask for one.
+
+This is an independent project by one developer. It is not affiliated with or endorsed by LeetCode.
 
 Tutor
 - Open a problem and click the Tutor tab, next to Description and Submissions.
@@ -107,12 +109,11 @@ Privacy
 
 Run and Submit are noticed from the buttons and from the keyboard shortcuts Ctrl/Cmd+' (Run) and Ctrl/Cmd+Enter (Submit).
 
-This is an independent project. It is not affiliated with or endorsed by LeetCode.
-
 Source code, setup help and the privacy policy: https://github.com/thomsonl/leetcode-capture
 ```
 
-"LeetCode" appears twice above, plus leetcode.com and the repository address (the store counts more than five repeats of a keyword as spam).
+"LeetCode" appears twice above as a word (the product name and the "not affiliated" line), plus leetcode.com and the repository address (the store counts more than five repeats of a keyword as spam).
+The "not affiliated" line sits in the first lines on purpose, right after the name that carries the trademark.
 
 **Description without the subscription line** (only if the helper is not yet on npm): paste the block above with the third bullet under "Choose your model in Settings" removed.
 
@@ -222,10 +223,13 @@ The rendered page https://github.com/thomsonl/leetcode-capture/blob/main/extensi
 
 ## Decisions for you
 
-- **The name.** The impersonation policy forbids representing that the product is "authorized by, endorsed by, or produced by" another company, and forbids trademark infringement; it gives no rule on wording.
-  A name that starts with "LeetCode" reads most like an official product.
-  The common safer form puts the trademark last as a description of what it works with, for example `Capture Tutor for LeetCode` or `Practice Tutor for LeetCode`, together with the "not affiliated" line already in the description and privacy policy.
-  Renaming also needs the e2e harness's name lookup (`cdp.mjs`) changed, so it is not done here.
+- **Name (decided: `Thomson's LeetCode Tutor`).** The impersonation policy forbids representing that the product is "authorized by, endorsed by, or produced by" another company, and forbids trademark infringement; it gives no rule on wording.
+  The old name, `LeetCode Capture`, started with the trademark and read most like an official product.
+  The chosen name leads with the developer's name in the possessive, so it reads as one person's tutor that works with LeetCode, not as a LeetCode product.
+  "LeetCode" keeps its official capitalization and is used only to say what the tutor works with.
+  The description states in its first lines that the project is independent and not affiliated with or endorsed by LeetCode, and the privacy policy says the same.
+  Only the store-facing name changed: the repository, the npm package `leetcode-capture-helper`, the native messaging host `dev.thomsonklee.leetcode_capture`, the Firefox add-on id, storage keys and file names keep `leetcode-capture`.
+  The e2e harness (`cdp.mjs`) finds the extension by the name in the loaded `manifest.json`, so a later rename needs no harness change.
   The icon's orange (`#ffa116`) is also LeetCode's brand orange.
 - **Web history.** Left unchecked: the extension stores problem slugs with the time they were solved, not pages visited.
   Check it too if you prefer to disclose more than strictly needed.

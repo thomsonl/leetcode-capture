@@ -1,10 +1,10 @@
-# Privacy Policy for LeetCode Capture
+# Privacy Policy for Thomson's LeetCode Tutor
 
 Last updated: 2026-11-05
 
 ## What this extension does
 
-LeetCode Capture is a tutor for LeetCode problems.
+Thomson's LeetCode Tutor is a tutor for LeetCode problems.
 It is an independent project and is not affiliated with or endorsed by LeetCode.
 It adds a Tutor tab to `leetcode.com/problems/*` pages, sees your Run and Submit attempts, and lets you message an AI tutor about the problem you are solving.
 It also keeps track of the problems you solved, shows your progress through well-known problem lists, and suggests problems to practice a skill.

@@ -1,6 +1,8 @@
 # leetcode-capture
 
-A browser extension that captures your LeetCode Run and Submit attempts as you work, not just your final solution.
+Thomson's LeetCode Tutor is a browser extension that captures your LeetCode Run and Submit attempts as you work, not just your final solution.
+That is the extension's store name; the repository, the helper package and the file names keep `leetcode-capture`.
+It is an independent project and is not affiliated with or endorsed by LeetCode.
 It adds a Tutor tab to the problem page, backed by an LLM of your choice, acting as a personal tutor that reviews your code live.
 With a local model or an API key the tutor runs inside the extension itself, with nothing else to install (see "Runtimes" below).
 With a Claude or ChatGPT subscription it runs in a companion terminal chat on your computer.
@@ -34,6 +36,7 @@ Then load the browser extension.
 **Chrome:** open `chrome://extensions`, enable "Developer mode", click "Load unpacked", and select the `extension/` folder.
 **Firefox:** open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on", and select `extension/manifest.json`.
 
+It shows as "Thomson's LeetCode Tutor" in the extensions list.
 Open any `leetcode.com/problems/<slug>/` page to confirm it loaded.
 
 Chrome prints a warning about `background.scripts` when it loads the repo folder, because the manifest lists that key for Firefox.
@@ -107,7 +110,7 @@ What install writes, for your user only and without admin rights:
   For a copy that stays put, run `npm install -g leetcode-capture-helper` and then `leetcode-capture-helper install`.
 - The capture log and the companion's state go in `app/data/` inside that data folder, not in the package.
 
-From a checkout of this repository, `node helper/cli.js install --chrome-id <id>` runs the companion and relay from that checkout instead (with `npm install` done in `companion/`), and `--root <folder>` names another LeetCode Capture folder.
+From a checkout of this repository, `node helper/cli.js install --chrome-id <id>` runs the companion and relay from that checkout instead (with `npm install` done in `companion/`), and `--root <folder>` names another checkout of this repository.
 The name `leetcode-capture-helper` was free on npm on 2026-10-29 and has not been published yet; until it is, use the checkout command above.
 
 To build the package: `npm pack` in `helper/` copies the companion, relay, `extension/shared/` and `vault-tool/vault-notes.js` (no tests, no data) into `helper/runtime/` first (`scripts/pack.mjs`, run by `prepack`), and fails if anything they import is missing or is not a dependency of the helper package; `postpack` removes the copy again, so those folders stay the only source.

@@ -18,7 +18,10 @@ For the "what changed" summary, use that file's "What changed since the store-pr
 
 ## Listing fields
 
-**Name:** LeetCode Capture
+**Name (24 characters, max 50; it is the manifest `name`):** Thomson's LeetCode Tutor
+
+The wording and the trademark reasoning are under "Decisions" in `CHROME_SUBMISSION_CHECKLIST.md`.
+The description pasted from there states that the project is independent and not affiliated with or endorsed by LeetCode.
 
 **Summary (max 250 characters):**
 
