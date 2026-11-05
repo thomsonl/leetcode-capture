@@ -53,6 +53,11 @@ try {
     await options.waitFor(`document.getElementById('sync-status').textContent && !/Syncing/.test(document.getElementById('sync-status').textContent)`, { what: 'the sync answer' });
     return options.eval(`document.getElementById('sync-status').textContent`);
   };
+  const isColour = (bg, name) => {
+    const [r, g, b] = (bg.match(/[\d.]+/g) || []).map(Number);
+    return name === 'green' ? g > r + 40 && g > b + 40 : r > g + 80 && r > b + 80;
+  };
+  const buttonState = () => options.eval(`(() => { const b = document.getElementById('sync-btn'); return { result: b.dataset.result || '', bg: getComputedStyle(b).backgroundColor, visibleNote: document.getElementById('sync-status').getBoundingClientRect().height > 1 }; })()`);
 
   await scenario('the tabs read Progress then Settings', async () => {
     const tabs = await options.eval(`[...document.querySelectorAll('.tab')].map((t) => t.textContent).join()`);
@@ -62,6 +67,8 @@ try {
   await scenario('with no LeetCode tab open the button says to open one', async () => {
     const text = await sync();
     check(/Open any LeetCode problem page/.test(text), text);
+    const state = await buttonState();
+    check(state.result === 'fail' && isColour(state.bg, 'red') && !state.visibleNote, `red button, no visible text: ${JSON.stringify(state)}`);
     check(!(await stored()).solvedProblems, 'nothing is stored');
   });
 
@@ -116,6 +123,10 @@ try {
     account.slugs.push('brand-new-solve');
     const text = await sync();
     check(/Added 1 problem from LeetCode \(131 solved there\)/.test(text), text);
+    const state = await buttonState();
+    check(state.result === 'ok' && isColour(state.bg, 'green') && !state.visibleNote, `green button, no visible text: ${JSON.stringify(state)}`);
+    await new Promise((r) => setTimeout(r, 7000));
+    check((await buttonState()).result === '', 'the colour goes back after a few seconds');
     const s = (await stored()).solvedProblems;
     check(s['by-hand'].manual === true && s['synced-problem-1'].count === 3 && !s['synced-problem-1'].synced, 'marks changed');
     check(s['brand-new-solve'].synced === true && Object.keys(s).length === 132, `count ${Object.keys(s).length}`);

@@ -46,7 +46,7 @@ async function key(page, name, { shift = false } = {}) {
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
   await sleep(40);
 }
-const focused = (page) => page.eval(`(() => { const a = document.activeElement; return a ? (a.dataset.topic || (a.id === 'list-select' && 'list:' + a.value) || (a.dataset.slug && a.dataset.role + ':' + a.dataset.slug) || a.id || a.className || a.tagName) : null; })()`);
+const focused = (page) => page.eval(`(() => { const a = document.activeElement; return a ? (a.dataset.topic || ((a.id === 'list-select' || a.id === 'list-options') && 'list:' + (document.getElementById('list-select').dataset.value)) || (a.dataset.slug && a.dataset.role + ':' + a.dataset.slug) || a.id || a.className || a.tagName) : null; })()`);
 
 // Shared solves: Two Sum and Best Time (on most lists), Climbing Stairs, one
 // SQL problem, Combination Sum IV (Blind 75 only), and the rest of Blind 75's
@@ -68,20 +68,20 @@ try {
   await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
   const open = async () => {
     await page.send('Page.navigate', { url: `chrome-extension://${browser.extensionId}/settings.html#progress` });
-    await page.waitFor(`(document.getElementById('list-select') || { options: [] }).options.length === ${LISTS.length} && document.querySelector('.total-done')`, { what: 'the Progress tab' });
+    await page.waitFor(`document.querySelectorAll('.title-option').length === ${LISTS.length} && document.querySelector('.total-done')`, { what: 'the Progress tab' });
     await sleep(150);
   };
   await open();
 
   await scenario('first run: NeetCode 150 is chosen, every list is a plain name in one menu', async () => {
     const m = await page.eval(`({
-      label: document.getElementById('list-select').getAttribute('aria-label'),
-      options: [...document.getElementById('list-select').options].map((o) => ({ id: o.value, name: o.textContent })),
-      value: document.getElementById('list-select').value,
+      label: document.getElementById('list-options').getAttribute('aria-label'),
+      options: [...document.querySelectorAll('.title-option')].map((o) => ({ id: o.dataset.list, name: o.textContent })),
+      value: document.getElementById('list-select').dataset.value,
       descriptions: document.querySelectorAll('.list-desc, .list-size').length,
       nodes: document.querySelectorAll('.node').length,
       sub: document.getElementById('page-sub').textContent,
-      title: document.getElementById('list-select').selectedOptions[0].textContent,
+      title: document.querySelector('#list-select .title-text').textContent,
       tabs: [...document.querySelectorAll('.tab')].map((t) => t.textContent),
     })`);
     check(m.label === 'Problem Sets', m.label);
@@ -95,30 +95,24 @@ try {
     await page.screenshot(path.join(shots, 'picker-neetcode-dark.png'), { width: 1280, height: 700, scheme: 'dark' });
   });
 
-  // Every list's name fits its menu: the selected text is never cut, at any width.
+  // Every list's name shows whole on the title button with its arrow right after it, at any width.
   await scenario('each list name shows whole in the title menu at 1280 and 400 px', async () => {
     for (const width of [1280, 400]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       for (const list of LISTS) {
-        await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = '${list.id}'; s.dispatchEvent(new Event('change')); })()`);
-        await page.waitFor(`document.getElementById('list-select').value === '${list.id}' && document.querySelector('.total-done')`, { what: list.title });
+        await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-${list.id}').click(); })()`);
+        await page.waitFor(`document.getElementById('list-select').dataset.value === '${list.id}' && document.querySelector('.total-done')`, { what: list.title });
         await sleep(120);
         const m = await page.eval(`(() => {
-          const s = document.getElementById('list-select');
-          const probe = document.createElement('span');
-          const st = getComputedStyle(s);
-          probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font-family:' + st.fontFamily + ';font-size:' + st.fontSize + ';font-weight:' + st.fontWeight;
-          probe.textContent = s.selectedOptions[0].textContent;
-          document.body.appendChild(probe);
-          const text = probe.getBoundingClientRect().width;
-          probe.remove();
-          const inner = s.getBoundingClientRect().width - parseFloat(st.paddingLeft) - parseFloat(st.paddingRight);
-          return { text: Math.ceil(text), room: Math.floor(inner) };
+          const t = document.querySelector('#list-select .title-text');
+          const box = document.getElementById('summary').getBoundingClientRect();
+          const r = document.getElementById('list-select').getBoundingClientRect();
+          return { text: t.textContent, cut: t.scrollWidth > t.clientWidth + 1, out: r.right > box.right || r.left < box.left, chevronAfter: document.querySelector('#list-select svg').getBoundingClientRect().left - t.getBoundingClientRect().right };
         })()`);
-        check(m.room >= m.text + 12, `${width} ${list.title}: text ${m.text}px, room ${m.room}px`);
+        check(m.text === list.title && !m.cut && !m.out && m.chevronAfter >= 0 && m.chevronAfter <= 8, `${width} ${list.title}: ${JSON.stringify(m)}`);
       }
     }
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'neetcode-150'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-neetcode-150').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.node').length === 18`, { what: 'NeetCode 150 again' });
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
   });
@@ -133,7 +127,7 @@ try {
         const select = document.getElementById('list-select').getBoundingClientRect();
         const total = document.querySelector('.total').getBoundingClientRect();
         const button = document.getElementById('sync-btn').getBoundingClientRect();
-        return { cards: document.querySelectorAll('.card.lists').length, out: select.right > box.right + 0.5 || button.right > box.right + 0.5 || button.left < box.left - 0.5, below: button.top >= total.bottom - 0.5, sameColumn: Math.abs(button.right - total.right) < 2 || ${width} < 761 };
+        return { cards: document.querySelectorAll('.card.lists').length, out: select.right > box.right + 0.5 || button.right > box.right + 0.5 || button.left < box.left - 0.5, below: button.right <= total.left, sameColumn: Math.abs(total.right - box.right) < 24 || ${width} < 761 };
       })()`);
       check(m.cards === 0 && !m.out && m.below && m.sameColumn, `${width}: ${JSON.stringify(m)}`);
       await page.screenshot(path.join(shots, `picker-${width}-dark.png`), { width, height: width === 400 ? 700 : 500, scheme: 'dark' });
@@ -141,9 +135,28 @@ try {
   }
   await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
 
+  await scenario('the open menu is the page\'s own: all names, the chosen one marked, Escape and an outside click close it', async () => {
+    await page.eval(`document.getElementById('list-select').click()`);
+    await page.waitFor(`!document.getElementById('list-options').hidden`, { what: 'the open menu' });
+    const m = await page.eval(`(() => {
+      const list = document.getElementById('list-options').getBoundingClientRect();
+      const st = getComputedStyle(document.getElementById('list-options'));
+      return { names: [...document.querySelectorAll('.title-option')].map((o) => o.textContent), chosen: [...document.querySelectorAll('.title-option[aria-selected="true"]')].map((o) => o.dataset.list), radius: st.borderTopLeftRadius, bg: st.backgroundColor, native: document.querySelectorAll('#summary select').length, inView: list.bottom <= window.innerHeight && list.right <= window.innerWidth };
+    })()`);
+    check(m.names.join() === LISTS.map((l) => l.title).join() && m.chosen.join() === 'neetcode-150' && m.radius === '8px' && m.native === 0 && m.inView, JSON.stringify(m));
+    await page.screenshot(path.join(shots, 'menu-open-dark.png'), { width: 1280, height: 600, scheme: 'dark' });
+    await key(page, 'Escape');
+    await page.waitFor(`document.getElementById('list-options').hidden`, { what: 'Escape closing it' });
+    check((await focused(page)) === 'list:neetcode-150', `focus back on the title: ${await focused(page)}`);
+    await page.eval(`document.getElementById('list-select').click()`);
+    await page.waitFor(`!document.getElementById('list-options').hidden`, { what: 'reopening' });
+    await page.eval(`document.getElementById('roadmap-heading').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+    await page.waitFor(`document.getElementById('list-options').hidden`, { what: 'an outside click closing it' });
+  });
+
   await scenario('choosing Blind 75 with the mouse: grouped layout, summary, Next group; stored, solved problems untouched', async () => {
     const before = await stored();
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'blind-75'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-blind-75').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === 10`, { what: 'the Blind 75 groups' });
     await sleep(200);
     const after = await stored();
@@ -153,13 +166,13 @@ try {
     const next = nextOnRoadmap(BLIND_75, Object.keys(seed))[0];
     const m = await page.eval(`({
       sub: document.getElementById('page-sub').textContent,
-      title: document.getElementById('list-select').selectedOptions[0].textContent,
+      title: document.querySelector('#list-select .title-text').textContent,
       help: document.querySelectorAll('#summary .help').length,
       total: document.querySelector('.total').textContent,
       next: document.querySelector('.next-up').textContent,
       nodes: document.querySelectorAll('.node').length,
       cards: [...document.querySelectorAll('.group')].map((g) => ({ id: g.dataset.topic, step: g.querySelector('.group-step').textContent, title: g.querySelector('.group-title').textContent, count: g.querySelector('.node-count').textContent, next: g.hasAttribute('data-next'), complete: g.hasAttribute('data-complete'), levels: [...g.querySelectorAll('.group-level')].filter((l) => !l.hidden).map((l) => l.querySelector('.group-level-text').textContent), label: g.getAttribute('aria-label') })),
-      foot: document.getElementById('progress-foot').textContent,
+      foot: document.querySelectorAll('#progress-foot').length,
     })`);
     check(m.sub === 'Your Blind 75 progress' && m.title === 'Blind 75' && m.nodes === 0, JSON.stringify(m));
     check(m.help === 0, 'no description under the title');
@@ -171,7 +184,7 @@ try {
     check(m.cards[2].count === '2 / 11', `DP counts Climbing Stairs and Combination Sum IV: ${m.cards[2].count}`);
     check(JSON.stringify(m.cards[0].levels) === JSON.stringify(['E 3/3', 'M 6/7']), `difficulty parts: ${m.cards[0].levels}`);
     check(m.cards[0].label === 'Array, category 1 of 10, 9 of 10 solved, recommended next. Easy 3 of 3, Medium 6 of 7', m.cards[0].label);
-    check(/open a category and click a status mark/.test(m.foot) && /count in every list/.test(m.foot), m.foot);
+    check(m.foot === 0, 'no description at the bottom');
     await page.screenshot(path.join(shots, 'blind-dark.png'), { width: 1280, height: 1100, scheme: 'dark' });
     await page.screenshot(path.join(shots, 'blind-light.png'), { width: 1280, height: 1100, scheme: 'light' });
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
@@ -267,8 +280,11 @@ try {
     await page.eval(`document.getElementById('list-select').focus()`);
     check((await focused(page)) === 'list:blind-75', `focus: ${await focused(page)}`);
     await key(page, 'ArrowDown');
+    await page.waitFor(`!document.getElementById('list-options').hidden && document.getElementById('list-select').getAttribute('aria-expanded') === 'true'`, { what: 'the menu opening' });
+    await key(page, 'ArrowDown');
+    await key(page, 'Enter');
     await page.waitFor(`document.querySelectorAll('.group').length === 8`, { what: 'Grind 75' });
-    check((await focused(page)) === 'list:grind-75', `focus follows: ${await focused(page)}`);
+    check((await focused(page)) === 'list:grind-75', `focus returns to the title: ${await focused(page)}`);
     await sleep(150);
     check((await stored()).activeProgressList === 'grind-75', 'stored');
     const m = await page.eval(`({ titles: [...document.querySelectorAll('.group-title')].map((n) => n.textContent), sub: document.getElementById('page-sub').textContent, next: document.querySelector('.next-up').textContent })`);
@@ -327,10 +343,10 @@ try {
     // Remembered across a reload; another list has no switch; back to Grind 75 keeps it.
     await open();
     check((await page.eval(`document.querySelectorAll('.group').length`)) === GRIND_75.subjects.length, 'subjects after a reload');
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'blind-75'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-blind-75').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === 10`, { what: 'Blind 75' });
     check(await page.eval(`document.getElementById('view-bar').hidden`), 'Blind 75 has no switch');
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'grind-75'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-grind-75').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${GRIND_75.subjects.length}`, { what: 'Grind 75 by subject' });
     for (const width of [400, 720]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -346,10 +362,10 @@ try {
 
   await scenario('the choice survives a reload, and a change made elsewhere is followed at once', async () => {
     await open();
-    let m = await page.eval(`({ checked: document.getElementById('list-select').value, groups: document.querySelectorAll('.group').length, nodes: document.querySelectorAll('.node').length })`);
+    let m = await page.eval(`({ checked: document.getElementById('list-select').dataset.value, groups: document.querySelectorAll('.group').length, nodes: document.querySelectorAll('.node').length })`);
     check(m.checked === 'grind-75' && m.groups === 8 && m.nodes === 0, `after reload: ${JSON.stringify(m)}`);
     await browser.serviceWorkerEval(`chrome.storage.local.set({ activeProgressList: 'sql-50' })`);
-    await page.waitFor(`document.querySelectorAll('.group').length === 7 && document.getElementById('list-select').value === 'sql-50'`, { what: 'SQL 50 from elsewhere' });
+    await page.waitFor(`document.querySelectorAll('.group').length === 7 && document.getElementById('list-select').dataset.value === 'sql-50'`, { what: 'SQL 50 from elsewhere' });
     m = await page.eval(`({ total: document.querySelector('.total').textContent, first: document.querySelector('.group .node-count').textContent, title: document.querySelector('.group[data-topic="advanced-string"] .group-title').textContent })`);
     check(m.total === '1 / 50 solved' && m.first === '1 / 5' && m.title === 'Advanced String Functions / Regex / Clause', JSON.stringify(m));
     await page.screenshot(path.join(shots, 'sql-dark.png'), { width: 1280, height: 1000, scheme: 'dark' });
@@ -359,7 +375,7 @@ try {
   });
 
   await scenario('Top Interview 150: 23 sections fit, the longest titles wrap inside their cards', async () => {
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-interview-150'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-top-interview-150').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
     const m = await page.eval(`[...document.querySelectorAll('.group-title')].filter((n) => n.getBoundingClientRect().right > n.closest('.group').getBoundingClientRect().right - 13).map((n) => n.textContent)`);
     check(m.length === 0, `overflowing titles: ${m}`);
@@ -369,18 +385,18 @@ try {
   });
 
   await scenario('Top 100 Liked: LeetCode\'s 15 groups in its order', async () => {
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-100-liked'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-top-100-liked').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_100_LIKED.topics.length}`, { what: 'Top 100 Liked' });
     const m = await page.eval(`({ titles: [...document.querySelectorAll('.group-title')].map((n) => n.textContent), total: document.querySelector('.total').textContent })`);
     const all = progress(TOP_100_LIKED, Object.keys(seed));
     check(m.titles.join() === TOP_100_LIKED.topics.map((t) => t.title).join() && m.total === `${all.solved} / 100 solved`, JSON.stringify(m));
     await page.screenshot(path.join(shots, 'top-100-liked-dark.png'), { width: 1280, height: 1300, scheme: 'dark' });
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-interview-150'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-top-interview-150').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
   });
 
   await scenario('NeetCode 250: the NeetCode roadmap with its own counts, nothing cut', async () => {
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'neetcode-250'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-neetcode-250').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.node').length === 18 && document.querySelectorAll('.edge').length > 0`, { what: 'the NeetCode 250 graph' });
     const all = progress(NEETCODE_250, Object.keys(seed));
     const m = await page.eval(`({
@@ -399,7 +415,7 @@ try {
     await page.screenshot(path.join(shots, 'neetcode-250-dark.png'), { width: 1280, height: 1400, scheme: 'dark' });
     await page.screenshot(path.join(shots, 'neetcode-250-light.png'), { width: 1280, height: 1400, scheme: 'light' });
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'top-interview-150'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-top-interview-150').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.group').length === ${TOP_INTERVIEW_150.topics.length}`, { what: 'Top Interview 150' });
   });
 
@@ -442,7 +458,7 @@ try {
 
   await scenario('back to NeetCode 150: the graph returns, with its lines', async () => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await page.eval(`(() => { const s = document.getElementById('list-select'); s.value = 'neetcode-150'; s.dispatchEvent(new Event('change')); })()`);
+    await page.eval(`(() => { const b = document.getElementById('list-select'); b.click(); document.getElementById('list-option-neetcode-150').click(); })()`);
     await page.waitFor(`document.querySelectorAll('.node').length === 18 && document.querySelectorAll('.edge').length > 0`, { what: 'the graph' });
     const m = await page.eval(`({ groups: document.querySelectorAll('.group').length, size: document.getElementById('graph').dataset.size, sub: document.getElementById('page-sub').textContent })`);
     check(m.groups === 0 && m.size === 'wide' && m.sub === 'Your NeetCode 150 progress', JSON.stringify(m));

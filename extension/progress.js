@@ -225,8 +225,7 @@ function build() {
       h('h2', { class: 'sr-only', id: 'roadmap-heading' }),
       h('div', { class: 'view-bar', id: 'view-bar', hidden: true }),
       h('div', { class: 'canvas', id: 'canvas' })
-    ),
-    h('p', { class: 'foot', id: 'progress-foot' })
+    )
   );
   const backdrop = h('div', { class: 'backdrop', id: 'backdrop', hidden: true, onclick: () => closeDrawer() });
   const drawer = h('aside', { class: 'drawer', id: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'drawer-title', hidden: true });
@@ -329,7 +328,6 @@ function renderView() {
   const canvas = $('canvas');
   canvas.dataset.kind = ROADMAP.kind;
   $('roadmap-heading').textContent = isGraph() ? 'Topics' : `${ROADMAP.title} ${nouns(noun())}`;
-  $('progress-foot').textContent = `Solved problems are kept in this browser only and count in every list. A problem counts as solved when LeetCode accepts your submission with the extension installed; open a ${noun()} and click a status mark to change it.`;
   if (isGraph()) {
     if (!$('graph')) {
       canvas.textContent = '';
@@ -364,7 +362,7 @@ function renderSummary() {
     }
   }
   const next = nextProblem();
-  const menuHadFocus = document.activeElement && document.activeElement.id === 'list-select';
+  const menuHadFocus = document.activeElement && (document.activeElement.id === 'list-select' || document.activeElement.id === 'list-options');
   box.textContent = '';
   box.append(
     h(
@@ -373,17 +371,13 @@ function renderSummary() {
       h(
         'h2',
         { id: 'summary-heading' },
-        h(
-          'select',
-          { id: 'list-select', class: 'title-select', 'aria-label': 'Problem Sets', onchange: (e) => chooseList(e.currentTarget.value) },
-          ...LISTS.map((list) => h('option', { value: list.id, text: list.title, selected: list.id === ROADMAP.id }))
-        )
+        titleMenu()
       ),
       h(
         'div',
         { class: 'total-box' },
-        h('p', { class: 'total' }, h('span', { class: 'total-done', text: String(all.solved) }), h('span', { class: 'total-of', text: ` / ${all.total} solved` })),
         h('button', { type: 'button', class: 'btn sync-btn', id: 'sync-btn', onclick: () => syncFromLeetCode() }, 'Sync from LeetCode'),
+        h('p', { class: 'total' }, h('span', { class: 'total-done', text: String(all.solved) }), h('span', { class: 'total-of', text: ` / ${all.total} solved` })),
         h('p', { class: 'sync-status', id: 'sync-status', role: 'status', 'aria-live': 'polite' })
       )
     ),
@@ -411,25 +405,88 @@ function renderSummary() {
   );
   if (notice) box.appendChild(h('p', { class: 'result', 'data-kind': 'error', role: 'alert', text: notice }));
   paintSync();
-  fitTitleMenu();
   if (menuHadFocus) $('list-select').focus();
 }
 
-// The menu is as wide as the chosen name, so its arrow sits right after the
-// title and not at the far end of a box sized for the longest name.
-function fitTitleMenu() {
-  const select = $('list-select');
-  if (!select) return;
-  // Browsers that size a menu to its chosen option (field-sizing) need nothing.
-  if (typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content')) return;
-  const probe = h('span', { text: select.selectedOptions[0].textContent });
-  const style = getComputedStyle(select);
-  probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font-family:${style.fontFamily};font-size:${style.fontSize};font-weight:${style.fontWeight};letter-spacing:${style.letterSpacing};`;
-  document.body.appendChild(probe);
-  const text = probe.getBoundingClientRect().width;
-  probe.remove();
-  // The native arrow takes room of its own beside the padding.
-  select.style.width = `${Math.ceil(text + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 26)}px`;
+// The title is a menu of the problem sets: a button showing the chosen name
+// and a list under it, drawn by the page so it matches the rest of it (the
+// browser's own menu cannot be styled). Arrow keys, Home, End, Enter, Escape
+// and a click outside work as in a native one; the name is the button's own
+// text, so the menu is as wide as the title.
+const CHEVRON = () => icon([{ d: 'M4 6.5l4 4 4-4' }], 14);
+
+function titleMenu() {
+  const button = h(
+    'button',
+    { type: 'button', id: 'list-select', class: 'title-btn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': `Problem Sets: ${ROADMAP.title}`, 'data-value': ROADMAP.id },
+    h('span', { class: 'title-text', text: ROADMAP.title }),
+    CHEVRON()
+  );
+  const list = h(
+    'ul',
+    { class: 'title-list', role: 'listbox', id: 'list-options', 'aria-label': 'Problem Sets', tabindex: '-1', hidden: true },
+    ...LISTS.map((l) =>
+      h('li', { role: 'option', class: 'title-option', 'data-list': l.id, 'aria-selected': String(l.id === ROADMAP.id), id: `list-option-${l.id}`, text: l.title })
+    )
+  );
+  const options = () => [...list.querySelectorAll('[role="option"]')];
+  let active = LISTS.findIndex((l) => l.id === ROADMAP.id);
+  const mark = (i) => {
+    active = Math.max(0, Math.min(options().length - 1, i));
+    options().forEach((o, n) => o.toggleAttribute('data-active', n === active));
+    list.setAttribute('aria-activedescendant', options()[active].id);
+    options()[active].scrollIntoView({ block: 'nearest' });
+  };
+  const close = ({ refocus = true } = {}) => {
+    if (list.hidden) return;
+    list.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', outside, true);
+    if (refocus) button.focus();
+  };
+  const outside = (e) => {
+    if (!list.contains(e.target) && !button.contains(e.target)) close({ refocus: false });
+  };
+  const open = () => {
+    list.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    mark(LISTS.findIndex((l) => l.id === ROADMAP.id));
+    list.focus();
+    document.addEventListener('pointerdown', outside, true);
+  };
+  const choose = (i) => {
+    const id = LISTS[i].id;
+    close();
+    if (id !== ROADMAP.id) chooseList(id);
+  };
+  button.addEventListener('click', () => (list.hidden ? open() : close()));
+  button.addEventListener('keydown', (e) => {
+    if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) {
+      e.preventDefault();
+      open();
+    }
+  });
+  list.addEventListener('keydown', (e) => {
+    const keys = { ArrowDown: () => mark(active + 1), ArrowUp: () => mark(active - 1), Home: () => mark(0), End: () => mark(LISTS.length - 1), Enter: () => choose(active), ' ': () => choose(active) };
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === 'Tab') close({ refocus: false });
+    else if (keys[e.key]) {
+      e.preventDefault();
+      keys[e.key]();
+    }
+  });
+  list.addEventListener('pointermove', (e) => {
+    const i = options().indexOf(e.target.closest('[role="option"]'));
+    if (i >= 0 && i !== active) mark(i);
+  });
+  list.addEventListener('click', (e) => {
+    const i = options().indexOf(e.target.closest('[role="option"]'));
+    if (i >= 0) choose(i);
+  });
+  return h('span', { class: 'title-menu' }, button, list);
 }
 
 // The node buttons, in reading order (row, then column) so Tab walks the
@@ -827,21 +884,33 @@ function syncText(answer) {
   return 'LeetCode did not answer. Reload its tab and try again.';
 }
 
-// The sync button and its note live in the summary, which is redrawn often,
-// so what they show is kept here.
+// The sync button and its result live in the summary, which is redrawn
+// often, so what they show is kept here. The result is the button's colour
+// (green: it worked, red: it did not) for a few seconds; the words go to the
+// button's tip and to a screen reader's status line.
 let syncing = false;
 let syncNote = '';
+let syncResult = '';
+let syncTimer = 0;
 function paintSync() {
   const button = $('sync-btn');
   const status = $('sync-status');
-  if (button) button.disabled = syncing;
+  if (button) {
+    button.disabled = syncing;
+    if (syncResult) button.dataset.result = syncResult;
+    else delete button.dataset.result;
+    if (syncNote) button.title = syncNote;
+    else button.removeAttribute('title');
+  }
   if (status) status.textContent = syncNote;
 }
 
 async function syncFromLeetCode() {
   if (syncing) return;
   syncing = true;
+  syncResult = '';
   syncNote = 'Syncing...';
+  clearTimeout(syncTimer);
   paintSync();
   let answer = null;
   try {
@@ -851,7 +920,13 @@ async function syncFromLeetCode() {
   }
   syncing = false;
   syncNote = syncText(answer);
+  syncResult = answer && answer.ok === true ? 'ok' : 'fail';
   paintSync();
+  syncTimer = setTimeout(() => {
+    syncResult = '';
+    syncNote = '';
+    paintSync();
+  }, 5000);
 }
 
 // The screen changes at once; the worker's write then comes back through

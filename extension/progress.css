@@ -279,17 +279,26 @@ html.drawer-open { overflow: hidden; }
   .node:hover, .group:hover { transform: none; }
 }
 
-/* The summary's title is the menu of problem sets. */
+/* The summary's title is the menu of problem sets, drawn by the page. */
 #summary-heading { margin: 0 0 4px; }
-.title-select { position: relative; left: -12px; height: 32px; margin: 0; padding: 0 4px 0 8px; border: 1px solid transparent; border-radius: 6px; background-color: transparent; color: var(--text); font: inherit; font-size: 16px; line-height: 24px; font-weight: 600; color-scheme: light dark; cursor: pointer; width: auto; field-sizing: content; }
-.title-select:hover { border-color: var(--line-strong); background-color: var(--fill); }
-.title-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.total-box { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: none; }
+.title-menu { position: relative; display: inline-block; }
+.title-btn { display: inline-flex; align-items: center; gap: 4px; height: 38px; margin: 0 0 0 -8px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); font: inherit; font-size: 22px; line-height: 28px; font-weight: 600; cursor: pointer; }
+.title-btn:hover, .title-btn[aria-expanded="true"] { border-color: var(--line-strong); background: var(--fill); }
+.title-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.title-btn svg { flex: none; width: 18px; height: 18px; color: var(--muted); }
+.title-list { position: absolute; z-index: 20; top: calc(100% + 4px); left: -8px; font-size: 14px; min-width: 100%; width: max-content; max-width: min(320px, 80vw); margin: 0; padding: 4px; list-style: none; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28); outline: none; }
+.title-list[hidden] { display: none; }
+.title-option { padding: 6px 10px; border-radius: 6px; color: var(--text); font-size: 14px; line-height: 20px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.title-option[data-active] { background: var(--fill); }
+.title-option[aria-selected="true"] { background: color-mix(in srgb, var(--node-a) 14%, transparent); box-shadow: inset 0 0 0 1px var(--node-b); }
+.title-option[aria-selected="true"][data-active] { background: color-mix(in srgb, var(--node-a) 24%, transparent); }
+.total-box { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 16px; flex: none; }
 .total-box .total { margin: 0; }
 .sync-btn { height: 28px; padding: 0 12px; font-size: 13px; }
-.sync-status { margin: 0; max-width: 260px; text-align: right; color: var(--muted); font-size: 13px; line-height: 18px; }
-.sync-status:empty { display: none; }
+.sync-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.btn.sync-btn[data-result="ok"], .btn.sync-btn[data-result="ok"]:hover:not(:disabled) { background: var(--green); border-color: transparent; color: #fff; }
+.btn.sync-btn[data-result="fail"], .btn.sync-btn[data-result="fail"]:hover:not(:disabled) { background: var(--red); border-color: transparent; color: #fff; }
+.sync-btn:disabled[data-result] { opacity: 1; }
 @media (max-width: 760px) {
-  .total-box { align-items: flex-start; margin: 4px 0 8px; }
-  .sync-status { text-align: left; }
+  .total-box { justify-content: flex-start; margin: 4px 0 8px; }
 }
