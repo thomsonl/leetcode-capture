@@ -68,7 +68,9 @@ async function refreshHelper() {
     granted = false;
   }
   const wanted = runtime === "helper" || Date.now() < optionsWantUntil;
-  launcher.setWanted(wanted && granted && typeof api.runtime.connectNative === "function");
+  const allowed = granted && typeof api.runtime.connectNative === "function";
+  launcher.setHeld(allowed && Date.now() < optionsWantUntil);
+  launcher.setWanted(wanted && allowed);
 }
 
 // The options page asks for the helper's state; panels hear it so an offline

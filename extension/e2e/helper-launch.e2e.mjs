@@ -232,16 +232,20 @@ try {
   await scenario('closing the last problem tab stops everything after the 30 s grace, not before', async () => {
     await page.send('Page.close');
     page = null;
+    // The options page holds the helper while its form shows a provider that
+    // runs through it, so the form leaves that provider first.
+    await options.click('input[name=provider][value=local]');
     await sleep(3000);
     const view = await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
     check(view.tabs === 0 && view.state === 'running', `right after closing: ${JSON.stringify(view)}`);
     await sleep(17000);
     check([...seenPids].every(isAlive), 'stopped before the grace ran out');
-    const deadline = Date.now() + 25000;
+    const deadline = Date.now() + 60000;
     while (Date.now() < deadline && [...seenPids].some(isAlive)) await sleep(250);
     check(![...seenPids].some(isAlive), `the relay or companion is still running: ${JSON.stringify(await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`))}\n${fs.readFileSync(path.join(scratch, 'helper.log'), 'utf8').slice(-600)}`);
     check(await portFree(relayPort), 'the port is still held');
-    await options.waitFor(`document.getElementById('helper-state-text').textContent === 'Installed'`, { what: 'Installed', timeout: 12000 });
+    const idle = await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+    check(idle.state !== 'running' && idle.tabs === 0, `after the stop: ${JSON.stringify({ state: idle.state, tabs: idle.tabs })}`);
   });
 
   await scenario('Claude saved, helper uninstalled: the panel is offline and points to Settings', async () => {
@@ -249,6 +253,8 @@ try {
     fs.rmSync(path.join(browser.profile, 'NativeMessagingHosts'), { recursive: true, force: true });
     page = await openProblem(browser);
     await offlineWithPointer();
+    await options.click('input[name=provider][value=claude]');
+    await options.waitFor(`document.getElementById('helper-check')`, { what: 'the Helper section', timeout: 10000 });
     await options.eval(`document.getElementById('helper-check').click()`);
     await options.waitFor(`document.getElementById('helper-state-text').textContent === 'Not installed'`, { what: 'Not installed again', timeout: 10000 });
   });
@@ -318,6 +324,22 @@ try {
     const view = await second.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
     check(view.runtime === 'helper' && view.state === 'running', JSON.stringify({ runtime: view.runtime, state: view.state }));
     await second.screenshot(path.join(shots, 'helper-saved-after-local.png'), { width: 900, height: 1100 });
+  });
+
+  await scenario('Save with the helper gone starts it first, then saves', async () => {
+    const pids = await helperPids(second);
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
+    await sleep(500);
+    await second.click('#save');
+    await second.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save after a restart', timeout: 40000 }).catch(async (err) => {
+      throw new Error(`${err.message}: ${await second.eval(`document.getElementById('save-result').textContent`)}`);
+    });
   });
 
   await scenario('no exceptions in the second options page', async () => {

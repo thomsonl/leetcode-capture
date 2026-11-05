@@ -262,3 +262,46 @@ test('listeners hear every change', (t) => {
   ports[0].onMessage.fire({ type: 'status', error: null });
   assert.deepEqual(seen.slice(-2), ['connecting', 'running']);
 });
+
+test('the options page alone keeps the helper up, then lets go with the usual grace', (t) => {
+  const { launcher, ports, types, tick } = setup(t);
+  launcher.setWanted(true);
+  assert.equal(ports.length, 0, 'wanted but nothing needs it yet');
+  launcher.setHeld(true);
+  assert.equal(ports.length, 1, 'the options page connects it with no problem tab');
+  assert.deepEqual(types(ports[0]).slice(0, 1), ['start']);
+  launcher.setHeld(false);
+  tick(GRACE_MS - 1);
+  assert.equal(ports[0].disconnected, false);
+  tick(2);
+  assert.equal(ports[0].disconnected, true, 'stops after the grace once the page lets go');
+});
+
+test('a problem tab opening while the options page holds it keeps it past the page', (t) => {
+  const { launcher, ports, tick } = setup(t);
+  launcher.setWanted(true);
+  launcher.setHeld(true);
+  launcher.tabOpened(1, URL_A);
+  launcher.setHeld(false);
+  tick(GRACE_MS * 2);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].disconnected, false);
+});
+
+test('a dropped helper is retried for the options page, not only for a tab', (t) => {
+  const { launcher, ports, tick } = setup(t);
+  launcher.setWanted(true);
+  launcher.setHeld(true);
+  ports[0].drop('the helper crashed');
+  tick(5001);
+  assert.equal(ports.length, 2);
+});
+
+test('retry asks a connected helper to start again, in case its relay or tutor went away', (t) => {
+  const { launcher, ports, types } = setup(t);
+  launcher.setWanted(true);
+  launcher.tabOpened(1, URL_A);
+  assert.deepEqual(types(ports[0]), ['start']);
+  launcher.retry();
+  assert.deepEqual(types(ports[0]), ['start', 'start']);
+});

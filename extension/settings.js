@@ -122,6 +122,31 @@
     return body;
   }
 
+  // The helper's relay and tutor are only up while a LeetCode problem tab is
+  // open (or this page asks for them), so a save, a test or a model search
+  // made without one finds nothing there. These ask the worker to start the
+  // helper, wait for it (up to about 15 s), and try once more.
+  async function rpcStarting(method, params, timeoutMs, note) {
+    let res = await rpc(method, params, timeoutMs);
+    if (res.ok || !res.error.offline || res.error.offline === "relay-old") return res;
+    if (note) note("Starting the helper...");
+    await workerHelper("lc-tutor:helper-retry");
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      // eslint-disable-next-line no-await-in-loop
+      const up = await rpc("get", {}, 2500);
+      if (up.ok) break;
+      await workerHelper("lc-tutor:helper-status");
+    }
+    res = await rpc(method, params, timeoutMs);
+    if (!res.ok && res.error.offline) {
+      res = { ok: false, error: { ...res.error, message: `${res.error.message} The helper did not start: check the Helper section below and press Check again.` } };
+    }
+    return res;
+  }
+
   // ---- host permissions ------------------------------------------------------------
 
   // The match pattern for the server a provider's form points at, or null
@@ -1267,7 +1292,7 @@
       note.textContent = deniedMessage(pattern);
       return;
     }
-    const res = inBrowser ? await worker("lc-tutor:settings-models", params) : await rpc("models", params);
+    const res = inBrowser ? await worker("lc-tutor:settings-models", params) : await rpcStarting("models", params, undefined, (t) => (note.textContent = t));
     button.disabled = false;
     if (!res.ok) {
       note.textContent = res.error.message;
@@ -1310,7 +1335,7 @@
       showResult("test-result", "error", deniedMessage(pattern));
       return;
     }
-    const res = inBrowser ? await worker("lc-tutor:settings-test", { patch }) : await rpc("test", { patch }, 100000);
+    const res = inBrowser ? await worker("lc-tutor:settings-test", { patch }) : await rpcStarting("test", { patch }, 100000, (t) => showResult("test-result", "", t));
     button.disabled = false;
     if (!res.ok) {
       showResult("test-result", "error", res.error.message);
@@ -1360,7 +1385,7 @@
       syncHelperProfiles(plan);
       return;
     }
-    const res = await rpc("save", { patch: helperPatch(plan) });
+    const res = await rpcStarting("save", { patch: helperPatch(plan) }, undefined, (t) => showResult("save-result", "", t));
     if (!res.ok) {
       button.disabled = false;
       failSave(res.error);

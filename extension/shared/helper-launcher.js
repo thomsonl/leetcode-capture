@@ -47,6 +47,7 @@ export function createHelperLauncher({
   const tabs = new Map(); // tabId -> { ports, slug }
   const listeners = new Set();
   let wanted = false;
+  let held = false; // the options page needs the helper, with or without a problem tab
   let port = null;
   let state = 'idle'; // idle | connecting | running | not-installed | error
   let host = null; // the helper's newest status message
@@ -142,10 +143,10 @@ export function createHelperLauncher({
         state = 'error';
         error = reason || 'The helper stopped.';
         log(`helper disconnected: ${error}`);
-        if (wanted && tabs.size > 0) {
+        if (wanted && (tabs.size > 0 || held)) {
           retryTimer = timers.setTimeout(() => {
             retryTimer = null;
-            if (wanted && tabs.size > 0) connect();
+            if (wanted && (tabs.size > 0 || held)) connect();
           }, retryDelay);
           retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
         }
@@ -163,7 +164,7 @@ export function createHelperLauncher({
       if (port || state === 'connecting' || retryTimer !== null) disconnect();
       return;
     }
-    if (tabs.size > 0) {
+    if (tabs.size > 0 || held) {
       stopTimer = clear(stopTimer);
       connect();
     } else if (port && stopTimer === null) {
@@ -229,11 +230,23 @@ export function createHelperLauncher({
       emit();
     },
 
+    // The options page is open on a provider that runs through the helper:
+    // keep the helper up for it as for a problem tab, so Settings can save.
+    // Letting go starts the usual grace period.
+    setHeld(next) {
+      held = Boolean(next);
+      update();
+      emit();
+    },
+
     // Try again after the student installed the helper.
     retry() {
       if (state === 'not-installed' || state === 'error') state = 'idle';
       retryDelay = RETRY_MIN_MS;
       update();
+      // A host that is still there may have lost its relay or tutor: asking it
+      // to start again is harmless when they run, and brings them back if not.
+      if (port) post({ type: 'start' });
       emit();
       return view();
     },
