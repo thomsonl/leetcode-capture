@@ -1,11 +1,13 @@
 # Privacy Policy for LeetCode Capture
 
-Last updated: 2026-11-04
+Last updated: 2026-11-05
 
 ## What this extension does
 
-LeetCode Capture is a tutor for LeetCode.
+LeetCode Capture is a tutor for LeetCode problems.
+It is an independent project and is not affiliated with or endorsed by LeetCode.
 It adds a Tutor tab to `leetcode.com/problems/*` pages, sees your Run and Submit attempts, and lets you message an AI tutor about the problem you are solving.
+It also keeps track of the problems you solved, shows your progress through well-known problem lists, and suggests problems to practice a skill.
 You choose which AI model provider the tutor uses on the extension's Settings page.
 
 ## What data is read
@@ -18,14 +20,17 @@ The extension reads data only on `leetcode.com/problems/*` pages, and only when 
 - The page URL and a timestamp.
 
 When you submit, it also reads LeetCode's verdict for that submission (whether it was accepted) from the page's own result request, to keep track of the problems you solved.
-It reads nothing else from that request.
+It reads nothing else from that request, and the verdict is never sent anywhere.
+
+The Tutor tab also reads the problem's slug from the page address, to show that problem's conversation and suggestions.
 
 It does not read your LeetCode account details, cookies, passwords or any other page.
 It does not read your browsing history.
 
-The extension also ships a fixed list of LeetCode's public problem metadata (each problem's title, difficulty, topic tags and public like and submission counts), which the Tutor tab's "Practice a skill" suggestions are picked from.
-It holds nothing about you, is read only inside your browser, and is never fetched or updated over the network.
-Suggestions leave out the problems you solved by looking at the solved problems kept in the browser (below); they are never sent anywhere, including to the tutor.
+The extension also ships, inside its package, a fixed copy of LeetCode's public problem metadata (each problem's title, difficulty, topic tags and public like and submission counts, taken from LeetCode's public problem data) and the problem lists the Progress tab shows (such as NeetCode 150 and Blind 75).
+The Tutor tab's "Practice a skill" suggestions and the Progress tab are computed from that copy inside your browser.
+It holds nothing about you and is never fetched or updated over the network.
+Suggestions leave out the problems you solved by looking at the solved problems kept in the browser (below); neither the suggestions nor your progress are ever sent anywhere, including to the tutor.
 
 ## Where that data goes
 
@@ -38,7 +43,11 @@ That data goes to exactly one place: the provider you chose in Settings.
   The helper runs the tutor, which uses your existing Claude or ChatGPT sign-in on that computer to reach Anthropic or OpenAI.
   That provider's own privacy policy and terms then apply to it.
 
+Requests to the OpenAI and Anthropic APIs use HTTPS.
+A local model server is reached at the address you entered, which is usually plain HTTP on your own computer or network.
+
 The browser asks your permission before the extension may reach your model server or a provider's API, one address at a time, and before it may start the helper.
+While no provider is chosen yet, the Tutor tab checks whether a tutor you started yourself from a terminal answers at `http://localhost:8135` on your computer; that check sends none of your code or messages.
 The extension sends nothing to the developer.
 There are no analytics, no telemetry, no tracking, no ads and no third-party services beyond the provider you chose.
 All of the extension's code ships in the package; it loads and runs no remote code.
@@ -53,9 +62,10 @@ The extension never shows a saved key back on the Settings page or the Tutor tab
 ## What is kept, and for how long
 
 - **Settings and keys**: kept in the browser's local extension storage (and, for the helper, in `~/.config/leetcode-capture/settings.json`) until you remove them.
-- **Solved problems**: which problems you solved (the problem's slug, when, and how many accepted submissions), the problems you starred and which problem list you chose to work on, kept in the browser's local extension storage until you unmark them or uninstall the extension.
+- **Solved problems and progress**: which problems you solved (the problem's slug, when, how many accepted submissions, and whether you marked it by hand), the problems you starred and which problem list you chose to work on, kept in the browser's local extension storage until you unmark them or uninstall the extension.
   They are never sent anywhere, including to the tutor.
-- **Tutor conversations**: kept in memory only, per problem, and forgotten when the tutor stops or the conversation is reset on a problem switch.
+- **Layout preferences**: where you moved the Tutor tab in LeetCode's layout (kept in the browser's local extension storage) and how the Progress tab groups a list (kept in the Settings page's local storage).
+- **Tutor conversations**: kept in memory only, per problem, and forgotten when the tutor stops, the browser ends the extension's background worker, or the conversation is reset on a problem switch.
   In the helper runtime, the local relay keeps a short queue of your Run and Submit attempts in `relay-server/data/captures.jsonl`, cleared as the tutor reads it, and the helper writes a log (`helper.log`) in its data folder.
 - **Optional notes**: if you turn on the separate vault feature, the tutor writes notes into the Obsidian vault folder you configured.
   This is off by default.
@@ -70,7 +80,7 @@ Your data is not used for advertising, for creditworthiness or lending, or for a
 ## Deleting your data
 
 - To remove a saved API key, use the key's Remove button on the Settings page and save.
-- To remove all settings and keys the extension stored, uninstall the extension; the browser deletes its extension storage.
+- To remove all settings, keys, solved problems and preferences the extension stored, uninstall the extension; the browser deletes its extension storage.
 - To remove the helper and what it wrote, run `npx leetcode-capture-helper uninstall`, and delete `~/.config/leetcode-capture/settings.json` and `relay-server/data/captures.jsonl` if they exist.
 - Any notes the optional vault feature wrote are ordinary files in your vault; delete them like any other file.
 - Data already sent to a provider you chose is held under that provider's own retention policy; see your account settings with that provider.
