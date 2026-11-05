@@ -1,0 +1,85 @@
+Source: Grind 75, https://www.techinterviewhandbook.org/grind75 (served from https://grind75.pages.dev/grind75), fetched 2026-11-04: the site's own data (169 questions) scheduled the way its code does at its defaults (8 weeks, 8 hours a week, order by difficulty, group by weeks). Format: "#Week n" then "slug|difficulty|the site's topic", difficulty as the site has it.
+=== grind-75
+#Week 1
+two-sum|E|array
+valid-parentheses|E|stack
+merge-two-sorted-lists|E|linked-list
+best-time-to-buy-and-sell-stock|E|array
+valid-palindrome|E|string
+invert-binary-tree|E|binary-tree
+valid-anagram|E|string
+binary-search|E|binary-search
+flood-fill|E|graph
+lowest-common-ancestor-of-a-binary-search-tree|E|binary-search-tree
+balanced-binary-tree|E|binary-tree
+linked-list-cycle|E|linked-list
+implement-queue-using-stacks|E|stack
+#Week 2
+first-bad-version|E|binary-search
+ransom-note|E|hash-table
+climbing-stairs|E|dynamic-programming
+longest-palindrome|E|string
+reverse-linked-list|E|linked-list
+majority-element|E|array
+add-binary|E|binary
+diameter-of-binary-tree|E|binary-tree
+middle-of-the-linked-list|E|linked-list
+maximum-depth-of-binary-tree|E|binary-tree
+contains-duplicate|E|array
+maximum-subarray|M|dynamic-programming
+#Week 3
+insert-interval|M|array
+01-matrix|M|graph
+k-closest-points-to-origin|M|heap
+longest-substring-without-repeating-characters|M|string
+3sum|M|array
+binary-tree-level-order-traversal|M|binary-tree
+clone-graph|M|graph
+evaluate-reverse-polish-notation|M|stack
+#Week 4
+course-schedule|M|graph
+implement-trie-prefix-tree|M|trie
+coin-change|M|dynamic-programming
+product-of-array-except-self|M|array
+min-stack|M|stack
+validate-binary-search-tree|M|binary-search-tree
+number-of-islands|M|graph
+rotting-oranges|M|graph
+#Week 5
+search-in-rotated-sorted-array|M|binary-search
+combination-sum|M|array
+permutations|M|recursion
+merge-intervals|M|array
+lowest-common-ancestor-of-a-binary-tree|M|binary-tree
+time-based-key-value-store|M|binary-search
+accounts-merge|M|graph
+sort-colors|M|array
+#Week 6
+word-break|M|trie
+partition-equal-subset-sum|M|dynamic-programming
+string-to-integer-atoi|M|string
+spiral-matrix|M|matrix
+subsets|M|recursion
+binary-tree-right-side-view|M|binary-tree
+longest-palindromic-substring|M|string
+unique-paths|M|dynamic-programming
+construct-binary-tree-from-preorder-and-inorder-traversal|M|binary-tree
+#Week 7
+container-with-most-water|M|array
+letter-combinations-of-a-phone-number|M|recursion
+word-search|M|graph
+find-all-anagrams-in-a-string|M|string
+minimum-height-trees|M|graph
+task-scheduler|M|heap
+lru-cache|M|linked-list
+#Week 8
+kth-smallest-element-in-a-bst|M|binary-search-tree
+minimum-window-substring|H|string
+serialize-and-deserialize-binary-tree|H|binary-tree
+trapping-rain-water|H|stack
+find-median-from-data-stream|H|heap
+word-ladder|H|graph
+basic-calculator|H|stack
+maximum-profit-in-job-scheduling|H|binary-search
+merge-k-sorted-lists|H|heap
+largest-rectangle-in-histogram|H|stack

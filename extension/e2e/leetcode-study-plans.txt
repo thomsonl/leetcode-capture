@@ -1,4 +1,4 @@
-Source: LeetCode GraphQL studyPlanV2Detail, fetched 2026-11-04 from the user's browser. Format: "#Group" then "slug|difficulty" in LeetCode's own order.
+Source: LeetCode GraphQL studyPlanV2Detail (https://leetcode.com/graphql/, no login), fetched 2026-11-04. Format: "#Group" then "slug|difficulty" in LeetCode's own order.
 === top-100-liked
 #Backtracking
 letter-combinations-of-a-phone-number|M

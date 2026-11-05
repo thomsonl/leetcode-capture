@@ -554,9 +554,15 @@ export const NEETCODE_250 = defineList({
   ],
 });
 
-// The original Blind 75 (the 2018 Blind post), in its usual categories.
+// The original Blind 75, exactly as the 2018 post lists it
+// (https://www.teamblind.com/post/New-Year-Gift---Curated-List-of-Top-75-LeetCode-Questions-to-Save-Your-Time-OaM1orEU,
+// saved as e2e/blind-75.txt by scripts/list-sources.mjs and compared by
+// roadmap.test.mjs): its categories, their order and the order inside each.
 // Merge k Sorted Lists is listed under both Linked List and Heap there; it is
 // kept once, under Linked List, so the list has 75 distinct problems.
+// neetcode.io's Blind 75 (its blind75 flag) has the same problems but one:
+// the post's "Combination Sum" links to Combination Sum IV, which neetcode.io
+// replaces with Combination Sum. The post's own link is kept here.
 export const BLIND_75 = defineList({
   id: 'blind-75',
   title: 'Blind 75',

@@ -5,11 +5,13 @@ import { NEETCODE_150, NEETCODE_250, BLIND_75, GRIND_75, TOP_100_LIKED, TOP_INTE
 import { CATALOG, catalogEntry } from './shared/catalog.js';
 import vm from 'node:vm';
 import { checkSnippet, listSlugs, OUT } from './scripts/list-slugs.mjs';
+import { grindSchedule, blindGroups, neetcodeProblems } from './scripts/list-sources.mjs';
 
 const R = NEETCODE_150;
 
 // The publishers' own data as fetched (see each file's first line):
-// { planId: [{ title, slugs: [[slug, 'E' | 'M' | 'H']] }] }.
+// { section: [{ title, slugs: [[slug, 'E' | 'M' | 'H', ...]] }] } (Blind 75's
+// post gives no difficulty, so its rows are [slug]).
 function snapshot(name) {
   const plans = {};
   let plan = null;
@@ -141,6 +143,41 @@ test('NeetCode 150 and 250 match neetcode.io\'s own lists: each topic\'s problem
     assert.equal(site.size, list.topics.length, flag);
     for (const t of list.topics) assert.deepEqual(t.problems.map((p) => p.slug), site.get(t.title), `${flag}/${t.title}`);
   }
+});
+
+test('Blind 75 is the original post: its categories, their order and each one\'s problems in order', () => {
+  const post = snapshot('blind-75.txt')['blind-75'];
+  assert.deepEqual(BLIND_75.topics.map((t) => t.title), post.map((g) => g.title));
+  // The post lists Merge K Sorted Lists twice (Linked List and Heap); the
+  // list keeps the first.
+  const seen = new Set();
+  BLIND_75.topics.forEach((t, i) => {
+    const once = post[i].slugs.map(([slug]) => slug).filter((slug) => !seen.has(slug));
+    once.forEach((slug) => seen.add(slug));
+    assert.deepEqual(t.problems.map((p) => p.slug), once, t.title);
+  });
+  assert.equal(post.flatMap((g) => g.slugs).length, 76);
+  // neetcode.io's Blind 75 differs by one problem, the post's Combination Sum
+  // link (Combination Sum IV), which neetcode.io swaps for Combination Sum.
+  const nc = new Set(snapshot('neetcode-lists.txt').blind75.flatMap((g) => g.slugs.map(([slug]) => slug)));
+  const ours = new Set(BLIND_75.topics.flatMap((t) => t.problems.map((p) => p.slug)));
+  assert.equal(nc.size, 75);
+  assert.deepEqual([...ours].filter((s) => !nc.has(s)), ['combination-sum-iv']);
+  assert.deepEqual([...nc].filter((s) => !ours.has(s)), ['combination-sum']);
+});
+
+test('the source script reads each site the way the site does', () => {
+  // Grind 75: by priority while the budget lasts (120 minutes: b and c fit,
+  // a would not), then by difficulty
+  // (stable), cut into weeks of 60 * hours minutes, the last week the rest.
+  const q = (slug, priority, difficulty, duration) => ({ slug, priority, difficulty, duration });
+  const weeks = grindSchedule([q('a', 3, 'Easy', 30), q('b', 1, 'Hard', 30), q('c', 2, 'Easy', 20), q('d', 4, 'Medium', 30), q('e', 5, 'Easy', 15)], { weeks: 2, hours: 1 });
+  assert.deepEqual(weeks.map(([title, qs]) => [title, qs.map((x) => x.slug)]), [['Week 1', ['c']], ['Week 2', ['b']]]);
+  // The Blind post: categories, links, a missing link resolved by title, a renamed slug.
+  const text = 'Intro\n\nArray\n\n- Two Sum - https://leetcode.com/problems/two-sum/\n\n---\n\nDynamic Programming\n\n- Longest Common Subsequence - \n\nTree\n\n- Add and Search Word - https://leetcode.com/problems/add-and-search-word-data-structure-design/\n\nYou\'re welcome!';
+  assert.deepEqual(blindGroups(text.replace('Intro', 'New Year Gift')), [['Array', ['two-sum']], ['Dynamic Programming', ['longest-common-subsequence']], ['Tree', ['design-add-and-search-words-data-structure']]]);
+  // neetcode.io's problem objects, flags written as !0.
+  assert.deepEqual(neetcodeProblems('x=[{problem:"Two Sum",pattern:"Arrays & Hashing",link:"two-sum/",difficulty:"Easy",neetcode150:!0,blind75:!0}]').map((p) => [p.slug, p.pattern, p.neetcode150, p.neetcode250]), [['two-sum', 'Arrays & Hashing', true, undefined]]);
 });
 
 test('NeetCode 250 is NeetCode 150 and 100 more, on the same roadmap', () => {
