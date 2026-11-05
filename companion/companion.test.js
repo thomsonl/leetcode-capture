@@ -321,7 +321,10 @@ test('a streamed reply reaches the terminal incrementally, not only once the who
     req.on('end', () => {
       JSON.parse(body); // drain/validate the request like the other stubs do
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'FIRSTCHUNK-' } }] })}\n\n`);
+      // A whole sentence: the post-check guard releases a chat reply
+      // sentence by sentence, so a sentence is the smallest piece that can
+      // show before the rest arrives.
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'FIRSTCHUNK-done. ' } }] })}\n\n`);
       setTimeout(() => {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'SECONDCHUNK' } }] })}\n\n`);
         res.write('data: [DONE]\n\n');

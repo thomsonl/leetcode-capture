@@ -371,7 +371,7 @@ function connectPanel(port) {
 
 test('end to end: a message typed in the panel reaches the tutor and its reply streams back', async (t) => {
   const PORT = 18192;
-  const { server: model, requests } = await startStubModel((n) => (n === 1 ? 'Try a **hash map**.' : 'Brackets must nest.'));
+  const { server: model, requests } = await startStubModel((n) => (n === 1 ? 'What does **each loop** repeat?' : 'Brackets must nest.'));
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-panel-e2e-'));
   const capturesPath = path.join(scratch, 'captures.jsonl');
   fs.writeFileSync(capturesPath, '');
@@ -429,7 +429,9 @@ test('end to end: a message typed in the panel reaches the tutor and its reply s
   const userEvent = panel.events.find((e) => e.type === 'user');
   assert.equal(userEvent.text, 'any hints?');
   assert.equal(userEvent.problemSlug, 'two-sum');
-  assert.equal(firstTurn.find((e) => e.type === 'turn-end').text, 'Try a **hash map**.');
+  // "any hints?" is a first hint: the post-check guard holds it whole and
+  // would re-ask one that named a data structure.
+  assert.equal(firstTurn.find((e) => e.type === 'turn-end').text, 'What does **each loop** repeat?');
   assert.equal(firstTurn.find((e) => e.type === 'turn-end').problemSlug, 'two-sum');
   assert.ok(JSON.stringify(requests[0].messages).includes('any hints?'));
   assert.ok(out.includes('[panel] any hints?'), 'the terminal echoes panel messages under a [panel] label');
@@ -686,7 +688,7 @@ test('end to end: a companion killed mid-reply leaves the reply interrupted, not
     req.resume();
     req.on('end', () => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Half of a reply' } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Half of a reply. ' } }] })}\n\n`);
     });
   });
   await new Promise((resolve) => model.listen(0, '127.0.0.1', resolve));
@@ -718,8 +720,10 @@ test('end to end: a companion killed mid-reply leaves the reply interrupted, not
   });
 
   await until(() => panel.events.some((e) => e.type === 'status' && e.companionOnline), 10000, 'companion online');
-  assert.equal(await panel.sendMessage('any hints?', 'two-sum'), 202);
-  await until(() => panel.events.some((e) => e.type === 'chunk' && e.text === 'Half of a reply'), 10000, 'the first half of the reply');
+  // A question, not a hint request: a hint is held back whole by the
+  // post-check guard, so nothing of it would stream.
+  assert.equal(await panel.sendMessage('why does it fail?', 'two-sum'), 202);
+  await until(() => panel.events.some((e) => e.type === 'chunk' && e.text === 'Half of a reply. '), 10000, 'the first half of the reply');
   const turnId = panel.events.find((e) => e.type === 'turn-start').turnId;
 
   // A crash: no exit handlers, no last words.
@@ -729,7 +733,7 @@ test('end to end: a companion killed mid-reply leaves the reply interrupted, not
   await until(() => panel.events.filter((e) => e.type === 'status').pop().companionOnline === false, 5000, 'companion offline');
   const end = panel.events.find((e) => e.type === 'turn-end' && e.turnId === turnId);
   assert.ok(end, `the cut reply never got a turn-end: ${JSON.stringify(panel.events)}`);
-  assert.deepEqual([end.interrupted, end.text, end.problemSlug], [true, 'Half of a reply', 'two-sum']);
+  assert.deepEqual([end.interrupted, end.text, end.problemSlug], [true, 'Half of a reply. ', 'two-sum']);
 
   // A tab opened afterwards is told the same.
   const late = connectPanel(PORT);
@@ -1194,4 +1198,54 @@ test('end to end: the panel switches between saved models through the relay, aft
   assert.ok(third.messages.some((m) => m.role === 'system' && m.content.includes('x5 = 50') && m.content.includes('x29 = 29')), 'the current full code is pinned');
   const last = third.messages.at(-1).content;
   assert.ok(last.includes('x5 = 50') && !last.includes('x20 = 20'), `only a diff against the held code: ${last}`);
+});
+
+test('end to end: the post-check guard re-asks a leaking hint, and neither the terminal, the panel nor history keeps the leak', async (t) => {
+  const port = await freePort();
+  const replies = ['Use a **hash map** to remember each value you pass.', 'What does your inner loop look for each time?', 'You are welcome.'];
+  const { server: model, requests } = await startStubModel((n) => replies[n - 1] || 'extra');
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-guard-e2e-'));
+  const companion = spawnCompanion({ port, modelPort: model.address().port, scratch });
+  const exited = new Promise((resolve) => companion.child.on('exit', resolve));
+  let panel = null;
+  t.after(async () => {
+    if (panel) panel.close();
+    if (companion.child.exitCode === null) {
+      companion.child.kill();
+      await exited;
+    }
+    model.closeAllConnections();
+    model.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+  // until() takes a synchronous predicate, so the relay is polled here.
+  let relayUp = false;
+  for (let i = 0; i < 100 && !relayUp; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    relayUp = await fetch(`http://127.0.0.1:${port}/capture`, { method: 'OPTIONS' }).then(() => true, () => false);
+    // eslint-disable-next-line no-await-in-loop
+    if (!relayUp) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(relayUp, 'the relay never came up');
+  panel = connectPanel(port);
+  await until(() => panel.events.some((e) => e.type === 'status' && e.companionOnline), 10000, 'companion online');
+
+  assert.equal(await panel.sendMessage('Give me a hint.', 'two-sum'), 202);
+  await until(() => panel.events.some((e) => e.type === 'turn-end'), 10000, 'the hint');
+  const end = panel.events.find((e) => e.type === 'turn-end');
+  assert.equal(end.text, 'What does your inner loop look for each time?');
+  const turnEvents = panel.events.filter((e) => e.turnId === end.turnId);
+  assert.ok(!JSON.stringify(turnEvents).includes('hash map'), 'the panel never got the rejected hint');
+  assert.equal(requests.length, 2, 'one re-ask, no loop');
+  assert.match(requests[1].messages.at(-1).content, /breaks the tutoring rules[\s\S]*hash map/);
+  assert.equal(requests[1].messages.at(-2).content, replies[0]);
+  await until(() => companion.text().includes('look for each time'), 5000, 'the hint in the terminal');
+  assert.ok(!companion.text().includes('hash map'), 'the terminal never printed the rejected hint');
+
+  assert.equal(await panel.sendMessage('thanks', 'two-sum'), 202);
+  await until(() => requests.length === 3, 10000, 'the next request');
+  const history = JSON.stringify(requests[2].messages);
+  assert.ok(history.includes('What does your inner loop look for each time?'));
+  assert.ok(!history.includes('hash map'), 'the rejected hint left history');
+  assert.ok(!history.includes('breaks the tutoring rules'), 'the re-ask instruction was never kept');
 });

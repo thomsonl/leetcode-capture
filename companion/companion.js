@@ -76,6 +76,7 @@ import {
 import { createSettingsRpc } from './settings-rpc.js';
 import { CodexBackend } from './codex-backend.js';
 import { transferConversation } from '../extension/shared/conversation.js';
+import { createReplyGuard, guardedSend } from '../extension/shared/reply-guard.js';
 import { requestCaptureTrim, pendingTrimFor, pendingTrimHappened, isPendingTrim } from './capture-log.js';
 import { stripControlChars, oneLine, sanitizeCapture } from '../extension/shared/sanitize.js';
 import {
@@ -570,6 +571,9 @@ let panelTurnCounter = 0;
 // problem is active (see code-ledger.js). In memory only: a restart starts
 // the backends from nothing too.
 const ledger = createCodeLedger({ maxProblems: DEFAULT_MAX_PROBLEMS });
+// Hint count and what the student named or saw, for the post-check guard
+// (extension/shared/reply-guard.js); reset with the tutor context.
+const replyGuard = createReplyGuard();
 
 // The panel's "Processing" light: how many tutor turns are running or
 // queued. A typed message counts from the moment it is queued, a Submit from
@@ -644,6 +648,7 @@ function activateProblem(problemId, slug) {
   const result = ledger.activate(problemId, { slug, resetOnSwitch: effective.options.autoClearContext });
   if (!result.reset) return result;
   backend.resetContext();
+  replyGuard.reset();
   if (result.dropped && result.dropped.slug && panelBridge) panelBridge.dropProblem(result.dropped.slug);
   // The old problem's captures are no longer needed either: the handled
   // part of the log goes at the end of the current poll (see pollLoop).
@@ -661,6 +666,7 @@ function activateProblem(problemId, slug) {
 // relay, the panel feed and the process itself stay as they are.
 function resetTutorContext() {
   backend.resetContext();
+  replyGuard.reset();
   ledger.forgetHeld();
   printAboveInput(consumeTurnBoundary() + dim('companion: tutor context cleared'));
 }
@@ -1105,6 +1111,12 @@ function queueTurn(task) {
 // error or an empty reply, so the caller only records the code as held by
 // the tutor when it really got it.
 //
+// Every turn goes through the post-check guard (extension/shared/
+// reply-guard.js, the same one the extension runtime uses): `guardText` is
+// the student's own words (null for a Submit) and `trigger` 'submit' or
+// null. What streams to the terminal and the panel is only what the guard
+// releases, and the turn-end text is exactly that.
+//
 // onReply, when given, runs on the raw reply before it's printed and may
 // return a transformed string - used by handleCaptureLine to peel the vault
 // auto-summary's JSON block back off a Submit reply (see extractVaultBlock)
@@ -1123,7 +1135,9 @@ async function sendAndPrintTurn(label, text, options = {}) {
   }
 }
 
-async function sendAndPrintTurnBody(label, text, { onReply, problemContext, currentCode, compactText, panelMeta } = {}) {
+async function sendAndPrintTurnBody(label, text, { onReply, problemContext, currentCode, compactText, panelMeta, guardText = null, trigger = null } = {}) {
+  const guardTurn = replyGuard.begin({ text: guardText, trigger, code: currentCode && typeof currentCode.code === 'string' ? currentCode.code : null });
+  const guardLog = (message) => printAboveInput(dim(`companion: ${message}`));
   const cutOffNote = 'The reply was cut off because the model ran out of room.';
   // Mirrors this turn to the in-page panel (see "in-page panel bridge"
   // above): a start marker, each streamed chunk, then one end event carrying
@@ -1191,15 +1205,17 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
 
     let reply;
     try {
-      reply = await backend.sendMessage(text, {
-        onChunk: (chunk) => {
+      reply = await guardedSend({
+        backend,
+        text,
+        options: { problemContext, currentCode, compactText },
+        turn: guardTurn,
+        onText: (chunk) => {
           anyChunk = true;
           if (mirrorChunks) panelPublish({ type: 'chunk', turnId: panelTurnId, text: chunk });
           writeReplyPiece(streamer.push(chunk));
         },
-        problemContext,
-        currentCode,
-        compactText,
+        log: guardLog,
       });
     } catch (err) {
       if (err.cutOff) {
@@ -1250,9 +1266,27 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
   // Non-streaming path (vault auto-summary's Submit turns): the whole
   // transformed reply prints as one block once it's fully ready, same
   // shape as before streaming existed.
+  // The guard sees the reply with the vault block already peeled off (by
+  // onReply, called exactly once); it does not stream here, and a Submit
+  // review is never re-asked, so a reply with nothing left shows the
+  // fallback.
   let reply;
+  let displayText;
   try {
-    reply = await backend.sendMessage(text, { problemContext, currentCode, compactText });
+    displayText = await guardedSend({
+      backend: {
+        // Not streamed: only the turn's own options, no onChunk.
+        sendMessage: async (message) => {
+          reply = await backend.sendMessage(message, { problemContext, currentCode, compactText });
+          return onReply(reply);
+        },
+        replaceLastReply: (shown) => backend.replaceLastReply?.(shown),
+      },
+      text,
+      options: { problemContext, currentCode, compactText },
+      turn: guardTurn,
+      log: guardLog,
+    });
   } catch (err) {
     stopSpinner();
     clearBottomRows();
@@ -1276,7 +1310,6 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
   }
   stopSpinner();
   clearBottomRows();
-  const displayText = onReply(reply);
   const isEmpty = !(typeof displayText === 'string' && displayText.trim());
   const marker = stylingEnabled() && !isEmpty ? turnMarker() : '';
   // Same hanging-indent treatment as the streaming path's first piece
@@ -1376,6 +1409,7 @@ rl.on('line', (line) => {
 async function sendChatTurn({ label, text, problemId, preamble = null, codeUnavailable = false }) {
   const turn = prepareChatTurn(ledger, { text, problemId, preamble, codeUnavailable });
   const ok = await sendAndPrintTurn(label, turn.message.text, {
+    guardText: text,
     problemContext: turn.problemContext,
     currentCode: turn.currentCode,
     compactText: turn.message.compactText,
@@ -1627,6 +1661,7 @@ async function handleCaptureLine(line) {
         currentCode: turn.currentCode,
         compactText: turn.message.compactText,
         panelMeta: { problemSlug: capture.problemSlug || null },
+        trigger: 'submit',
       });
       if (ok) ledger.commit(problemId, plan);
     } finally {
