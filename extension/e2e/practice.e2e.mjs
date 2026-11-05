@@ -191,10 +191,14 @@ try {
 
   const page = await openProblem('two-sum');
   const card = `window.__qa('.feed .solved').at(-1)`;
+  // The two problems the card itself shows (next up, more of the topic): the
+  // practice list leaves them out so none appears twice.
+  let shown = [];
 
   await scenario('the "nice job" card offers the fixed skill chips, none chosen, the first one tabbable', async () => {
     check((await page.eval(`fetch('/submissions/detail/9001/v2/check/').then((r) => r.json()).then(() => fetch('/submissions/detail/9001/v2/check/')).then((r) => r.json()).then((r) => r.status_msg)`)) === 'Accepted', 'the poll');
     await page.waitFor(`window.__qa('.feed .solved .skill-chip').length > 0`, { what: 'the card with chips' });
+    shown = await page.eval(`[...${card}.querySelectorAll('.solved-list a')].map((a) => a.href.split('/problems/')[1].split('/')[0])`);
     const m = await page.eval(`window.__practice(${card})`);
     check(JSON.stringify(m.chips.map((c) => c.label)) === JSON.stringify(skillChoices().map((s) => s.label)), `chips: ${m.chips.map((c) => c.label)}`);
     check(m.chips.every((c) => c.pressed === 'false'), 'a chip starts chosen');
@@ -205,7 +209,7 @@ try {
     await page.screenshot(path.join(shots, 'card-chips-dark.png'), { width: 1100, height: 760 });
   });
 
-  const expected = (offset) => practiceSuggestions({ skill: 'hash-maps', reference: 'Easy', solved: ['two-sum', preSolved], exclude: 'two-sum', offset }).suggestions;
+  const expected = (offset) => practiceSuggestions({ skill: 'hash-maps', reference: 'Easy', solved: ['two-sum', preSolved], exclude: ['two-sum', ...shown], offset }).suggestions;
 
   await scenario('a chip shows the top three for the skill near the solved problem\'s level, solved ones left out, focus on the first', async () => {
     await page.eval(`window.__chip(${card}, 'Hash maps').click()`);
@@ -214,6 +218,7 @@ try {
     const want = expected(0);
     check(JSON.stringify(m.items.map((i) => i.title)) === JSON.stringify(titles(want)), `got ${m.items.map((i) => i.title)}, want ${titles(want)}`);
     check(!m.items.some((i) => i.href.includes(`/${preSolved}/`) || i.href.includes('/two-sum/')), `a solved problem: ${JSON.stringify(m.items)}`);
+    check(shown.length > 0 && !m.items.some((i) => shown.some((sl) => i.href.includes(`/${sl}/`))), `a problem the card already shows is offered again: ${shown}`);
     check(m.items.every((i, k) => i.href === `https://leetcode.com/problems/${want[k].slug}/` && i.target === ''), 'plain same-tab links');
     check(m.items.every((i) => i.difficulty === 'Easy' && i.color === 'rgb(44, 187, 93)'), `difficulties: ${JSON.stringify(m.items.map((i) => [i.difficulty, i.color]))}`);
     check(m.items.every((i, k) => i.reason === want[k].reason && /^Same level · /.test(i.reason)), `reasons: ${m.items.map((i) => i.reason)}`);
@@ -251,17 +256,17 @@ try {
     const tabs = await page.eval(`window.__practice(${card}).chips.filter((c) => c.tab === 0).map((c) => c.label)`);
     check(JSON.stringify(tabs) === '["Arrays"]', `one tabbable chip follows the focus: ${tabs}`);
     await key(page, 'Enter', 'Enter', 13);
-    const want = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum', preSolved], exclude: 'two-sum' }).suggestions;
+    const want = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum', preSolved], exclude: ['two-sum', ...shown] }).suggestions;
     await page.waitFor(`window.__practice(${card}).items[0]?.title === ${JSON.stringify(want[0].title)}`, { what: 'Arrays by keyboard' });
     check((await page.eval('window.__focused()')) === want[0].title, 'focus on the first suggestion');
   });
 
   await scenario('a problem solved after the card appeared is left out the next time', async () => {
-    const first = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum', preSolved], exclude: 'two-sum' }).suggestions[0];
+    const first = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum', preSolved], exclude: ['two-sum', ...shown] }).suggestions[0];
     await browser.serviceWorkerEval(`chrome.storage.local.get('solvedProblems').then((s) => chrome.storage.local.set({ solvedProblems: { ...s.solvedProblems, ${JSON.stringify(first.slug)}: { at: '2026-11-04T00:00:00.000Z', count: 0, manual: true } } }))`);
     await page.eval(`[...${card}.querySelectorAll('.practice-foot .practice-link')].find((b) => b.textContent === 'Other skill').click()`);
     await page.eval(`window.__chip(${card}, 'Arrays').click()`);
-    const want = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum', preSolved, first.slug], exclude: 'two-sum' }).suggestions;
+    const want = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum', preSolved, first.slug], exclude: ['two-sum', ...shown] }).suggestions;
     await page.waitFor(`window.__practice(${card}).items[0]?.title === ${JSON.stringify(want[0].title)}`, { what: 'the list without the new solve' });
     const m = await page.eval(`window.__practice(${card})`);
     check(!m.items.some((i) => i.title === first.title), `${first.title} still offered`);

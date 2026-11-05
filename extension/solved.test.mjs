@@ -289,6 +289,13 @@ test('practice suggestions answer a problem tab for the problem it names, leave 
   const next = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'contains-duplicate', skill: 'hash-maps', offset: 3 }, tabSender());
   assert.equal(next.offset, 3);
   assert.ok(!next.suggestions.some((s) => r.suggestions.some((t) => t.slug === s.slug)), 'the next three are new');
+  // The card's own problems (skip) are left out, and a bad skip is refused.
+  const skipped = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'contains-duplicate', skill: 'hash-maps', skip: [r.suggestions[0].slug] }, tabSender());
+  assert.equal(skipped.ok, true);
+  assert.ok(!skipped.suggestions.some((s) => s.slug === r.suggestions[0].slug), 'a skipped problem is not offered');
+  for (const skip of ['two-sum', ['Not A Slug'], ['a', 'b', 'c', 'd', 'e'], [1]]) {
+    assert.deepEqual(await service.handleMessage({ type: 'lc-tutor:practice', slug: 'contains-duplicate', skill: 'hash-maps', skip }, tabSender()), { ok: false });
+  }
   // A problem the index does not have: every level, by popularity.
   const unknown = await service.handleMessage({ type: 'lc-tutor:practice', slug: 'a-brand-new-problem', skill: 'arrays' }, tabSender());
   assert.equal(unknown.reference, null);

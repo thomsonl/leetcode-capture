@@ -28,7 +28,7 @@
 //       { ok, card }.
 //   from a content script on a problem page (the Tutor panel's "Practice a
 //   skill" picker, with the page's `slug` as for lc-tutor:accepted):
-//     { type: 'lc-tutor:practice', slug, skill?, offset? }  read only. The
+//     { type: 'lc-tutor:practice', slug, skill?, offset?, skip? }  read only. The
 //       reference difficulty is that problem's in the bundled index (none
 //       for a problem it lacks), and that problem is never suggested.
 //       Answers { ok, skills, skill, reference, suggestions, offset, more }
@@ -155,8 +155,8 @@ const MAX_OFFSET = 5000;
 
 // The "Practice a skill" answer for the problem page `slug`: the skills,
 // and with a known `skill` the suggestions after `offset`.
-export function practiceAnswer(solved, slug, skill, offset = 0) {
-  const result = practiceSuggestions({ skill: skillById(skill), reference: referenceLevel(slug), solved, exclude: slug, offset });
+export function practiceAnswer(solved, slug, skill, offset = 0, skip = []) {
+  const result = practiceSuggestions({ skill: skillById(skill), reference: referenceLevel(slug), solved, exclude: [slug, ...skip], offset });
   return { ok: true, skills: skillChoices(), ...result };
 }
 
@@ -229,7 +229,10 @@ export function createSolvedService({ storage, extensionOrigin, now = () => new 
     const skill = message.skill === undefined || message.skill === null ? null : message.skill;
     if (!slug || !Number.isInteger(offset) || offset < 0 || offset > MAX_OFFSET) return { ok: false };
     if (skill !== null && !skillById(skill)) return { ok: false };
-    return update(async (solved) => practiceAnswer(solved, slug, skill, offset));
+    // Problems the asking card already shows, left out so none appears twice.
+    const skip = message.skip === undefined ? [] : message.skip;
+    if (!Array.isArray(skip) || skip.length > 4 || !skip.every(isSlug)) return { ok: false };
+    return update(async (solved) => practiceAnswer(solved, slug, skill, offset, skip));
   }
 
   async function setSolved(message) {

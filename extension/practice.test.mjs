@@ -133,6 +133,11 @@ test('solved problems and the excluded one are never offered; solved may be a Se
   }
 });
 
+test('an array of slugs is left out too, for the problems a card already shows', () => {
+  const r = practiceSuggestions({ skill: 'arrays', reference: 'Easy', solved: ['two-sum'], exclude: ['easy-big', 'easy-tie-b'], index: SMALL });
+  assert.deepEqual(slugs(r), ['easy-tie-a', 'easy-same-c', 'easy-same-b']);
+});
+
 test('three at a time: the offset pages through, and `more` says whether another page exists', () => {
   const first = practiceSuggestions({ skill: 'arrays', reference: 'Hard', solved: [], index: SMALL });
   assert.equal(first.suggestions.length, 3);

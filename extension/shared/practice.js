@@ -214,7 +214,8 @@ export function practiceSuggestions({ skill, reference = null, solved, exclude =
   const size = Number.isInteger(count) && count > 0 ? Math.min(count, 20) : PAGE_SIZE;
   if (!found) return { skill: null, reference: level, suggestions: [], offset: 0, total: 0, more: false };
   const done = solvedSet(solved);
-  const open = rankedFor(found, level, index).filter((p) => !done.has(p.slug) && p.slug !== exclude);
+  const skip = new Set(Array.isArray(exclude) ? exclude : exclude ? [exclude] : []);
+  const open = rankedFor(found, level, index).filter((p) => !done.has(p.slug) && !skip.has(p.slug));
   const page = open.slice(start, start + size);
   return {
     skill: { id: found.id, label: found.label },

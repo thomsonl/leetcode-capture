@@ -2226,7 +2226,7 @@
     head.appendChild(text);
     card.appendChild(head);
     card.appendChild(solvedList(item));
-    if (messagingRuntime() && item.skills.length) card.appendChild(practiceBlock(item.slug, item.skills));
+    if (messagingRuntime() && item.skills.length) card.appendChild(practiceBlock(item.slug, item.skills, { skip: [item.next && item.next.slug, item.more && item.more.problem && item.more.problem.slug].filter(Boolean) }));
     if (messagingRuntime()) {
       const foot = el("div", "solved-foot");
       if (item.lists.length > 1) foot.appendChild(listMenu(item));
@@ -2335,7 +2335,7 @@
 
   // The practice row for problem `slug`. `skills` may be empty: the list is
   // then asked for first.
-  function practiceBlock(slug, skills, { label = true } = {}) {
+  function practiceBlock(slug, skills, { label = true, skip = [] } = {}) {
     const block = el("div", "practice");
     const title = el("div", "practice-title");
     const titleText = el("span", "solved-label", "Practice a skill");
@@ -2414,7 +2414,7 @@
       view.loading = true;
       for (const b of [...chips.children, more, other, retry]) b.disabled = true;
       block.setAttribute("aria-busy", "true");
-      const answer = await askWorker({ type: "lc-tutor:practice", slug, ...(skill ? { skill: skill.id, offset } : {}) });
+      const answer = await askWorker({ type: "lc-tutor:practice", slug, ...(skip.length ? { skip } : {}), ...(skill ? { skill: skill.id, offset } : {}) });
       if (token !== view.request) return;
       view.loading = false;
       block.removeAttribute("aria-busy");
