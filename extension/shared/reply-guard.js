@@ -441,6 +441,7 @@ export function salvage(text, policy, context) {
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})([^\n`]*)\n/;
 const FENCE_OPEN_PARTIAL_RE = /^ {0,3}(?:`{1,2}|~{1,2}|(?:`{3,}|~{3,})[^\n`]*)$/;
 const FOLLOW_UP_RE = /^\s*(?:[-*+]\s+)?(?:this\s+way|that\s+way|now\b|then\b|with\s+(?:this|that|the)\s+(?:change|fix)|after\s+(?:this|that|the)\s+(?:change|fix)|this\s+(?:change|fix|ensures|guarantees|makes|prevents|avoids)|that\s+(?:change|fix)|either\s+way)/i;
+const BLOCK_LINE_RE = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>)/;
 const SPACE_RE = /[ \t\u00A0\u202F]/;
 const DASH_RE = /[\u2013\u2014-]/;
 
@@ -462,14 +463,24 @@ function createGate(policy, context, { collect = false } = {}) {
   let leadIn = null; // a prose unit ending with ':', waiting for what follows
   let afterDrop = false;
   let lastDropped = false;
+  let carryBreak = false;
   const units = [];
   const dropped = [];
 
   function emit(text) {
     if (!text) return '';
     let out = text;
-    if (!released) out = out.replace(/^\s+/, '');
-    else if (afterDrop && /\n$/.test(released) && /^\n/.test(out)) out = out.replace(/^\n+/, released.endsWith('\n\n') ? '' : '\n');
+    if (!released) {
+      // Nothing shown yet: no leading blank lines.
+      out = out.replace(/^\s+/, '');
+    } else if (carryBreak && !released.endsWith('\n')) {
+      // A dropped unit took its line break with it: put it back.
+      out = `\n${out}`;
+    } else if (afterDrop && released.endsWith('\n') && out.startsWith('\n')) {
+      // Never more than one blank line where units were dropped.
+      out = out.replace(/^\n+/, released.endsWith('\n\n') ? '' : '\n');
+    }
+    carryBreak = false;
     if (!out) return '';
     afterDrop = false;
     released += out;
@@ -488,6 +499,7 @@ function createGate(policy, context, { collect = false } = {}) {
     if (reason) {
       lastDropped = true;
       dropped.push({ rule: reason, text: unit.text });
+      if (unit.text.endsWith('\n')) carryBreak = true;
       leadIn = null;
       afterDrop = true;
       return '';
@@ -610,7 +622,22 @@ function proseUnitEnd(text, final, word) {
   let lastWordBreak = 0;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
-    if (ch === '\n') return i + 1;
+    if (ch === '\n') {
+      if (word) return i + 1;
+      // A model that hard-wraps its prose breaks lines mid-sentence: such a
+      // line stays in the unit with the next one, so a dropped sentence is
+      // never cut in half. Only a line that ends a sentence, or a block
+      // line (list item, heading, table row, quote), or one followed by a
+      // new block, ends the unit here.
+      const line = text.slice(text.lastIndexOf('\n', i - 1) + 1, i);
+      if (!line.trim() || BLOCK_LINE_RE.test(line) || /[.!?:]["')\]*_\u2019\u201D]*[ \t]*$/.test(line)) return i + 1;
+      const rest = text.slice(i + 1);
+      const nextEnd = rest.indexOf('\n');
+      const next = nextEnd < 0 ? rest : rest.slice(0, nextEnd);
+      if (nextEnd < 0 && next.length < 4 && !final) return 0;
+      if (!next.trim() || BLOCK_LINE_RE.test(next) || /^ {0,3}(?:`{3}|~{3})/.test(next)) return i + 1;
+      continue;
+    }
     if (ch === '`') {
       let run = 1;
       while (text[i + run] === '`') run += 1;

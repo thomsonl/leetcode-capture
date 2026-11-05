@@ -345,3 +345,13 @@ test('no turn means the old unguarded call', async () => {
   assert.equal(await guardedSend({ backend, text: 'q', turn: null, onText: (p) => seen.push(p) }), `a ${EM} b`);
   assert.deepEqual(seen, [`a ${EM} b`]);
 });
+
+test('a hard-wrapped sentence is checked and dropped whole, never cut in half', async () => {
+  const reply = 'No. Your DFS goes as deep as the island is big, so the\ncall stack passes the limit. A BFS with a queue would\navoid that by working level by level.\n\n- First point.\n- Second point\n';
+  for (const size of [1, 4, 1000]) {
+    const backend = { async sendMessage(_t, { onChunk }) { for (const p of pieces(reply, size)) onChunk(p); return reply; } };
+    const turn = createReplyGuard().begin({ text: 'Will a big grid work?', code: islandCode });
+    const shown = await guardedSend({ backend, text: 'q', turn });
+    assert.equal(shown, 'No. Your DFS goes as deep as the island is big, so the\ncall stack passes the limit. \n\n- First point.\n- Second point\n');
+  }
+});
