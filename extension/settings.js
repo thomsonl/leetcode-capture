@@ -178,9 +178,14 @@
     return /^[a-p]{32}$/.test(id) ? `npx ${HELPER_PACKAGE} install --chrome-id ${id}` : `npx ${HELPER_PACKAGE} install`;
   }
 
+  // Only called while the Helper section is shown, that is while a provider
+  // that runs through the helper is chosen in the form, so each call also
+  // asks the worker to start the helper (`want`): the provider can only be
+  // saved once the helper runs. The wish lapses about 20 s after the section
+  // hides or this page closes.
   async function workerHelper(type) {
     try {
-      return await api.runtime.sendMessage({ type });
+      return await api.runtime.sendMessage({ type, want: true });
     } catch {
       return null;
     }

@@ -47,6 +47,19 @@ const launcher = createHelperLauncher({
 });
 
 let runtime = null;
+// While the options page shows a subscription provider's Helper section it
+// asks for the helper (`want` on its status calls, every 5 s), so the helper
+// can start before that provider is saved: saving it needs the helper
+// running. The wish lapses OPTIONS_WANT_MS after the last ask, when the page
+// is closed or another provider is chosen.
+const OPTIONS_WANT_MS = 20000;
+let optionsWantUntil = 0;
+let optionsWantTimer = null;
+function optionsWant() {
+  optionsWantUntil = Date.now() + OPTIONS_WANT_MS;
+  clearTimeout(optionsWantTimer);
+  optionsWantTimer = setTimeout(() => refreshHelper(), OPTIONS_WANT_MS + 100);
+}
 async function refreshHelper() {
   let granted = false;
   try {
@@ -54,7 +67,8 @@ async function refreshHelper() {
   } catch {
     granted = false;
   }
-  launcher.setWanted(runtime === "helper" && granted && typeof api.runtime.connectNative === "function");
+  const wanted = runtime === "helper" || Date.now() < optionsWantUntil;
+  launcher.setWanted(wanted && granted && typeof api.runtime.connectNative === "function");
 }
 
 // The options page asks for the helper's state; panels hear it so an offline
@@ -166,6 +180,10 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // never a content script on leetcode.com.
     if (!sender.url || !sender.url.startsWith(api.runtime.getURL(""))) return undefined;
     (async () => {
+      if (message.want === true) {
+        optionsWant();
+        await refreshHelper();
+      }
       if (message.type === "lc-tutor:helper-retry") {
         await refreshHelper();
         launcher.retry();

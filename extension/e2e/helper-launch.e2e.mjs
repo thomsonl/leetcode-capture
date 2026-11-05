@@ -20,7 +20,10 @@
 //     panel connects, the options page says Running, and Claude can be saved;
 //   - closing the last problem tab stops both 30 s later, not before;
 //   - with Claude saved and the helper uninstalled again, the panel is
-//     offline and points to Settings.
+//     offline and points to Settings;
+//   - with a local model saved first, choosing Claude in the form starts
+//     the helper by itself (saving needs it running), switching the form back
+//     lets it stop, and choosing Claude again can be saved.
 //
 // Run with:  node extension/e2e/helper-launch.e2e.mjs   (about a minute)
 
@@ -248,6 +251,68 @@ try {
     await offlineWithPointer();
     await options.eval(`document.getElementById('helper-check').click()`);
     await options.waitFor(`document.getElementById('helper-state-text').textContent === 'Not installed'`, { what: 'Not installed again', timeout: 10000 });
+  });
+
+  // A user who first saved a local model (so the saved runtime is the
+  // browser's) and then picks the Claude subscription in the form: the helper
+  // must start before the provider is saved, since saving needs it running.
+  let second = null;
+  const stateText = (o) => o.eval(`document.getElementById('helper-state-text').textContent`);
+  const helperPids = async (o) => {
+    const view = await o.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+    const pids = view && view.host ? [view.host.relay && view.host.relay.pid, view.host.companion && view.host.companion.pid].filter(Boolean) : [];
+    for (const pid of pids) seenPids.add(pid);
+    return pids;
+  };
+  await scenario('a local model saved, then Claude chosen in the form: the helper starts by itself and Save enables', async () => {
+    const saved = await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:settings-save', params: { patch: { provider: 'local', runtime: 'extension', providers: { local: { baseUrl: 'http://localhost:${relayPort}/v1', model: 'llama3.2' } } } } })`);
+    check(saved && saved.ok, `saved local: ${JSON.stringify(saved)}`);
+    const before = await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+    check(before.runtime === 'extension', `runtime: ${before.runtime}`);
+    // Its Helper section would keep asking for the helper while open.
+    await options.send('Page.close');
+    install({ platform: 'linux', home, env: {}, root: repo, chromeIds: [browser.extensionId], browsers: ['chromium'] });
+    const registration = layout({ platform: 'linux', home, env: {} }).targets.find((t) => t.id === 'chromium').manifestPath;
+    fs.mkdirSync(path.join(browser.profile, 'NativeMessagingHosts'), { recursive: true });
+    fs.copyFileSync(registration, path.join(browser.profile, 'NativeMessagingHosts', `${HOST_NAME}.json`));
+    // The problem tab from the last scenario is still open; the form now
+    // shows Claude, and nobody presses Check again.
+    second = await openOptions(browser);
+    await second.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running', timeout: 20000 }).catch(async (err) => {
+      throw new Error(`${err.message}: ${await stateText(second)}`);
+    });
+    const pids = await helperPids(second);
+    check(pids.length === 2 && pids.every(isAlive), `relay and companion: ${JSON.stringify(pids)}`);
+    await second.waitFor(`!document.getElementById('save').disabled`, { what: 'Save to be enabled', timeout: 15000 });
+  });
+
+  await scenario('switching the form back to the local model lets the helper stop, with nothing saved', async () => {
+    const pids = await helperPids(second);
+    await second.click('input[name=provider][value=local]');
+    const deadline = Date.now() + 40000;
+    while (Date.now() < deadline && pids.some(isAlive)) await sleep(250);
+    check(!pids.some(isAlive), `the helper still runs for a local model user: ${JSON.stringify(await second.eval(`({ card: document.getElementById('helper-card').hidden, ext: (document.getElementById('local-runtime-extension') || {}).checked, help: (document.getElementById('local-runtime-helper') || {}).checked })`))} ${JSON.stringify(await second.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`))}`);
+    const view = await second.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+    check(view.runtime === 'extension', `runtime: ${view.runtime}`);
+  });
+
+  await scenario('choosing Claude again starts the helper, and saving it makes the helper the runtime', async () => {
+    await second.click('input[name=provider][value=claude]');
+    await second.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running again', timeout: 20000 });
+    await helperPids(second);
+    await second.waitFor(`!document.getElementById('save').disabled`, { what: 'Save to be enabled', timeout: 15000 });
+    await second.click('#save');
+    await second.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save', timeout: 30000 }).catch(async (err) => {
+      throw new Error(`${err.message}: ${await second.eval(`document.getElementById('save-result').textContent + ' | ' + document.getElementById('helper-state-text').textContent`)}`);
+    });
+    const view = await second.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+    check(view.runtime === 'helper' && view.state === 'running', JSON.stringify({ runtime: view.runtime, state: view.state }));
+    await second.screenshot(path.join(shots, 'helper-saved-after-local.png'), { width: 900, height: 1100 });
+  });
+
+  await scenario('no exceptions in the second options page', async () => {
+    const errors = (second ? second.console : []).filter((l) => /exception|error/i.test(l));
+    check(errors.length === 0, errors.join('\n'));
   });
 
   await scenario('no exceptions in the options page', async () => {
