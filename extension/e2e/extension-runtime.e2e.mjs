@@ -43,8 +43,10 @@ const fixture = fs.readFileSync(path.join(here, 'panel-fixture.html'), 'utf8').r
 </head>`
 );
 
-// The stub model: streams "Reply N: part one ... part three." in pieces.
-const model = { requests: [] };
+// The stub model: streams "Reply N: part one. then part two. then part
+// three." a sentence at a time (the post-check guard releases a chat reply
+// sentence by sentence), or the next scripted reply in small pieces.
+const model = { requests: [], script: [] };
 const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -58,7 +60,8 @@ const server = http.createServer((req, res) => {
       return void res.end(JSON.stringify({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] }));
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-    const pieces = [`Reply ${n}: part one`, ', part two', ', part three.'];
+    const scripted = model.script.shift();
+    const pieces = scripted ? scripted.match(/[\s\S]{1,6}/g) : [`Reply ${n}: part one. `, 'then part two. ', 'then part three.'];
     let i = 0;
     const timer = setInterval(() => {
       if (i < pieces.length) {
@@ -69,7 +72,7 @@ const server = http.createServer((req, res) => {
       clearInterval(timer);
       res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`);
       res.end('data: [DONE]\n\n');
-    }, 400);
+    }, scripted ? 40 : 400);
   });
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -173,7 +176,7 @@ try {
     await page.eval(`window.__send('why does this return nothing?')`);
     // Part of the reply first, then all of it.
     await page.waitFor(`window.__replies().some((t) => t.includes('part one') && !t.includes('part three'))`, { what: 'a partly streamed reply', timeout: 10000 });
-    await page.waitFor(`window.__replies().some((t) => t.includes('Reply 1: part one, part two, part three.'))`, { what: 'the whole reply', timeout: 10000 });
+    await page.waitFor(`window.__replies().some((t) => t.includes('Reply 1: part one. then part two. then part three.'))`, { what: 'the whole reply', timeout: 10000 });
     const sent = model.requests.find((r) => r.body.stream);
     check(sent.origin && sent.origin.startsWith('chrome-extension://'), `the request came from the worker: ${sent.origin}`);
     const last = sent.body.messages[sent.body.messages.length - 1].content;
@@ -203,7 +206,7 @@ try {
     await page.eval(`document.getElementById('editor-button').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`);
     await new Promise((r) => setTimeout(r, 300));
     await page.eval('window.__openTutor()');
-    await page.waitFor(`window.__replies().some((t) => t.includes('Reply 2: part one, part two, part three.'))`, { what: 'the Submit review', timeout: 10000 });
+    await page.waitFor(`window.__replies().some((t) => t.includes('Reply 2: part one. then part two. then part three.'))`, { what: 'the Submit review', timeout: 10000 });
     const submit = model.requests[model.requests.length - 1].body.messages.at(-1).content;
     check(/\[LeetCode capture\] Submit/.test(submit), `submit header: ${submit}`);
     check(/seen = \{\}/.test(submit) && !/def twoSum/.test(submit.split('\n').filter((l) => !l.startsWith(' ')).join('\n')) , `a diff, not the whole code: ${submit}`);
@@ -223,6 +226,47 @@ try {
     await page.eval(helpers);
     await page.eval('window.__openTutor()');
     await page.waitFor(`window.__replies().length === 2`, { what: 'the replayed replies' });
+  });
+
+  await scenario('the post-check guard: a leaking first hint is re-asked, and the panel shows only the typing dots, then the clean hint', async () => {
+    const before = model.requests.length;
+    model.script.push(
+      'Use a hash map to store each number you have seen, so each lookup is constant time.',
+      'What does your loop do with each number it reads?'
+    );
+    // Every text any tutor bubble ever showed, and whether the dots were up.
+    await page.eval(`(() => {
+      window.__shown = [];
+      window.__dots = false;
+      new MutationObserver(() => {
+        window.__shown.push(...window.__replies());
+        if (window.__q('.feed .tutor .dots')) window.__dots = true;
+      }).observe(window.__q('.feed'), { subtree: true, childList: true, characterData: true });
+    })()`);
+    await page.eval(`window.__send('Give me a hint.')`);
+    await page.waitFor(`window.__replies().at(-1) === 'What does your loop do with each number it reads?'`, { what: 'the clean hint', timeout: 15000 });
+    const shown = await page.eval('window.__shown');
+    check(!shown.some((t) => /hash map|constant time/.test(t)), `a bubble showed the rejected hint: ${JSON.stringify(shown)}`);
+    check(await page.eval('window.__dots'), 'the typing dots stood in while the hint was held');
+    check(model.requests.length === before + 2, `one re-ask: ${model.requests.length - before} requests`);
+    const reask = model.requests[before + 1].body.messages;
+    check(/breaks the tutoring rules/.test(reask.at(-1).content) && /hash map/.test(reask.at(-2).content), 'the re-ask carried the rejected hint and the rule');
+    await page.screenshot(path.join(shots, 'guarded-hint-dark.png'), { width: 1100, height: 760 });
+
+    // A chat reply: its em dash is repaired before it shows and before it
+    // enters history, and an unrequested fix never shows.
+    model.script.push('Yes, it can. Your inner loop starts at i \u2014 so i pairs with itself. To fix this, start j at i + 1. That is the whole issue.');
+    await page.eval(`window.__send('Can my code use the same element twice?')`);
+    await page.waitFor(`window.__replies().at(-1).endsWith('That is the whole issue.')`, { what: 'the guarded chat reply', timeout: 15000 });
+    const reply = await page.eval('window.__replies().at(-1)');
+    check(reply === 'Yes, it can. Your inner loop starts at i, so i pairs with itself. That is the whole issue.', `the chat reply: ${reply}`);
+    check(!(await page.eval('window.__shown')).some((t) => /To fix this/.test(t)), 'the fix flashed in the panel');
+    model.script.push('You are welcome.');
+    await page.eval(`window.__send('thanks')`);
+    await page.waitFor(`window.__replies().at(-1) === 'You are welcome.'`, { what: 'the next reply', timeout: 15000 });
+    const history = JSON.stringify(model.requests.at(-1).body.messages);
+    check(history.includes('What does your loop do with each number it reads?') && !history.includes('hash map'), 'history holds the shown hint only');
+    check(!history.includes('\u2014') && !history.includes('To fix this') && !history.includes('breaks the tutoring rules'), 'history holds the repaired chat reply and no re-ask');
   });
 
   await scenario('the model switcher: a switch asked for mid-reply waits for it, and the chat and the held code move to the new model', async () => {
