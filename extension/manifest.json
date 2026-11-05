@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LeetCode Capture",
   "version": "1.2.0",
-  "description": "A LeetCode tutor that coaches you on your Run and Submit attempts, using a local model, your own API key or your subscription.",
+  "description": "A tutor for LeetCode problems: hints and Submit reviews from a local model, your API key or subscription, plus progress tracking.",
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
