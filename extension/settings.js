@@ -453,9 +453,9 @@
   // Each cause gets its own instruction; `code` parts render as inline code.
   const OFFLINE_COPY = {
     "relay-down": [
-      "This provider runs through the helper app, and it isn't running: can't reach the relay server on localhost:8135. Start the tutor with ",
+      "This provider runs through the helper app, and it isn't running (nothing answers on localhost:8135). Set it up in the Helper section below. If you run the tutor from a terminal instead, start it with ",
       { code: "leetcode" },
-      " (or run ",
+      " (or ",
       { code: "node companion.js" },
       " in the companion folder). This page reconnects on its own.",
     ],
@@ -821,7 +821,9 @@
 
   function showResult(id, kind, text) {
     const el = $(id);
-    el.textContent = text;
+    // Backends word their errors as clauses ("the Anthropic API key was
+    // refused ..."), so a message shown on its own starts with a capital.
+    el.textContent = kind === "error" && text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
     if (kind) el.setAttribute("data-kind", kind);
     else el.removeAttribute("data-kind");
   }

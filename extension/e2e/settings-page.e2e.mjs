@@ -232,7 +232,7 @@ await scenario('a refused save shows the reason and focuses the offending field'
   await page.click('#local-runtime-helper');
   await page.click('#save');
   await page.waitFor(SAVE_DONE);
-  assert.equal(await text(page, '#save-result'), 'model can\'t be empty');
+  assert.equal(await text(page, '#save-result'), 'Model can\'t be empty');
   assert.equal(await page.eval(`document.getElementById('save-result').getAttribute('data-kind')`), 'error');
   assert.equal(await page.eval(`document.activeElement && document.activeElement.id`), 'local-model');
 });
