@@ -299,7 +299,17 @@ try {
   await scenario('choosing Claude again starts the helper, and saving it makes the helper the runtime', async () => {
     await second.click('input[name=provider][value=claude]');
     await second.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running again', timeout: 20000 });
+    // The page still holds the companion's answer from before the helper
+    // stopped, so Save is enabled at once; wait for the new relay and
+    // companion, as a user would after the Running light.
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const view = await second.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+      if (view.host && view.host.companion && view.host.companion.state === 'running' && !(await portFree(relayPort))) break;
+      await sleep(250);
+    }
     await helperPids(second);
+    await second.waitFor(`fetch('http://localhost:${relayPort}/settings/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: 'get', params: {} }) }).then((r) => r.ok, () => false)`, { what: 'the companion to answer', timeout: 15000 });
     await second.waitFor(`!document.getElementById('save').disabled`, { what: 'Save to be enabled', timeout: 15000 });
     await second.click('#save');
     await second.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'the save', timeout: 30000 }).catch(async (err) => {
