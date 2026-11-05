@@ -60,7 +60,7 @@ If it offers a caption or description field for a screenshot, paste these; other
 2. `shot-2-practice-skill.png`:
    `Practice a skill: three problems near your level, with problems you solved left out.`
 3. `shot-3-progress.png`:
-   `Track your progress through NeetCode 150, Blind 75, Grind 75 and other lists, with the next problem to work on.`
+   `Track your progress through a problem list of your choice, with the next problem to work on.`
 4. `shot-4-settings.png`:
    `Choose the model: a local model, your own OpenAI or Anthropic key, or your Claude or ChatGPT subscription.`
 
@@ -91,13 +91,13 @@ Tutor
 
 Progress
 - When a submission is accepted, the problem is marked solved and a short card suggests what to try next.
-- The Progress page shows how far you are through NeetCode 150, NeetCode 250, Blind 75, Grind 75, Top 100 Liked, Top Interview 150 or SQL 50, and which problem comes next. "Sync from LeetCode" pulls in the problems your account already solved, and you can mark problems solved or starred by hand.
+- The Progress page shows how far you are through a well-known problem list you pick from a menu, and which problem comes next. "Sync from LeetCode" pulls in the problems your account already solved, and you can mark problems solved or starred by hand.
 
 Practice a skill
-- Pick a skill such as hash maps, two pointers or dynamic programming and get three problems near your level, chosen from problem data that ships with the extension. Problems you solved are left out.
+- Pick a skill and get three problems near your level, chosen from problem data that ships with the extension. Problems you solved are left out.
 
 Choose your model in Settings
-- A local model through Ollama, LM Studio, llama.cpp or any OpenAI-compatible server. Your code stays on your computer. Small local models give weaker hints and reviews than large hosted models.
+- A local model through any OpenAI-compatible server, such as Ollama. Your code stays on your computer. Small local models give weaker hints and reviews than large hosted models.
 - Your own OpenAI or Anthropic API key. Requests go straight from your browser to that provider and are billed to your key.
 - Your Claude or ChatGPT subscription, through a free helper program you install on your computer (it needs Node.js). The helper starts the tutor while a problem tab is open and stops it after you close the last one.
 
