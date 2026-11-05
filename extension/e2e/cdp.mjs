@@ -32,7 +32,14 @@ class Page {
     this.listeners = new Map();
     ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(ev.data);
-      if (msg.method && this.listeners.has(msg.method)) for (const fn of this.listeners.get(msg.method)) fn(msg.params);
+      // A paused request whose page navigated away (a link opened in the same
+      // tab) is dropped by the browser, so answering it fails with "Invalid
+      // InterceptionId"; that is not a test failure. Anything else still is.
+      const tolerate = (err) => {
+        if (msg.method === 'Fetch.requestPaused' && /Invalid InterceptionId/.test(err?.message)) return;
+        throw err;
+      };
+      if (msg.method && this.listeners.has(msg.method)) for (const fn of this.listeners.get(msg.method)) Promise.resolve(fn(msg.params)).catch(tolerate);
       if (msg.id && this.pending.has(msg.id)) {
         const { resolve, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
