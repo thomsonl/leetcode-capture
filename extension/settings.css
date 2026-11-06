@@ -15,6 +15,7 @@
   --green: #00b328;
   --green-text: #0e8a3a;
   --red: #ef4743;
+  --amber: #c25e00;
   --amber-bg: rgba(255, 161, 22, 0.14);
   --focus: #1a73e8;
   color-scheme: light;
@@ -31,6 +32,7 @@
     --fill: rgba(255, 255, 255, 0.07);
     --green: #2cbb5d;
     --green-text: #2cbb5d;
+    --amber: #ffa116;
     --amber-bg: rgba(255, 161, 22, 0.16);
     --focus: #6aa7ff;
     color-scheme: dark;
@@ -58,6 +60,7 @@ h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .connection[data-ok] .dot { background: var(--green); }
 .connection[data-ok] { color: var(--green-text); }
+.connection[data-state="warn"] .dot { background: var(--amber); }
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
 h2 { margin: 0 0 4px; font-size: 16px; line-height: 24px; font-weight: 600; }

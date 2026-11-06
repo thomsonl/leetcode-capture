@@ -218,6 +218,9 @@ function sanitizeConfig(raw) {
   // The saved profile in use (an id only), left out when none is.
   if (typeof raw.profile === "string" && PROFILE_ID_RE.test(raw.profile)) config.profile = raw.profile;
   else if (raw.profile !== null && raw.profile !== undefined) return null;
+  // What the tutor needs from the student before it can answer: only
+  // "signin" (its subscription CLI is not signed in), left out otherwise.
+  if (raw.attention === "signin") config.attention = "signin";
   return config;
 }
 

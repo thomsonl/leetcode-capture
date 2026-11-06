@@ -32,6 +32,7 @@ import { buildMessages } from '../extension/shared/context-budget.js';
 import { formatPinnedCode } from '../extension/shared/code-ledger.js';
 import { flattenMessages, normalizeConversation } from '../extension/shared/conversation.js';
 import { SUMMARY_MAX_TOKENS, SUMMARY_TIMEOUT_MS, condense, condenseCount, summaryBodyChars } from '../extension/shared/context-summary.js';
+import { isSignInText, signInError } from './sign-in.js';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_STDERR_CHARS = 2000;
@@ -291,8 +292,10 @@ export class CodexBackend {
       child.on('close', (code) => {
         const { text, error } = parseCodexOutput(stdout);
         if (text && text.trim()) return finish(resolve, text);
-        if (error) return finish(reject, new Error(`codex: ${error}`));
         const tail = stderr.trim().split('\n').slice(-3).join(' ').slice(0, 400);
+        // Only what codex itself printed is matched, never this file's text.
+        if (isSignInText('chatgpt', error) || (!error && isSignInText('chatgpt', tail))) return finish(reject, signInError('chatgpt'));
+        if (error) return finish(reject, new Error(`codex: ${error}`));
         return finish(
           reject,
           new Error(`codex exited with code ${code} and no reply${tail ? ` (${tail})` : ''}. Run "codex login" if you have not signed in`)
@@ -331,7 +334,9 @@ export function checkCodexLogin({ command = 'codex', commandArgs = [], env = pro
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ ok: code === 0, message: output.trim().split('\n')[0] || (code === 0 ? 'signed in' : 'not signed in; run "codex login"') });
+      // `signedOut`: codex ran and said no, as opposed to not running at all.
+      const message = output.trim().split('\n')[0] || (code === 0 ? 'signed in' : 'not signed in; run "codex login"');
+      resolve(code === 0 ? { ok: true, message } : { ok: false, signedOut: true, message });
     });
   });
 }

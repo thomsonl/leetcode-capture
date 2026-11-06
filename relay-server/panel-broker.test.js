@@ -819,6 +819,9 @@ test("unit: the extension origin pattern and sanitizeConfig", () => {
   assert.equal("profile" in sanitizeConfig({ provider: "local", label: "x", model: null, profile: null }), false);
   assert.equal(sanitizeConfig({ provider: "local", label: "x", model: null, profile: "Bad Id" }), null);
   assert.equal(sanitizeConfig({ provider: "local", label: "x", model: null, profile: { id: "a" } }), null);
+  // A sign-in the tutor needs passes; anything else in that field is dropped.
+  assert.equal(sanitizeConfig({ provider: "claude", label: "x", model: null, attention: "signin" }).attention, "signin");
+  assert.equal("attention" in sanitizeConfig({ provider: "claude", label: "x", model: null, attention: "<b>pwn</b>" }), false);
 });
 
 test("a model switch waits longer than other settings calls, and longer than the panel does", async (t) => {

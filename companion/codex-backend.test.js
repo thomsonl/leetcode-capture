@@ -35,12 +35,17 @@ process.stdin.on('end', () => {
   if (mode === 'hang') return setTimeout(() => {}, 60000);
   if (mode === 'fail-summary' && prompt.includes('You condense')) { console.error('summary failed'); process.exit(1); }
   if (mode === 'silent') { console.error('boom: not authenticated'); process.exit(1); }
+  if (mode === 'crash') { console.error('boom: disk full'); process.exit(1); }
   const emit = (e) => console.log(JSON.stringify(e));
   emit({ type: 'thread.started', thread_id: 't1' });
   emit({ type: 'turn.started' });
   if (mode === 'fail') {
     emit({ type: 'error', message: 'stream error' });
     emit({ type: 'turn.failed', error: { message: 'You are not logged in' } });
+    process.exit(1);
+  }
+  if (mode === 'fail-other') {
+    emit({ type: 'turn.failed', error: { message: 'rate limit reached' } });
     process.exit(1);
   }
   emit({ type: 'item.completed', item: { id: 'i0', type: 'reasoning', text: 'thinking about it' } });
@@ -206,13 +211,25 @@ test('without a model flag configured, codex uses its own default', async (t) =>
 });
 
 test('a failed turn surfaces codex\'s own message', async (t) => {
-  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'fail' } });
-  await assert.rejects(backend.sendMessage('hi'), /codex: You are not logged in/);
+  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'fail-other' } });
+  await assert.rejects(backend.sendMessage('hi'), /codex: rate limit reached/);
+});
+
+test('a missing sign-in, from the turn or from stderr, is one plain instruction marked as a sign-in', async (t) => {
+  for (const mode of ['fail', 'silent']) {
+    const { backend } = setup(t, { env: { FAKE_CODEX_MODE: mode } });
+    await assert.rejects(backend.sendMessage('hi'), (err) => {
+      assert.equal(err.code, 'signin', mode);
+      assert.equal(err.provider, 'chatgpt');
+      assert.equal(err.message, 'The Codex CLI is not signed in to ChatGPT. In a terminal, run codex login and choose ChatGPT, then send your message again.');
+      return true;
+    });
+  }
 });
 
 test('an exit with no reply points at "codex login" and includes the stderr tail', async (t) => {
-  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'silent' } });
-  await assert.rejects(backend.sendMessage('hi'), /exited with code 1.*boom: not authenticated.*codex login/s);
+  const { backend } = setup(t, { env: { FAKE_CODEX_MODE: 'crash' } });
+  await assert.rejects(backend.sendMessage('hi'), /exited with code 1.*boom: disk full.*codex login/s);
 });
 
 test('a missing codex binary gives an install hint instead of a stack trace', async (t) => {
@@ -237,9 +254,11 @@ test('checkCodexLogin reports the sign-in state and a missing binary', async (t)
   const no = await checkCodexLogin({ command: process.execPath, commandArgs: [script], env: { ...env, FAKE_CODEX_LOGIN: 'no' } });
   assert.equal(no.ok, false);
   assert.match(no.message, /Not logged in/);
+  assert.equal(no.signedOut, true, 'codex ran and said no');
   const missing = await checkCodexLogin({ command: '/nonexistent/codex-binary' });
   assert.equal(missing.ok, false);
   assert.match(missing.message, /not found/);
+  assert.equal(missing.signedOut, undefined, 'a missing binary is not a missing sign-in');
 });
 
 test('the post-check guard re-ask carries the rejected reply and the rule, and only the shown text stays', async (t) => {

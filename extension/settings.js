@@ -578,10 +578,14 @@
 
   // ---- rendering -----------------------------------------------------------------
 
+  // `ok`: true (green), false (grey) or "warn" (amber: running, but the
+  // student has something to do first).
   function setConnection(ok, text) {
     const el = $("connection");
-    if (ok) el.setAttribute("data-ok", "");
+    if (ok === true) el.setAttribute("data-ok", "");
     else el.removeAttribute("data-ok");
+    if (ok === "warn") el.setAttribute("data-state", "warn");
+    else el.removeAttribute("data-state");
     $("connection-text").textContent = text;
   }
 
@@ -601,6 +605,9 @@
       setConnection(true, `Tutor running in the browser: ${activeLabel(ext.active)}`);
     } else if (helper && !saved && !helperChosen()) {
       setConnection(false, `Not saved yet: ${activeLabel(helper.active)}`);
+    } else if (helper && (saved || helperChosen()) && helper.attention === "signin") {
+      // Its subscription's CLI is not signed in, so every request fails.
+      setConnection("warn", `Sign-in needed: ${activeLabel(helper.active)}`);
     } else if (helper && (saved || helperChosen())) {
       setConnection(true, `Tutor running: ${activeLabel(helper.active)}`);
     } else if (saved) {
@@ -1477,6 +1484,9 @@
       return;
     }
     showResult("test-result", res.result.ok ? "ok" : "error", res.result.message);
+    // A test of the running subscription sets or clears its "Sign-in
+    // needed" (the companion keeps it), so the header follows.
+    if (!inBrowser) refreshAttention();
   }
 
   function failSave(error) {
@@ -1552,6 +1562,16 @@
   }
 
   // ---- loading ------------------------------------------------------------------------
+
+  // Only the header's "Sign-in needed" from the companion: a full loadHelper
+  // would redraw the form and lose what was typed in it.
+  async function refreshAttention() {
+    if (!helper) return;
+    const res = await rpc("get", {});
+    if (!res.ok || !helper) return;
+    helper.attention = res.result.attention || null;
+    renderConnection();
+  }
 
   async function loadHelper() {
     const res = await rpc("get", {});
@@ -1636,6 +1656,11 @@
   $("providers").addEventListener("input", (e) => {
     const m = /^([a-z]+)-model$/.exec(e.target.id || "");
     if (m && e.target.tagName === "INPUT") formModel[m[1]] = e.target.value.trim() || null;
+  });
+  // Coming back to this page (after signing in in a terminal, say): the
+  // header asks the helper again rather than showing a stale state.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && catalog && selected && runtimeOf(selected) === "helper") refreshAttention();
   });
   $("form").addEventListener("submit", save);
   $("test").addEventListener("click", runTest);

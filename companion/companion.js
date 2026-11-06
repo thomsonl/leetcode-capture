@@ -73,6 +73,7 @@ import {
   PROVIDERS,
 } from './settings.js';
 import { createSettingsRpc } from './settings-rpc.js';
+import { isSignInError, isSignInText, signInError } from './sign-in.js';
 import { CodexBackend } from './codex-backend.js';
 import { transferConversation } from '../extension/shared/conversation.js';
 import { createReplyGuard, guardedSend } from '../extension/shared/reply-guard.js';
@@ -374,6 +375,25 @@ class ClaudeBackend {
 
     let resultText = null;
     let errorNote = null;
+    try {
+      ({ resultText, errorNote } = await this.readQuery(promptText, options, onChunk));
+    } catch (err) {
+      // The Agent SDK throws "Claude Code returned an error result: Not
+      // logged in · Please run /login" for a missing sign-in.
+      if (!this.apiKey && isSignInText('claude', err && err.message)) throw signInError('claude');
+      throw err;
+    }
+    if (!this.apiKey && resultText === null && isSignInText('claude', errorNote)) throw signInError('claude');
+    if (resultText !== null && resultText.trim()) return resultText;
+    if (resultText !== null) {
+      throw new Error('Agent SDK query succeeded but returned an empty result');
+    }
+    throw new Error(errorNote || 'no result message received from the Agent SDK');
+  }
+
+  async readQuery(promptText, options, onChunk) {
+    let resultText = null;
+    let errorNote = null;
     for await (const message of this.queryFn({ prompt: promptText, options })) {
       if (message.session_id) this.sessionId = message.session_id;
       // A `stream_event` message wraps a raw Anthropic API stream event
@@ -387,7 +407,11 @@ class ClaudeBackend {
         }
       }
       if (message.type === 'result') {
-        if (message.subtype === 'success') {
+        if (message.subtype === 'success' && message.is_error) {
+          // An error the CLI reports as its result text (a missing sign-in
+          // among them), not a reply.
+          errorNote = String(message.result || 'Claude Code reported an error');
+        } else if (message.subtype === 'success') {
           resultText = message.result;
         } else {
           errorNote = `query ended with ${message.subtype}${
@@ -396,11 +420,7 @@ class ClaudeBackend {
         }
       }
     }
-    if (resultText !== null && resultText.trim()) return resultText;
-    if (resultText !== null) {
-      throw new Error('Agent SDK query succeeded but returned an empty result');
-    }
-    throw new Error(errorNote || 'no result message received from the Agent SDK');
+    return { resultText, errorNote };
   }
 
   // Drops the resumed session id so the next sendMessage starts a fresh SDK
@@ -453,6 +473,12 @@ function makeBackend(config) {
 // Swappable: an options-page save replaces it through the turn queue (see
 // applySettings), so a swap never lands in the middle of a turn.
 let backend = makeBackend(effective);
+
+// The subscription ('claude' or 'chatgpt') whose CLI last answered that it
+// is not signed in, until a turn or a connection test of it succeeds or the
+// settings change. The panel and the options page say "Sign-in needed"
+// meanwhile instead of a green light (see publishConfig).
+let signInNeeded = null;
 
 // The label used in "error talking to backend (...)" lines.
 function backendLabel() {
@@ -1120,9 +1146,27 @@ function queueTurn(task) {
 // before it ever reaches the terminal. That stripping can only happen once
 // the reply is complete, so a turn with onReply set never streams - see the
 // non-streaming branch below.
+// A failed turn's line for the terminal and its text for the panel. A known
+// condition (a missing sign-in, sign-in.js) is already a plain instruction,
+// so it gets no "error talking to backend" prefix.
+function turnErrorLine(err) {
+  return isSignInError(err) ? `companion: ${err.message}` : `companion: error talking to backend (${backendLabel()}): ${err.message}`;
+}
+
+function panelErrorText(err) {
+  return isSignInError(err) ? err.message : `Error talking to the backend (${backendLabel()}): ${err.message}`;
+}
+
+function noteTurnError(err) {
+  if (isSignInError(err)) setSignInNeeded(err.provider);
+}
+
 async function sendAndPrintTurn(label, text, options = {}) {
   try {
-    return await sendAndPrintTurnBody(label, text, options);
+    const ok = await sendAndPrintTurnBody(label, text, options);
+    // The model answered, so whatever sign-in was missing is there now.
+    if (ok) setSignInNeeded(null);
+    return ok;
   } finally {
     // A backend's own warnings from this turn (LocalBackend's silent-
     // truncation guard), printed below the reply or error they are about.
@@ -1222,7 +1266,7 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
       stopSpinner();
       clearBottomRows();
       const errorLine = `${err.cutOff && !stylingEnabled() && anyChunk ? '\n' : ''}` +
-        `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n` +
+        `${dim(turnErrorLine(err))}\n` +
         (err.cutOff ? `${dim(cutOffNote)}\n` : '');
       recordHistory(errorLine);
       process.stdout.write(errorLine);
@@ -1230,7 +1274,8 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
       turnBoundaryPending = true;
       panelEnd(err.cutOff
         ? { text: err.partialReply || undefined, error: cutOffNote + ' Open Settings and check Context window (tokens).' }
-        : { error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
+        : { error: panelErrorText(err) });
+      noteTurnError(err);
       return false;
     }
 
@@ -1294,7 +1339,7 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
       recordHistory(shown);
       process.stdout.write(shown);
     }
-    const errorLine = `${dim(`companion: error talking to backend (${backendLabel()}): ${err.message}`)}\n` +
+    const errorLine = `${dim(turnErrorLine(err))}\n` +
       (err.cutOff ? `${dim(cutOffNote)}\n` : '');
     recordHistory(errorLine);
     process.stdout.write(errorLine);
@@ -1302,7 +1347,8 @@ async function sendAndPrintTurnBody(label, text, { onReply, problemContext, curr
     turnBoundaryPending = true;
     panelEnd(err.cutOff
       ? { text: partial || undefined, error: cutOffNote + ' Open Settings and check Context window (tokens).' }
-      : { error: `Error talking to the backend (${backendLabel()}): ${err.message}` });
+      : { error: panelErrorText(err) });
+    noteTurnError(err);
     return false;
   }
   stopSpinner();
@@ -1999,8 +2045,17 @@ if (process.stdout.isTTY) {
 // written, then applySettings swaps it in.
 
 // The non-secret summary of what the tutor runs on, for the panel's header.
+// `attention: 'signin'` while the running subscription needs a sign-in.
 function publishConfig() {
-  if (panelBridge) panelBridge.setConfig(statusSummary(effective));
+  if (!panelBridge) return;
+  const attention = signInNeeded && signInNeeded === effective.provider ? { attention: 'signin' } : {};
+  panelBridge.setConfig({ ...statusSummary(effective), ...attention });
+}
+
+function setSignInNeeded(provider) {
+  if (signInNeeded === provider) return;
+  signInNeeded = provider;
+  publishConfig();
 }
 
 // What a backend is built from; when none of it changed (only an option such
@@ -2041,7 +2096,11 @@ function applySettings(nextEffective, nextBackend, why = 'save') {
   return queueTurn(async () => {
     const swap = backendKey(nextEffective) !== backendKey(effective);
     effective = nextEffective;
-    if (swap) swapBackend(nextBackend);
+    if (swap) {
+      swapBackend(nextBackend);
+      // A different backend has not failed yet.
+      signInNeeded = null;
+    }
     const now = statusSummary(effective);
     const model = now.model ? ` (${oneLine(now.model)})` : '';
     printAboveInput(
@@ -2067,6 +2126,14 @@ const settingsRpc = createSettingsRpc({
   },
   buildBackend: (config) => makeBackend(config),
   apply: applySettings,
+  // The options page's header and its Test connection follow the same
+  // sign-in state as the panel.
+  getAttention: () => (signInNeeded && signInNeeded === effective.provider ? 'signin' : null),
+  onTestResult: (provider, outcome) => {
+    if (provider !== effective.provider) return;
+    if (outcome === 'ok') setSignInNeeded(null);
+    else if (outcome === 'signin') setSignInNeeded(provider);
+  },
   validateVault: () => validateVaultPath(VAULT_PATH),
 });
 

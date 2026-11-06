@@ -651,11 +651,30 @@ test("a config event names the tutor's model in state and never touches a transc
   assert.equal(state.config, null);
   const affected = applyEvent(state, { type: "config", provider: "local", label: "Local model", model: "gpt-oss:20b", epoch: "e1" });
   assert.equal(affected, null);
-  assert.deepEqual(state.config, { provider: "local", label: "Local model", model: "gpt-oss:20b" });
+  assert.deepEqual(state.config, { provider: "local", label: "Local model", model: "gpt-oss:20b", attention: null });
   assert.equal(state.byProblem.size, 0);
   assert.equal(state.lastSeq, 0, "a config event has no sequence number to count");
   applyEvent(state, { type: "config", provider: "claude", label: "Claude subscription", model: null });
-  assert.deepEqual(state.config, { provider: "claude", label: "Claude subscription", model: null });
+  assert.deepEqual(state.config, { provider: "claude", label: "Claude subscription", model: null, attention: null });
+  // The subscription is not signed in: only that one value is kept.
+  applyEvent(state, { type: "config", provider: "claude", label: "Claude subscription", model: null, attention: "signin" });
+  assert.equal(state.config.attention, "signin");
+  applyEvent(state, { type: "config", provider: "claude", label: "Claude subscription", model: null, attention: "other" });
+  assert.equal(state.config.attention, null);
   applyEvent(state, { type: "config", provider: "x" });
   assert.equal(state.config.label, "Claude subscription", "a config without a label is ignored");
+});
+
+test("a reply remembers the message it answers, so a failed one can offer to send it again", () => {
+  const state = createState();
+  applyEvent(state, { type: "user", problemSlug: "two-sum", text: "why does it fail?", seq: 1 });
+  applyEvent(state, { type: "turn-start", problemSlug: "two-sum", turnId: "t1", seq: 2 });
+  applyEvent(state, { type: "turn-end", problemSlug: "two-sum", turnId: "t1", error: "Claude Code is not signed in.", seq: 3 });
+  const turn = state.byProblem.get("two-sum").find((item) => item.kind === "tutor");
+  assert.equal(turn.question, "why does it fail?");
+  assert.equal(turn.error, "Claude Code is not signed in.");
+  // A Submit review answers no typed message.
+  applyEvent(state, { type: "capture", problemSlug: "two-sum", trigger: "submit", attemptSeq: 1, seq: 4 });
+  applyEvent(state, { type: "turn-start", problemSlug: "two-sum", turnId: "t2", seq: 5 });
+  assert.equal(state.byProblem.get("two-sum").at(-1).question, null);
 });

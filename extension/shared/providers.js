@@ -20,7 +20,7 @@ export const PROVIDERS = {
   },
   claude: {
     label: 'Claude subscription',
-    hint: 'Uses your Claude Code sign-in (Claude Pro or Max). Run "claude" once to sign in.',
+    hint: 'Uses your Claude Code sign-in (Claude Pro or Max). To sign in, run claude in a terminal and type /login.',
     fields: ['model'],
     requires: [],
     runtimes: ['helper'],
@@ -41,7 +41,7 @@ export const PROVIDERS = {
   },
   chatgpt: {
     label: 'ChatGPT subscription',
-    hint: 'Uses your Codex CLI sign-in (ChatGPT Plus, Pro, Business). Run "codex login" once.',
+    hint: 'Uses your Codex CLI sign-in (ChatGPT Plus, Pro, Business). To sign in, run codex login in a terminal and choose ChatGPT.',
     fields: ['model'],
     requires: [],
     runtimes: ['helper'],

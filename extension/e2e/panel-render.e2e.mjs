@@ -827,6 +827,51 @@ try {
     check(m.error.includes('Context window (tokens)') && !m.error.includes('COMPANION_LOCAL_NUM_CTX'), JSON.stringify(m));
   });
 
+  await scenario('not signed in: amber "Sign-in needed" with the steps, a Retry that resends the question, and back to Connected', async () => {
+    const SIGN_IN = 'Claude Code is not signed in. In a terminal, run claude and type /login, then send your message again.';
+    await page.eval(`window.__event({ type: 'status', companionOnline: true, busy: false, epoch: 'e1', openTurns: [] })`);
+    await page.eval(`window.__event({ type: 'config', provider: 'claude', label: 'Claude subscription', model: null, attention: 'signin', epoch: 'e1' })`);
+    await page.eval(`window.__ev({ type: 'user', problemSlug: 'two-sum', text: 'why is my loop off by one?' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'signin-1', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'signin-1', problemSlug: 'two-sum', error: ${JSON.stringify(SIGN_IN)} })`);
+    await settle();
+    const seen = await page.eval(`(() => {
+      const status = window.__q('.status');
+      const t = window.__qa('.tutor').at(-1);
+      const retry = t.querySelector('button.retry');
+      return {
+        text: status.querySelector('span').textContent, state: status.dataset.state,
+        color: getComputedStyle(status.querySelector('.light')).backgroundColor,
+        banner: window.__q('.banner').textContent, codes: [...window.__q('.banner').querySelectorAll('code')].map((c) => c.textContent),
+        error: t.querySelector('.err').textContent, retry: retry ? getComputedStyle(retry).display : null,
+        composer: window.__q('textarea').disabled,
+      };
+    })()`);
+    check(seen.text === 'Sign-in needed' && seen.state === 'warn' && seen.color === 'rgb(255, 161, 22)', JSON.stringify(seen));
+    check(seen.banner.includes('not signed in') && seen.codes.join(' ') === 'claude /login', JSON.stringify(seen));
+    check(seen.error === SIGN_IN && !/Error talking to the backend/.test(seen.error), JSON.stringify(seen));
+    check(seen.retry === 'flex' && seen.composer === false, JSON.stringify(seen));
+    await page.eval(`window.__qa('.tutor').at(-1).scrollIntoView({ block: 'end' })`);
+    await page.screenshot(path.join(SHOTS, '07-sign-in-needed.png'), { width: 1100, height: 760 });
+
+    // The student signs in, then presses Retry: the same question goes again,
+    // and what was typed in the composer meanwhile stays.
+    await page.eval(`(() => { window.__posts.length = 0; const t = window.__q('textarea'); t.value = 'draft'; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await page.eval(`window.__qa('.tutor').at(-1).querySelector('button.retry').click()`);
+    await page.waitFor(`window.__posts.length === 1`, { what: 'the resend' });
+    const sent = await page.eval(`({ body: window.__posts[0], draft: window.__q('textarea').value })`);
+    check(sent.body.text === 'why is my loop off by one?' && sent.body.problemSlug === 'two-sum' && sent.draft === 'draft', JSON.stringify(sent));
+    await page.eval(`(() => { const t = window.__q('textarea'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    // What the relay echoes for it: the old Retry goes, the new reply ends well.
+    await page.eval(`window.__ev({ type: 'user', problemSlug: 'two-sum', text: 'why is my loop off by one?' })`);
+    await page.eval(`window.__ev({ type: 'turn-start', turnId: 'signin-2', problemSlug: 'two-sum' })`);
+    await page.eval(`window.__ev({ type: 'turn-end', turnId: 'signin-2', problemSlug: 'two-sum', text: 'Look at the last index.' })`);
+    await page.eval(`window.__event({ type: 'config', provider: 'claude', label: 'Claude subscription', model: null, epoch: 'e1' })`);
+    await settle();
+    const after = await page.eval(`({ text: window.__q('.status span').textContent, banner: window.__q('.banner').hidden, retries: window.__qa('button.retry').filter((b) => getComputedStyle(b).display !== 'none').length })`);
+    check(after.text === 'Connected' && after.banner && after.retries === 0, JSON.stringify(after));
+  });
+
   await scenario('the companion exiting mid-reply: a cut reply and a not-yet-started one stop typing and say so', async () => {
     const NOTE = 'The tutor stopped before this reply finished.';
     await page.eval(`window.__ev({ type: 'turn-start', turnId: 'cut', problemSlug: 'two-sum' })`);

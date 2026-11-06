@@ -27,6 +27,7 @@ import {
   statusSummary,
 } from './settings.js';
 import { checkCodexLogin } from './codex-backend.js';
+import { isSignInError, signInMessage } from './sign-in.js';
 import { PROFILE_ID_RE, findProfile } from '../extension/shared/profiles.js';
 import { CONNECTION_TEST_PROMPT as TEST_PROMPT } from '../extension/shared/tutor-prompt.js';
 
@@ -58,6 +59,8 @@ function withTimeout(promise, ms, what) {
 //   apply(effective, backend, why)  swap the live backend (companion.js queues it behind the
 //                                   current turn); may return a promise of the swap having happened
 //   validateVault(effective)        throws if the vault auto-summary can't run (optional)
+//   getAttention()                  'signin' while the running subscription needs a sign-in, or null (optional)
+//   onTestResult(provider, outcome) a connection test's outcome: 'ok', 'signin' or 'error' (optional)
 //   fetchImpl, codexCommand         injectable for tests
 export function createSettingsRpc(deps) {
   const fetchImpl = deps.fetchImpl || fetch;
@@ -65,7 +68,8 @@ export function createSettingsRpc(deps) {
   function view(extra = {}) {
     const stored = deps.getStored();
     const effective = resolveEffective(stored, deps.env);
-    return { settings: publicView(stored, deps.env, deps.file), active: statusSummary(effective), ...extra };
+    const attention = deps.getAttention ? deps.getAttention() : null;
+    return { settings: publicView(stored, deps.env, deps.file), active: statusSummary(effective), attention: attention || null, ...extra };
   }
 
   async function get() {
@@ -147,9 +151,18 @@ export function createSettingsRpc(deps) {
   }
 
   // Tries a draft (the saved settings with the page's unsaved edits on top).
-  async function test({ patch }) {
+  async function test(params) {
+    const result = await runTest(params);
+    const provider = result.provider;
+    delete result.provider;
+    if (deps.onTestResult && provider) deps.onTestResult(provider, result.ok ? 'ok' : result.signIn ? 'signin' : 'error');
+    return result;
+  }
+
+  async function runTest({ patch }) {
     const draft = applyPatch(deps.getStored(), patch || {});
     const effective = resolveEffective(draft, deps.env);
+    const signedOut = () => ({ ok: false, signIn: true, message: signInMessage(effective.provider, 'press Test connection again'), provider: effective.provider });
     const secrets = [effective.apiKey];
     const problem = missingRequirement(effective);
     if (problem) return { ok: false, message: problem };
@@ -157,14 +170,16 @@ export function createSettingsRpc(deps) {
     try {
       if (effective.provider === 'chatgpt') {
         const login = await checkCodexLogin({ ...(deps.codexCommand || {}), env: deps.env });
-        if (!login.ok) return { ok: false, message: `ChatGPT sign-in: ${login.message}. Run "codex login" and choose ChatGPT.` };
+        if (!login.ok && login.signedOut) return signedOut();
+        if (!login.ok) return { ok: false, message: `ChatGPT sign-in: ${login.message}. Run "codex login" and choose ChatGPT.`, provider: effective.provider };
       }
       const backend = await deps.buildBackend(effective);
       const reply = await withTimeout(backend.sendMessage(TEST_PROMPT, {}), TEST_TIMEOUT_MS, PROVIDERS[effective.provider].label);
-      if (!reply || !String(reply).trim()) return { ok: false, message: 'The model answered with nothing.' };
-      return { ok: true, message: `Connected in ${((Date.now() - started) / 1000).toFixed(1)}s`, reply: String(reply).trim().slice(0, 120) };
+      if (!reply || !String(reply).trim()) return { ok: false, message: 'The model answered with nothing.', provider: effective.provider };
+      return { ok: true, message: `Connected in ${((Date.now() - started) / 1000).toFixed(1)}s`, reply: String(reply).trim().slice(0, 120), provider: effective.provider };
     } catch (err) {
-      return { ok: false, message: scrub(err.message, secrets) };
+      if (isSignInError(err)) return signedOut();
+      return { ok: false, message: scrub(err.message, secrets), provider: effective.provider };
     }
   }
 

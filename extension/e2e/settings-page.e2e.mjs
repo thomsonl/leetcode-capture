@@ -49,9 +49,12 @@ const SETTINGS_FILE = '/home/you/.config/leetcode-capture/settings.json';
 // A scripted companion: real settings logic, canned model list and test result.
 function companion({ env = {}, stored = emptySettings(), models = ['gpt-oss:20b', 'llama3.2:latest'], testResult, saveError, httpStatus } = {}) {
   let st = stored;
+  // Like the companion, a test that finds no sign-in marks it until one passes.
+  let attention = null;
   const view = () => ({
     settings: publicView(st, env, SETTINGS_FILE),
     active: statusSummary(resolveEffective(st, env)),
+    attention,
   });
   return {
     handler: async ({ body }) => {
@@ -73,8 +76,11 @@ function companion({ env = {}, stored = emptySettings(), models = ['gpt-oss:20b'
             return fail(err.message, err.field);
           }
         }
-        case 'test':
-          return ok(testResult || { ok: true, message: 'Connected in 0.4s', reply: 'OK' });
+        case 'test': {
+          const result = typeof testResult === 'function' ? testResult() : testResult || { ok: true, message: 'Connected in 0.4s', reply: 'OK' };
+          attention = result.signIn ? 'signin' : result.ok ? null : attention;
+          return ok(result);
+        }
         case 'models':
           return ok({ models });
         case 'setProfiles':
@@ -250,6 +256,30 @@ await scenario('a failing connection test is reported as an error, not as succes
   await page.waitFor(`document.getElementById('test-result').textContent.includes('codex login')`);
   assert.equal(await page.eval(`document.getElementById('test-result').getAttribute('data-kind')`), 'error');
 });
+
+{
+  const SIGN_IN = 'Claude Code is not signed in. In a terminal, run claude and type /login, then press Test connection again.';
+  let signedIn = false;
+  await scenario('not signed in to Claude: Test connection says how to sign in, the header turns amber until a test passes', companion({
+    stored: applyPatch(emptySettings(), { provider: 'claude' }),
+    testResult: () => (signedIn ? { ok: true, message: 'Connected in 2.1s', reply: 'OK' } : { ok: false, signIn: true, message: SIGN_IN }),
+  }), async (page) => {
+    // The card says the same thing the error does.
+    assert.match(await text(page, '#providers'), /To sign in, run claude in a terminal and type \/login\./);
+    assert.match(await text(page, '#connection-text'), /^Tutor running: Claude subscription/);
+    await page.click('#test');
+    await page.waitFor(`document.getElementById('test-result').textContent.includes('/login')`);
+    assert.equal(await text(page, '#test-result'), SIGN_IN);
+    await page.waitFor(`document.getElementById('connection-text').textContent.startsWith('Sign-in needed')`, { what: 'the amber header' });
+    const head = await page.eval(`(() => { const c = document.getElementById('connection'); return { state: c.getAttribute('data-state'), green: c.hasAttribute('data-ok'), dot: getComputedStyle(c.querySelector('.dot')).backgroundColor }; })()`);
+    assert.deepEqual(head, { state: 'warn', green: false, dot: 'rgb(255, 161, 22)' });
+    await page.screenshot(path.join(shots, 'sign-in-needed.png'), { scheme: 'dark', width: 900, height: 700 });
+    signedIn = true;
+    await page.click('#test');
+    await page.waitFor(`document.getElementById('test-result').textContent.startsWith('Connected')`);
+    await page.waitFor(`document.getElementById('connection-text').textContent.startsWith('Tutor running')`, { what: 'the header to turn green again' });
+  });
+}
 
 await scenario('behavior options round-trip', companion(), async (page) => {
   await page.eval(`document.getElementById('autoClearContext').click()`);

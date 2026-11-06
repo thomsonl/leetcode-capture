@@ -133,7 +133,15 @@
   function newTurn(turnId) {
     // ended: the relay sent this turn's end (as opposed to the panel giving
     // up on it locally, see streamLost).
-    return { kind: "tutor", turnId, text: "", pending: true, interrupted: false, ended: false, error: null, rev: 0 };
+    return { kind: "tutor", turnId, text: "", pending: true, interrupted: false, ended: false, error: null, question: null, rev: 0 };
+  }
+
+  // The student's message a reply answers (the item right before it), so a
+  // failed reply can offer to send it again; null after a Submit.
+  function questionBefore(state, slug) {
+    const items = itemsFor(state, slug);
+    const last = items[items.length - 1];
+    return last && last.kind === "user" ? last.text : null;
   }
 
   // Appends an item and enforces the per-problem cap. The turn ids of tutor
@@ -265,6 +273,8 @@
         provider: typeof event.provider === "string" ? event.provider : "",
         label: event.label,
         model: typeof event.model === "string" && event.model ? event.model : null,
+        // The tutor's subscription is not signed in (companion/sign-in.js).
+        attention: event.attention === "signin" ? "signin" : null,
       };
       if (!hasOpenTurn(state)) state.displayConfig = state.config;
       return null;
@@ -309,7 +319,11 @@
       case "turn-start":
         if (state.turnProblem.has(event.turnId)) return null;
         state.turnProblem.set(event.turnId, slug);
-        pushItem(state, slug, newTurn(event.turnId));
+        {
+          const turn = newTurn(event.turnId);
+          turn.question = questionBefore(state, slug);
+          pushItem(state, slug, turn);
+        }
         return slug;
       case "chunk": {
         const turn = findTurn(state, event.turnId);
@@ -332,6 +346,7 @@
           // Joined after the turn started and its start was already trimmed.
           state.turnProblem.set(event.turnId, slug);
           turn = newTurn(event.turnId);
+          turn.question = questionBefore(state, slug);
           pushItem(state, slug, turn);
         }
         if (typeof event.text === "string") turn.text = event.text;
@@ -1298,6 +1313,7 @@
     .status[data-state="ok"] .light { background: var(--green); }
     .status[data-state="busy"] .light { background: var(--yellow); }
     .status[data-state="bad"] .light { background: var(--red); }
+    .status[data-state="warn"] .light { background: var(--medium); }
     .feed { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; }
     .banner { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--fill); color: var(--muted); }
     .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; padding: 0 24px; color: color-mix(in srgb, var(--fg) 30%, transparent); text-align: center; }
@@ -1420,6 +1436,12 @@
     .tutor blockquote { margin: 0 0 16px; padding-left: 16px; border-left: 2px solid var(--line-strong); color: var(--muted); }
     .tutor hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
     .err { color: var(--red); }
+    .tutor button.retry { display: flex; width: auto; height: 28px; margin-top: 8px; padding: 0 12px; border: 1px solid color-mix(in srgb, var(--fg) 22%, transparent); color: var(--fg); font: inherit; font-size: 13px; line-height: 20px; }
+    .tutor button.retry:hover { background: var(--fill); }
+    .tutor button.retry:focus-visible { outline: 1px solid color-mix(in srgb, var(--fg) 45%, transparent); outline-offset: 2px; }
+    /* Only the newest reply offers to resend: once anything follows it, the
+       question was asked again or the chat moved on. */
+    .tutor:not(:last-child) button.retry { display: none; }
     .tutor .note { margin: 0; font-size: 12px; line-height: 16px; color: var(--muted); }
     .dots { display: inline-flex; gap: 4px; padding: 6px 0; }
     .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite ease-in-out; }
@@ -2020,6 +2042,12 @@
     return problemSlugFromPath(location.pathname);
   }
 
+  // Matches companion/sign-in.js's message, with the commands as code.
+  const SIGN_IN_BANNERS = {
+    claude: "Claude Code is not signed in. In a terminal, run `claude` and type `/login`, then send your message again.",
+    chatgpt: "The Codex CLI is not signed in to ChatGPT. In a terminal, run `codex login` and choose ChatGPT, then send your message again.",
+  };
+
   function describeConnection() {
     if (extensionGone) {
       return {
@@ -2064,6 +2092,10 @@
         light: "neutral",
         banner: "The relay is running but the tutor isn't. Start the companion with `leetcode` to chat and get your attempts reviewed here.",
       };
+    }
+    if (state.companionOnline && state.config && state.config.attention === "signin") {
+      // The composer stays usable: after signing in, the student sends again.
+      return { label: "Sign-in needed", ok: true, light: "warn", banner: SIGN_IN_BANNERS[state.config.provider] || SIGN_IN_BANNERS.claude };
     }
     if (switching) return { label: "Switching", ok: true, light: "busy", banner: null };
     if (state.companionOnline === null) return { label: "Connecting", ok: false, light: "neutral", banner: null };
@@ -2645,6 +2677,13 @@
         ? "The reply was cut off because the model ran out of room. Open Settings and check Context window (tokens)."
         : item.error.replaceAll("COMPANION_LOCAL_NUM_CTX", "Context window (tokens) in Settings");
       entry.tail.push(el("p", "err", message));
+      if (item.question && !cutOff) {
+        const retry = el("button", "retry", "Retry");
+        retry.type = "button";
+        retry.setAttribute("aria-label", "Send this question again");
+        retry.addEventListener("click", () => sendText(item.question, { typed: false }));
+        entry.tail.push(retry);
+      }
     }
     // One note for every way a reply can be cut off: the relay restarted, or
     // the companion went away mid-reply.
@@ -3249,15 +3288,21 @@
     }
   }
 
-  async function sendTyped() {
+  function sendTyped() {
+    if (!mounted) return Promise.resolve();
+    return sendText(mounted.panel.input.value.trim(), { typed: true });
+  }
+
+  // `typed`: the text is the composer's, which is cleared once it is sent;
+  // a Retry sends an earlier question and leaves the composer alone.
+  async function sendText(text, { typed }) {
     if (!mounted) return;
     const p = mounted.panel;
-    const text = p.input.value.trim();
     const slug = currentSlug();
     // A second Enter while the first POST is in flight would send the same
     // message again and cost a second tutor turn. The text stays visible but
     // read-only until the relay answers.
-    if (sending || !text || p.input.value.length > MAX_MESSAGE_CHARS || !slug || p.input.disabled) return;
+    if (sending || !text || text.length > MAX_MESSAGE_CHARS || !slug || p.input.disabled) return;
     sending = true;
     p.input.readOnly = true;
     p.send.disabled = true;
@@ -3272,9 +3317,11 @@
       postToWorker({ type: "active" });
       const res = await transport.send(body);
       if (res.status === 202) {
-        p.input.value = "";
-        fitInput(p);
-        updateCounter(p);
+        if (typed) {
+          p.input.value = "";
+          fitInput(p);
+          updateCounter(p);
+        }
         // Their own message and the reply should come into view even if they
         // had scrolled up to reread something, until they scroll up again.
         p.view.follow = true;

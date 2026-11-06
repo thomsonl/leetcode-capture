@@ -1249,3 +1249,78 @@ test('end to end: the post-check guard re-asks a leaking hint, and neither the t
   assert.ok(!history.includes('hash map'), 'the rejected hint left history');
   assert.ok(!history.includes('breaks the tutoring rules'), 'the re-ask instruction was never kept');
 });
+
+test('end to end: a subscription that is not signed in says how to sign in, the panel config asks for it until a reply works', async (t) => {
+  const port = await freePort();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'leetcode-capture-signin-e2e-'));
+  const capturesPath = path.join(scratch, 'captures.jsonl');
+  fs.writeFileSync(capturesPath, '');
+  // A stand-in Codex CLI on PATH: not signed in until the flag file exists.
+  const bin = path.join(scratch, 'bin');
+  fs.mkdirSync(bin);
+  const flag = path.join(scratch, 'signed-in');
+  fs.writeFileSync(
+    path.join(bin, 'codex.cjs'),
+    `const fs = require('node:fs');
+let input = '';
+process.stdin.on('data', (c) => (input += c));
+process.stdin.on('end', () => {
+  if (!fs.existsSync(${JSON.stringify(flag)})) { console.error('Error: Not logged in. Run codex login.'); process.exit(1); }
+  console.log(JSON.stringify({ type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: 'Signed in now.' } }));
+});
+`
+  );
+  fs.writeFileSync(path.join(bin, 'codex'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(bin, 'codex.cjs'))} "$@"\n`, { mode: 0o755 });
+  const env = { ...process.env };
+  for (const name of ['COMPANION_MODEL', 'COMPANION_BASE_URL', 'COMPANION_API_KEY', 'VAULT_AUTO_SUMMARY']) delete env[name];
+  const child = spawn(process.execPath, [path.join(__dirname, 'companion.js')], {
+    env: {
+      ...env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      COMPANION_BACKEND: 'chatgpt',
+      LEETCODE_CAPTURES_FILE: capturesPath,
+      LEETCODE_COMPANION_STATE_FILE: path.join(scratch, 'state.json'),
+      LEETCODE_COMPANION_SCRATCH: path.join(scratch, 'scratch'),
+      LEETCODE_COMPANION_POLL_MS: '100',
+      CAPTURE_PORT: String(port),
+      CAPTURE_LOG_PATH: capturesPath,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (c) => (out += c.toString()));
+  child.stderr.on('data', (c) => (out += c.toString()));
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  let panel = null;
+  t.after(async () => {
+    if (panel) panel.close();
+    child.kill();
+    await exited;
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  await until(() => out.includes('in-page panel connected'), 15000, 'the panel bridge');
+  panel = connectPanel(port);
+  const configs = () => panel.events.filter((e) => e.type === 'config');
+  await until(() => configs().length > 0, 10000, 'the first config event');
+  assert.equal(configs().at(-1).attention, undefined, 'nothing is asked before anything failed');
+  const message = (text) => postJson(port, '/panel/message', { text, problemSlug: 'two-sum' }, { origin: LEETCODE });
+  const ends = () => panel.events.filter((e) => e.type === 'turn-end');
+  const SIGN_IN = 'The Codex CLI is not signed in to ChatGPT. In a terminal, run codex login and choose ChatGPT, then send your message again.';
+
+  assert.equal((await message('first question')).status, 202);
+  await until(() => ends().length === 1, 15000, 'the failed reply');
+  assert.equal(ends()[0].error, SIGN_IN, 'one plain instruction, no developer prefix');
+  await until(() => configs().at(-1).attention === 'signin', 10000, 'the config asking for a sign-in');
+  assert.ok(out.includes(`companion: ${SIGN_IN}`), 'the terminal says the same');
+  assert.ok(!/error talking to backend/.test(out), 'no developer prefix in the terminal either');
+  const view = await postJson(port, '/settings/rpc', { method: 'get', params: {} }, { origin: EXTENSION_ORIGIN, 'sec-fetch-mode': 'cors' });
+  assert.equal(JSON.parse(view.text).result.attention, 'signin', 'the options page sees it too');
+
+  fs.writeFileSync(flag, '');
+  assert.equal((await message('first question')).status, 202);
+  await until(() => ends().length === 2, 15000, 'the reply after signing in');
+  assert.equal(ends()[1].error, undefined);
+  assert.equal(ends()[1].text, 'Signed in now.');
+  await until(() => configs().at(-1).attention === undefined, 10000, 'the sign-in request to clear');
+});

@@ -139,6 +139,44 @@ test('test checks the ChatGPT sign-in first and explains how to fix it', async (
   assert.match(res.message, /ChatGPT sign-in.*not found.*codex login/s);
 });
 
+test('a missing sign-in is one plain instruction, marked signIn, and the companion hears each outcome', async (t) => {
+  const outcomes = [];
+  let signedIn = false;
+  const { rpc } = harness(t, {
+    buildBackend: async () => ({
+      sendMessage: async () => {
+        if (!signedIn) throw Object.assign(new Error('Claude Code is not signed in.'), { code: 'signin', provider: 'claude' });
+        return 'OK';
+      },
+    }),
+    onTestResult: (provider, outcome) => outcomes.push([provider, outcome]),
+    getAttention: () => (outcomes.length && outcomes.at(-1)[1] === 'signin' ? 'signin' : null),
+  });
+  const res = (await rpc.handle('test', { patch: { provider: 'claude' } })).result;
+  assert.deepEqual(res, { ok: false, signIn: true, message: 'Claude Code is not signed in. In a terminal, run claude and type /login, then press Test connection again.' });
+  assert.equal((await rpc.handle('get', {})).result.attention, 'signin');
+  signedIn = true;
+  const ok = (await rpc.handle('test', { patch: { provider: 'claude' } })).result;
+  assert.equal(ok.ok, true);
+  assert.equal('provider' in ok, false, 'only the companion hears the provider');
+  assert.equal((await rpc.handle('get', {})).result.attention, null);
+  assert.deepEqual(outcomes, [['claude', 'signin'], ['claude', 'ok']]);
+});
+
+test('ChatGPT with codex signed out is the same plain instruction', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-rpc-codex-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const script = path.join(dir, 'codex.cjs');
+  fs.writeFileSync(script, "console.log('Not logged in'); process.exit(1);\n");
+  const { rpc } = harness(t, { codexCommand: { command: process.execPath, commandArgs: [script] } });
+  const res = (await rpc.handle('test', { patch: { provider: 'chatgpt' } })).result;
+  assert.deepEqual(res, {
+    ok: false,
+    signIn: true,
+    message: 'The Codex CLI is not signed in to ChatGPT. In a terminal, run codex login and choose ChatGPT, then press Test connection again.',
+  });
+});
+
 function startModelServer() {
   const seen = [];
   const server = http.createServer((req, res) => {
