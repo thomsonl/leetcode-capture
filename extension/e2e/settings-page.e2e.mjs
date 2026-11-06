@@ -281,6 +281,35 @@ await scenario('a failing connection test is reported as an error, not as succes
   });
 }
 
+await scenario('layout: Test connection keeps its width beside a long message, and the Save bar hides what scrolls under it', null, async (page) => {
+  await page.click('input[name=provider][value=claude]');
+  await page.waitFor(`!document.getElementById('helper-card').hidden`, { what: 'the Helper section' });
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 700, deviceScaleFactor: 1, mobile: false });
+  const size = () => page.eval(`(() => { const r = document.getElementById('test').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })()`);
+  const before = await size();
+  await page.eval(`document.getElementById('test-result').textContent = 'Claude Code is not signed in. In a terminal, run claude and type /login, then press Test connection again.'`);
+  const after = await size();
+  assert.deepEqual(after, before, 'the button kept its one-line size');
+  assert.equal(after.h, 32);
+  // The Helper card's status line scrolled to where the bar floats: the bar
+  // covers it (nothing shows through next to Save).
+  await page.eval(`(() => { const r = document.getElementById('helper-state').getBoundingClientRect(); window.scrollBy(0, r.top + r.height / 2 - (innerHeight - 28)); })()`);
+  // (Hit testing skips the bar while the form is greyed out, so it takes
+  // pointer events for the probe only.)
+  const hit = await page.eval(`(() => {
+    const bar = document.querySelector('.savebar');
+    bar.style.pointerEvents = 'auto';
+    const r = document.getElementById('helper-state').getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + 4, r.top + r.height / 2);
+    bar.style.pointerEvents = '';
+    return { inBar: Boolean(el && el.closest('.savebar')), bg: getComputedStyle(bar).backgroundColor, opacity: getComputedStyle(bar).opacity };
+  })()`);
+  assert.equal(hit.inBar, true, JSON.stringify(hit));
+  assert.equal(hit.opacity, '1', JSON.stringify(hit));
+  assert.doesNotMatch(hit.bg, /rgba\(.*, 0\)|transparent/, JSON.stringify(hit));
+  await page.screenshot(path.join(shots, 'savebar-over-helper.png'), { scheme: 'dark', width: 900, height: 700 });
+});
+
 await scenario('behavior options round-trip', companion(), async (page) => {
   await page.eval(`document.getElementById('autoClearContext').click()`);
   await page.type('#localMaxHistoryTurns', '3');

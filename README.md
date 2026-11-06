@@ -25,6 +25,9 @@ git clone https://github.com/thomsonl/leetcode-capture.git
 1. Open `chrome://extensions`, turn on Developer mode, click Load unpacked, and pick the `extension/` folder.
 2. Open a problem on leetcode.com. Click the gear in the Tutor tab and choose a model.
 
+The first time the Tutor tab looks for the tutor on your computer, Chrome may ask whether leetcode.com may "access other apps and services on this device".
+Choose Allow: the page only talks to the tutor at `localhost:8135`, nothing else on your network.
+
 A local model (Ollama, LM Studio) or an API key needs nothing else.
 
 For a Claude or ChatGPT subscription, install Node, sign in to `claude` or `codex`, then run:

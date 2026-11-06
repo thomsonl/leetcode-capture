@@ -135,6 +135,8 @@ try {
     const light = await page.eval(`(() => { const l = window.__q('.status .light'); return { state: window.__q('.status').dataset.state, color: getComputedStyle(l).backgroundColor, muted: getComputedStyle(window.__q('.status')).color }; })()`);
     check(light.state === 'neutral' && light.color === light.muted, `tutor offline light: ${JSON.stringify(light)}`);
     check(!/ask a question/i.test(info.empty) && /Once the companion is running/.test(info.empty), `empty copy: ${info.empty}`);
+    // A Run shows nothing in the feed, so the copy promises it nothing.
+    check(/reviews each Submit/.test(info.empty) && /A Run is noted and goes with your next message/.test(info.empty) && !/Run and Submit attempts/.test(info.empty), `empty copy: ${info.empty}`);
     check(info.disabled && info.banner, JSON.stringify(info));
     await page.screenshot(path.join(SHOTS, '01-offline.png'), { width: 1100, height: 760 });
   });

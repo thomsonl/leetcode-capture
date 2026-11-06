@@ -2120,18 +2120,23 @@
     });
   }
 
+  // What the feed will hold, said the way it works: a Submit gets a review
+  // here, a Run shows nothing and is only noted for the next message (see
+  // shared/code-ledger.js).
+  const FEED_PROMISE = "the tutor reviews each Submit and answers your questions here. A Run is noted and goes with your next message.";
+
   function emptyStateText(conn, slug) {
-    if (extensionGone) return "After you reload this page, your Run and Submit attempts and the tutor's replies show up here.";
+    if (extensionGone) return `After you reload this page, ${FEED_PROMISE}`;
     if (sourceReachable === false && transport === extensionTransport) {
-      return "Once the extension's tutor is back, your Run and Submit attempts and the tutor's replies show up here.";
+      return `Once the extension's tutor is back, ${FEED_PROMISE}`;
     }
     if (sourceReachable === false && providerChosen === false) {
-      return "Once you choose a model in the extension options, your Run and Submit attempts and the tutor's replies show up here.";
+      return `Once you choose a model in the extension options, ${FEED_PROMISE}`;
     }
     if (sourceReachable === false || state.companionOnline === false) {
       // The composer is disabled and the banner above says how to start the
       // companion; don't invite a question that can't be asked.
-      return "Once the companion is running, your Run and Submit attempts and the tutor's replies show up here.";
+      return `Once the companion is running, ${FEED_PROMISE}`;
     }
     // The tutor moved to another problem and forgot this one. Which problem
     // is never shown here, nor anything of its chat.

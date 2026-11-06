@@ -107,6 +107,7 @@ Privacy
 - Solved problems and progress stay in your browser and are never sent anywhere.
 - No analytics, no ads, no tracking, no remote code, and nothing is sent to the developer.
 - The browser asks before the extension may reach your model server or start the helper.
+- The first time the Tutor tab looks for the tutor on your computer, Chrome may ask whether leetcode.com may "access other apps and services on this device". Choose Allow: the page only talks to the tutor at localhost:8135.
 
 Run and Submit are noticed from the buttons and from the keyboard shortcuts Ctrl/Cmd+' (Run) and Ctrl/Cmd+Enter (Submit).
 

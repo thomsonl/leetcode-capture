@@ -40,6 +40,7 @@
 }
 
 * { box-sizing: border-box; }
+html { scroll-padding-bottom: 72px; }
 
 body {
   margin: 0;
@@ -126,18 +127,28 @@ input:disabled { opacity: 0.6; cursor: not-allowed; background: var(--fill); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-.actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.actions { display: flex; align-items: flex-start; gap: 12px; margin-top: 16px; }
+/* A button keeps its one-line width however long the message beside it is;
+   the message wraps instead, its first line level with the button text. */
+.actions .btn { flex: none; white-space: nowrap; }
+.actions .result { flex: 1; min-width: 0; padding-top: 5px; }
 .result { margin: 0; color: var(--muted); min-height: 21px; }
 .result[data-kind="ok"] { color: var(--green-text); }
 .result[data-kind="error"] { color: var(--red); }
 
-.savebar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 12px 0; background: linear-gradient(to top, var(--page) 70%, transparent); }
+/* Opaque, with a hairline on top: content scrolls under it instead of
+   showing through next to the button. The page scrolls focused fields clear
+   of it (scroll-padding-bottom on html). */
+.savebar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 12px 0; background: var(--page); border-top: 1px solid var(--line); }
+.savebar .btn { flex: none; }
 .savebar .result { flex: 1; text-align: right; }
 
 .foot { color: var(--muted); font-size: 13px; line-height: 18px; }
 
 /* The Helper card stays usable: it is how a missing helper gets set up. */
-form[data-disabled] .card:not(#helper-card), form[data-disabled] .savebar { opacity: 0.55; pointer-events: none; }
+form[data-disabled] .card:not(#helper-card), form[data-disabled] .savebar > * { opacity: 0.55; pointer-events: none; }
+/* The bar itself stays opaque, so nothing shows through it. */
+form[data-disabled] .savebar { pointer-events: none; }
 
 @media (max-width: 520px) {
   .fields { padding-left: 12px; }
