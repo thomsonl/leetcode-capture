@@ -585,12 +585,23 @@
     $("connection-text").textContent = text;
   }
 
+  // Whether the helper's companion runs something the user chose: saved in
+  // its own settings file or set by an environment variable. With neither it
+  // runs its built-in default, which nobody chose: the form starts on it (a
+  // tutor started from a terminal really runs it), but the header says it
+  // is not saved.
+  function helperChosen() {
+    return Boolean(helper && (helper.settings.savedProvider || helper.settings.locks.provider));
+  }
+
   // What the tutor runs on right now, from what is saved.
   function renderConnection() {
     const saved = ext.settings.provider;
     if (saved && ext.settings.runtime === "extension") {
       setConnection(true, `Tutor running in the browser: ${activeLabel(ext.active)}`);
-    } else if (helper) {
+    } else if (helper && !saved && !helperChosen()) {
+      setConnection(false, `Not saved yet: ${activeLabel(helper.active)}`);
+    } else if (helper && (saved || helperChosen())) {
       setConnection(true, `Tutor running: ${activeLabel(helper.active)}`);
     } else if (saved) {
       setConnection(false, "Helper offline");
@@ -1592,7 +1603,8 @@
       const res2 = await helperFirst;
       if (res2.ok) {
         // An existing helper setup, from before the extension could run the
-        // tutor itself: start from exactly what it runs.
+        // tutor itself (or a tutor started from a terminal): start from
+        // exactly what it runs.
         helper = res2.result;
         selected = helper.settings.provider;
         if (runtimesOf(selected).includes("helper")) runtimeChoice[selected] = "helper";

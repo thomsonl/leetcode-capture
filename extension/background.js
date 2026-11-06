@@ -48,6 +48,11 @@ const launcher = createHelperLauncher({
 });
 
 let runtime = null;
+// Whether a provider is saved at all. With none, the panel still follows a
+// tutor started from a terminal (the helper runtime), but the extension does
+// not start the helper for a problem tab: its companion would run its own
+// default provider, which nobody chose, and look saved.
+let chosen = false;
 // While the options page shows a subscription provider's Helper section it
 // asks for the helper (`want` on its status calls, every 5 s), so the helper
 // can start before that provider is saved: saving it needs the helper
@@ -68,7 +73,7 @@ async function refreshHelper() {
   } catch {
     granted = false;
   }
-  const wanted = runtime === "helper" || Date.now() < optionsWantUntil;
+  const wanted = (runtime === "helper" && chosen) || Date.now() < optionsWantUntil;
   const hasApi = typeof api.runtime.connectNative === "function";
   await nativeSetup.check(granted);
   const allowed = granted && hasApi;
@@ -174,8 +179,9 @@ async function helperProblem(current) {
 
 const service = createTutorService({
   helperProblem,
-  onRuntime: (next) => {
+  onRuntime: (next, isChosen) => {
     runtime = next;
+    chosen = isChosen === true;
     refreshHelper();
   },
   storage: {

@@ -76,8 +76,9 @@ function withTimeout(promise, ms, what) {
 // storage: { get(keys) -> Promise<object>, set(object) -> Promise }
 // permissions: { contains({ origins }) -> Promise<boolean> }
 // extensionOrigin: 'chrome-extension://<id>' (or moz-extension://<uuid>)
-// onRuntime(runtime): called once the settings are read and after every save,
-// with 'extension' or 'helper' (the background's helper launcher follows it).
+// onRuntime(runtime, chosen): called once the settings are read and after
+// every save, with 'extension' or 'helper' and whether a provider is saved at
+// all (the background's helper launcher follows both).
 // helperProblem(currentRuntime): why a profile that runs through the helper
 // cannot be switched to right now, as a short line, or null (async allowed).
 export function createTutorService({
@@ -105,7 +106,7 @@ export function createTutorService({
       log(`could not read settings: ${err.message}`);
     }
     await applyToEngine();
-    onRuntime(runtimeFor(settings));
+    onRuntime(runtimeFor(settings), Boolean(settings.provider));
   })();
 
   async function permissionFor(current) {
@@ -280,7 +281,7 @@ export function createTutorService({
     if (result.unchanged) return { ok: true, runtime: result.runtime };
     await applyToEngine();
     broadcastRuntime();
-    onRuntime(runtimeFor(settings));
+    onRuntime(runtimeFor(settings), Boolean(settings.provider));
     await broadcastProfiles();
     return { ok: true, runtime: result.runtime };
   }
@@ -329,7 +330,7 @@ export function createTutorService({
     });
     await applyToEngine();
     broadcastRuntime();
-    onRuntime(runtimeFor(settings));
+    onRuntime(runtimeFor(settings), Boolean(settings.provider));
     await broadcastProfiles();
     return view({ saved: true });
   }

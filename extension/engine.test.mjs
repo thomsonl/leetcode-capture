@@ -601,3 +601,21 @@ test('the post-check guard counts hints per problem and starts over on a problem
   await settle(service);
   assert.equal(backends.built.at(-1).revisions.length, 1);
 });
+
+test('the worker hears whether a provider is saved at all, so it does not start the helper for nothing chosen', async () => {
+  const calls = [];
+  const service = createTutorService({
+    storage: memoryStorage({}),
+    permissions: { contains: async () => true },
+    extensionOrigin: ORIGIN,
+    buildBackendImpl: recordingBackends().impl,
+    onRuntime: (runtime, chosen) => calls.push([runtime, chosen]),
+  });
+  await service.ready;
+  // Nothing saved routes to the helper (a tutor started from a terminal),
+  // but is not a choice.
+  assert.deepEqual(calls, [['helper', false]]);
+  const saved = await service.handleMessage({ type: 'lc-tutor:settings-save', params: { patch: { provider: 'claude', runtime: 'helper' } } }, OPTIONS_PAGE);
+  assert.equal(saved.ok, true);
+  assert.deepEqual(calls.at(-1), ['helper', true]);
+});

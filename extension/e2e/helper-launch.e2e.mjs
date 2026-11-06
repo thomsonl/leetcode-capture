@@ -24,6 +24,9 @@
 //   - with a local model saved first, choosing Claude in the form starts
 //     the helper by itself (saving needs it running), switching the form back
 //     lets it stop, and choosing Claude again can be saved;
+//   - with nothing saved, an open problem tab does not start the helper
+//     (its companion would run a default nobody chose), and Settings says
+//     the helper's default is not saved instead of "Tutor running";
 //   - with the permission granted while the worker and the options page
 //     were running (no connectNative in either), Settings says Finishing
 //     setup (never Not installed), the worker reloads once keeping the
@@ -392,20 +395,30 @@ for (const file of ['panel.js', 'content.js', 'settings.js']) {
   fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replaceAll('http://localhost:8135', `http://localhost:${relayPort}`));
 }
 const lnaArgs = ['--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights'];
+// A new user: the companion has nothing saved either (section 2 saved Claude).
+const env3 = { ...env, LEETCODE_CAPTURE_SETTINGS: path.join(scratch, 'settings-fresh.json') };
 // Every label the Helper card shows, so a passing "Not installed" is caught.
 const watchLabels = (o) =>
   o.eval(`(() => {
     window.__labels = [document.getElementById('helper-state-text').textContent];
     new MutationObserver(() => window.__labels.push(document.getElementById('helper-state-text').textContent)).observe(document.getElementById('helper-state-text'), { childList: true, characterData: true, subtree: true });
   })()`);
-let browser3 = await launch({ extensionDir: copy3.dir, env, args: lnaArgs });
+let browser3 = await launch({ extensionDir: copy3.dir, env: env3, args: lnaArgs });
 let oldProfile = null;
 try {
   install({ platform: 'linux', home, env: {}, root: repo, chromeIds: [browser3.extensionId], browsers: ['chromium'] });
   const registration = layout({ platform: 'linux', home, env: {} }).targets.find((t) => t.id === 'chromium').manifestPath;
   fs.mkdirSync(path.join(browser3.profile, 'NativeMessagingHosts'), { recursive: true });
   fs.copyFileSync(registration, path.join(browser3.profile, 'NativeMessagingHosts', `${HOST_NAME}.json`));
-  await openProblem(browser3);
+  const problem3 = await openProblem(browser3);
+
+  await scenario('nothing saved: an open problem tab does not start the helper, so no default provider runs unchosen', async () => {
+    await problem3.waitFor(`window.__q('.status span') && window.__q('.status span').textContent === 'Not set up'`, { what: 'Not set up', timeout: 12000 });
+    await sleep(4000);
+    check(await portFree(relayPort), 'the helper started a relay for a problem tab with no provider saved');
+    check((await problem3.eval(`window.__q('.status span').textContent`)) === 'Not set up', 'the panel connected');
+  });
+
   let options3 = await openOptions(browser3);
   await options3.eval(`(() => { const s = document.getElementById('claude-model'); s.value = 'opus'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await browser3.serviceWorkerEval(`(() => { self.__reloads = 0; chrome.runtime.reload = () => { self.__reloads += 1; }; delete chrome.runtime.connectNative; })()`);
@@ -437,7 +450,7 @@ try {
   // starts again, now with connectNative.
   await browser3.close({ keepProfile: true });
   oldProfile = browser3.profile;
-  browser3 = await launch({ extensionDir: copy3.dir, env, args: lnaArgs, setupProfile: (dir) =>
+  browser3 = await launch({ extensionDir: copy3.dir, env: env3, args: lnaArgs, setupProfile: (dir) =>
     // The lock files name the old process, which a new one refuses to share.
     fs.cpSync(oldProfile, dir, { recursive: true, filter: (src) => !/^Singleton/.test(path.basename(src)) }),
 });
@@ -464,6 +477,10 @@ try {
     check(!stored.nativeReload, `reload guard left: ${JSON.stringify(stored.nativeReload)}`);
     const saved = await options3.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:settings-get' })`);
     check(saved.ok && !saved.result.settings.provider, `something was saved: ${JSON.stringify(saved.result && saved.result.settings.provider)}`);
+    // The companion runs its built-in default while the page holds it up;
+    // the header must not present that as a saved choice.
+    const header = await options3.eval(`({ text: document.getElementById('connection-text').textContent, green: document.getElementById('connection').hasAttribute('data-ok') })`);
+    check(/^Not saved yet: Claude subscription/.test(header.text) && !header.green, `header: ${JSON.stringify(header)}`);
     await helperPidsOf(options3);
     await options3.eval(`document.getElementById('helper-card').scrollIntoView({ block: 'center' })`);
     await options3.screenshot(path.join(shots, 'helper-after-setup-reload.png'), { width: 900, height: 1100 });

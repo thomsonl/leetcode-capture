@@ -138,7 +138,10 @@ await scenario('first run shows the historic default (Claude subscription) and t
   // The page carries the store name (the manifest's), in its heading and tab title.
   assert.equal(await text(page, 'h1'), "Thomson's LeetCode Tutor");
   assert.equal(await page.eval('document.title'), "Thomson's LeetCode Tutor settings");
-  assert.match(await text(page, '#connection-text'), /Tutor running: Claude subscription/);
+  // Nothing is saved anywhere: the companion runs its built-in default, which
+  // the form starts on, but the header must not call it a saved choice.
+  assert.match(await text(page, '#connection-text'), /^Not saved yet: Claude subscription/);
+  assert.equal(await page.eval(`document.getElementById('connection').hasAttribute('data-ok')`), false);
   assert.equal(await page.eval(`document.querySelectorAll('input[name=provider]').length`), 5);
   assert.match(await text(page, '#path'), /settings\.json/);
   await page.screenshot(path.join(shots, 'first-run-dark.png'), { scheme: 'dark' });
