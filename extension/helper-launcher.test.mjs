@@ -5,6 +5,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHelperLauncher, GRACE_MS, HELPER_HOST_NAME, PING_MS, problemSlugFromUrl } from './shared/helper-launcher.js';
+import {
+  NATIVE_RELOAD_KEY,
+  RELOAD_DELAY_MS,
+  RESUME_MAX_AGE_MS,
+  SETTINGS_RESUME_KEY,
+  createNativeSetup,
+  freshResume,
+  nativeApiDecision,
+} from './shared/native-setup.js';
 
 function fakeEvent() {
   const listeners = [];
@@ -304,4 +313,126 @@ test('retry asks a connected helper to start again, in case its relay or tutor w
   assert.deepEqual(types(ports[0]), ['start']);
   launcher.retry();
   assert.deepEqual(types(ports[0]), ['start', 'start']);
+});
+
+// ---- finishing the setup after the nativeMessaging grant -------------------
+// (shared/native-setup.js: a context running when Allow was clicked has no
+// connectNative until it starts again.)
+
+test('the native API decision: reload once after a grant, then stuck, cleared by the API or a revoke', () => {
+  assert.deepEqual(nativeApiDecision({ granted: false, hasApi: false, record: undefined }), { state: null, action: 'none' });
+  assert.deepEqual(nativeApiDecision({ granted: false, hasApi: false, record: { at: 1 } }), { state: null, action: 'clear' });
+  assert.deepEqual(nativeApiDecision({ granted: true, hasApi: true, record: undefined }), { state: 'ready', action: 'none' });
+  assert.deepEqual(nativeApiDecision({ granted: true, hasApi: true, record: { at: 1 } }), { state: 'ready', action: 'clear' });
+  assert.deepEqual(nativeApiDecision({ granted: true, hasApi: false, record: undefined }), { state: 'pending', action: 'reload' });
+  assert.deepEqual(nativeApiDecision({ granted: true, hasApi: false, record: { at: 1 } }), { state: 'stuck', action: 'none' });
+});
+
+test('a resume record is used only while fresh and well formed', () => {
+  const now = 1_000_000;
+  assert.equal(freshResume(null, now), null);
+  assert.equal(freshResume({ provider: 'claude' }, now), null);
+  assert.equal(freshResume({ at: now - RESUME_MAX_AGE_MS - 1, provider: 'claude' }, now), null);
+  assert.equal(freshResume({ at: now + 5, provider: 'claude' }, now), null);
+  assert.deepEqual(freshResume({ at: now - 10, provider: 'claude', runtime: 'helper', model: 'opus', reopen: true }, now), {
+    at: now - 10,
+    provider: 'claude',
+    runtime: 'helper',
+    model: 'opus',
+    reopen: true,
+  });
+  assert.deepEqual(freshResume({ at: now, provider: '<b>', runtime: 'cloud', model: 5 }, now), { at: now, provider: null, runtime: null, model: null, reopen: false });
+});
+
+const mockedTimers = new WeakSet();
+function nativeWorld(t, { granted = true, api = false, store = {}, settingsOpen = false, reload = true } = {}) {
+  if (!mockedTimers.has(t)) t.mock.timers.enable({ apis: ['setTimeout'] });
+  mockedTimers.add(t);
+  const world = { granted, api, store: { ...store }, reloads: 0, opened: 0, now: 5_000_000 };
+  world.setup = createNativeSetup({
+    storage: {
+      get: async (keys) => Object.fromEntries(keys.filter((k) => k in world.store).map((k) => [k, structuredClone(world.store[k])])),
+      set: async (items) => Object.assign(world.store, structuredClone(items)),
+      remove: async (key) => delete world.store[key],
+    },
+    permitted: async () => world.granted,
+    hasApi: () => world.api,
+    reload: reload ? () => (world.reloads += 1) : null,
+    settingsOpen: async () => settingsOpen,
+    openSettings: async () => (world.opened += 1),
+    timers: { setTimeout },
+    now: () => world.now,
+  });
+  return world;
+}
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('a stale worker with the permission granted reloads once, after a short delay, carrying the unsaved choice', async (t) => {
+  const resume = { at: 5_000_000 - 1000, provider: 'claude', runtime: 'helper', model: 'sonnet' };
+  const world = nativeWorld(t, { store: { [SETTINGS_RESUME_KEY]: resume } });
+  assert.equal(await world.setup.check(true), 'pending');
+  // Checked again by the next poll: still one reload scheduled.
+  assert.equal(await world.setup.check(true), 'pending');
+  t.mock.timers.tick(RELOAD_DELAY_MS - 1);
+  await settle();
+  assert.equal(world.reloads, 0);
+  t.mock.timers.tick(1);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.equal(world.reloads, 1);
+  assert.deepEqual(world.store[NATIVE_RELOAD_KEY], { at: world.now });
+  assert.deepEqual(world.store[SETTINGS_RESUME_KEY], { ...resume, reopen: true });
+});
+
+test('after the reload the options page opens again once, and the API still missing means stuck, never a second reload', async (t) => {
+  const world = nativeWorld(t, { store: { [NATIVE_RELOAD_KEY]: { at: 4_999_000 }, [SETTINGS_RESUME_KEY]: { at: 4_999_000, provider: 'chatgpt', reopen: true } } });
+  assert.equal(await world.setup.reopenAfterReload(), true);
+  assert.equal(world.opened, 1);
+  assert.equal(world.store[SETTINGS_RESUME_KEY].provider, 'chatgpt', 'the page still gets the choice');
+  assert.equal(await world.setup.reopenAfterReload(), false, 'a second worker start does not open it again');
+  assert.equal(world.opened, 1);
+  assert.equal(await world.setup.check(true), 'stuck');
+  t.mock.timers.tick(RELOAD_DELAY_MS * 10);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.equal(world.reloads, 0);
+  assert.equal(world.setup.state(), 'stuck');
+});
+
+test('the API present after the reload clears the guard, so a later grant gets its own reload', async (t) => {
+  const world = nativeWorld(t, { api: true, store: { [NATIVE_RELOAD_KEY]: { at: 1 } } });
+  assert.equal(await world.setup.check(true), 'ready');
+  assert.equal(NATIVE_RELOAD_KEY in world.store, false);
+  world.api = false;
+  assert.equal(await world.setup.check(false), null, 'not granted is never pending');
+  assert.equal(await world.setup.check(true), 'pending');
+});
+
+test('no reload when the permission goes or the API comes before the delay ends, nor without a reload API', async (t) => {
+  const world = nativeWorld(t);
+  assert.equal(await world.setup.check(true), 'pending');
+  world.granted = false;
+  t.mock.timers.tick(RELOAD_DELAY_MS);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.equal(world.reloads, 0);
+  assert.equal(NATIVE_RELOAD_KEY in world.store, false);
+  assert.equal(world.setup.state(), null);
+
+  const without = nativeWorld(t, { reload: false });
+  assert.equal(await without.setup.check(true), 'stuck');
+});
+
+test('a reload with no resume record reopens the options page only when one is open', async (t) => {
+  const open = nativeWorld(t, { settingsOpen: true });
+  await open.setup.check(true);
+  t.mock.timers.tick(RELOAD_DELAY_MS);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.equal(open.reloads, 1);
+  assert.equal(open.store[SETTINGS_RESUME_KEY].reopen, true);
+  assert.equal(open.store[SETTINGS_RESUME_KEY].provider, undefined);
+
+  const closed = nativeWorld(t, { settingsOpen: false });
+  await closed.setup.check(true);
+  t.mock.timers.tick(RELOAD_DELAY_MS);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.equal(closed.reloads, 1);
+  assert.equal(SETTINGS_RESUME_KEY in closed.store, false);
 });

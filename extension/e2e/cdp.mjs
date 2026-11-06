@@ -51,6 +51,13 @@ class Page {
         this.console.push(`exception: ${msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text}`);
       }
     });
+    // A target that goes away (its tab closed, the extension reloaded) never
+    // answers, so a call still waiting fails instead of hanging the script.
+    ws.addEventListener('close', () => {
+      this.closed = true;
+      for (const { reject } of this.pending.values()) reject(new Error('the page is gone'));
+      this.pending.clear();
+    });
   }
 
   on(method, fn) {
@@ -107,6 +114,7 @@ class Page {
   }
 
   send(method, params = {}) {
+    if (this.closed) return Promise.reject(new Error('the page is gone'));
     const id = this.nextId++;
     this.ws.send(JSON.stringify({ id, method, params }));
     return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
@@ -314,11 +322,16 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
       return json('/json/list');
     },
     profile,
-    async close() {
+    // `keepProfile`: leave the profile folder for the caller (a second
+    // browser started on a copy of it, as after a browser restart), who then
+    // removes it.
+    async close({ keepProfile = false } = {}) {
       for (const p of pages) p.close();
       process.removeListener('exit', reap);
+      const exited = new Promise((resolve) => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once('exit', resolve)));
       child.kill('SIGKILL');
-      fs.rmSync(profile, { recursive: true, force: true });
+      await exited;
+      if (!keepProfile) fs.rmSync(profile, { recursive: true, force: true });
     },
   };
 }

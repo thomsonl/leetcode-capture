@@ -23,7 +23,14 @@
 //     offline and points to Settings;
 //   - with a local model saved first, choosing Claude in the form starts
 //     the helper by itself (saving needs it running), switching the form back
-//     lets it stop, and choosing Claude again can be saved.
+//     lets it stop, and choosing Claude again can be saved;
+//   - with the permission granted while the worker and the options page
+//     were running (no connectNative in either), Settings says Finishing
+//     setup (never Not installed), the worker reloads once keeping the
+//     unsaved choice, the next worker start opens Settings with it and the
+//     helper runs, nothing saved; a page alone behind reloads itself; and an
+//     API still missing after the reload asks for a browser restart without
+//     reloading again.
 //
 // Run with:  node extension/e2e/helper-launch.e2e.mjs   (about a minute)
 
@@ -367,8 +374,146 @@ try {
       }
     }
   }
+}
+
+// ---- 3. the permission granted while the worker and the page were running --
+// Chrome gives a context that was already running when the user clicked
+// Allow no runtime.connectNative until it starts again (seen in a real
+// Chrome on 2026-11-06). A headless browser cannot answer the prompt, so the
+// permission comes from the manifest and the API is removed from the running
+// worker and options page, which is the state a real grant leaves them in.
+// This headless Chromium blocks any extension that calls runtime.reload()
+// (even a two-file one), so the worker's reload is counted instead of done,
+// and the worker start after it is a second browser on a copy of the
+// profile, which runs the same start-up code.
+const copy3 = extensionCopy(extensionDir, { extraPermissions: ['nativeMessaging'], extraHosts: [`http://localhost:${relayPort}/*`] });
+for (const file of ['panel.js', 'content.js', 'settings.js']) {
+  const target = path.join(copy3.dir, file);
+  fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replaceAll('http://localhost:8135', `http://localhost:${relayPort}`));
+}
+const lnaArgs = ['--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights'];
+// Every label the Helper card shows, so a passing "Not installed" is caught.
+const watchLabels = (o) =>
+  o.eval(`(() => {
+    window.__labels = [document.getElementById('helper-state-text').textContent];
+    new MutationObserver(() => window.__labels.push(document.getElementById('helper-state-text').textContent)).observe(document.getElementById('helper-state-text'), { childList: true, characterData: true, subtree: true });
+  })()`);
+let browser3 = await launch({ extensionDir: copy3.dir, env, args: lnaArgs });
+let oldProfile = null;
+try {
+  install({ platform: 'linux', home, env: {}, root: repo, chromeIds: [browser3.extensionId], browsers: ['chromium'] });
+  const registration = layout({ platform: 'linux', home, env: {} }).targets.find((t) => t.id === 'chromium').manifestPath;
+  fs.mkdirSync(path.join(browser3.profile, 'NativeMessagingHosts'), { recursive: true });
+  fs.copyFileSync(registration, path.join(browser3.profile, 'NativeMessagingHosts', `${HOST_NAME}.json`));
+  await openProblem(browser3);
+  let options3 = await openOptions(browser3);
+  await options3.eval(`(() => { const s = document.getElementById('claude-model'); s.value = 'opus'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await browser3.serviceWorkerEval(`(() => { self.__reloads = 0; chrome.runtime.reload = () => { self.__reloads += 1; }; delete chrome.runtime.connectNative; })()`);
+  await options3.eval(`delete chrome.runtime.connectNative`);
+  await watchLabels(options3);
+
+  await scenario('granted while running: Settings says Finishing setup, never Not installed', async () => {
+    await options3.waitFor(`document.getElementById('helper-state-text').textContent === 'Finishing setup'`, { what: 'Finishing setup', timeout: 12000 });
+    const info = await options3.eval(`({ labels: window.__labels, body: document.getElementById('helper-body').textContent })`);
+    check(!info.labels.includes('Not installed'), JSON.stringify(info.labels));
+    check(/opens again by itself/.test(info.body), info.body);
+    await options3.eval(`document.getElementById('helper-card').scrollIntoView({ block: 'center' })`);
+    await options3.screenshot(path.join(shots, 'helper-finishing-setup.png'), { width: 900, height: 1100 });
+  });
+
+  await scenario('the worker reloads the extension once, keeping the unsaved choice to reopen Settings with', async () => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && (await browser3.serviceWorkerEval('self.__reloads')) === 0) await sleep(200);
+    // Two more 5 s polls of the page: still one reload.
+    await sleep(11000);
+    check((await browser3.serviceWorkerEval('self.__reloads')) === 1, `reloads: ${await browser3.serviceWorkerEval('self.__reloads')}`);
+    const stored = await options3.eval(`chrome.storage.local.get(null)`);
+    check(stored.nativeReload && typeof stored.nativeReload.at === 'number', JSON.stringify(stored.nativeReload));
+    const r = stored.settingsResume || {};
+    check(r.provider === 'claude' && r.model === 'opus' && r.runtime === 'helper' && r.reopen === true, JSON.stringify(r));
+  });
+
+  // What the reload would do next: the options page closes and the worker
+  // starts again, now with connectNative.
+  await browser3.close({ keepProfile: true });
+  oldProfile = browser3.profile;
+  browser3 = await launch({ extensionDir: copy3.dir, env, args: lnaArgs, setupProfile: (dir) =>
+    // The lock files name the old process, which a new one refuses to share.
+    fs.cpSync(oldProfile, dir, { recursive: true, filter: (src) => !/^Singleton/.test(path.basename(src)) }),
+});
+
+  await scenario('the started worker opens Settings again with the unsaved choice, and the helper runs', async () => {
+    const deadline = Date.now() + 15000;
+    let target = null;
+    while (Date.now() < deadline && !target) {
+      target = (await browser3.listTargets()).find((t) => t.type === 'page' && t.url.includes(`${browser3.extensionId}/settings.html`));
+      if (!target) await sleep(200);
+    }
+    check(target, 'the options page did not open');
+    options3 = await browser3.attachPage((url) => url === target.url);
+    await options3.waitFor(`document.querySelector('input[name="provider"][value="claude"]') && document.querySelector('input[name="provider"][value="claude"]').checked`, { what: 'Claude chosen again', timeout: 10000 });
+    const note = await options3.eval(`document.getElementById('save-result').textContent`);
+    check(/not saved yet/.test(note), note);
+    await options3.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running', timeout: 20000 });
+    // The model field fills in once the helper answers (it shows the helper's settings).
+    await options3.waitFor(`document.getElementById('claude-model').value === 'opus'`, { what: 'the carried model', timeout: 15000 }).catch(async (err) => {
+      throw new Error(`${err.message}: ${await options3.eval(`document.getElementById('claude-model').value`)}`);
+    });
+    const stored = await options3.eval(`chrome.storage.local.get(null)`);
+    check(!stored.settingsResume, `resume record left: ${JSON.stringify(stored.settingsResume)}`);
+    check(!stored.nativeReload, `reload guard left: ${JSON.stringify(stored.nativeReload)}`);
+    const saved = await options3.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:settings-get' })`);
+    check(saved.ok && !saved.result.settings.provider, `something was saved: ${JSON.stringify(saved.result && saved.result.settings.provider)}`);
+    await helperPidsOf(options3);
+    await options3.eval(`document.getElementById('helper-card').scrollIntoView({ block: 'center' })`);
+    await options3.screenshot(path.join(shots, 'helper-after-setup-reload.png'), { width: 900, height: 1100 });
+  });
+
+  await scenario('only the options page behind: it reloads itself and keeps the choice', async () => {
+    await options3.eval(`(() => { const s = document.getElementById('claude-model'); s.value = 'haiku'; s.dispatchEvent(new Event('change', { bubbles: true })); window.__before = 1; delete chrome.runtime.connectNative; })()`);
+    await options3.waitFor(`window.__before === undefined && document.readyState === 'complete' && document.getElementById('claude-model') && document.getElementById('claude-model').value === 'haiku'`, { what: 'the page to reload with the choice', timeout: 15000 });
+    await options3.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running', timeout: 15000 });
+  });
+
+  await scenario('still no API after the one reload: Settings asks for a browser restart and nothing reloads again', async () => {
+    await options3.eval(`chrome.storage.local.set({ nativeReload: { at: Date.now() } })`);
+    await browser3.serviceWorkerEval(`(() => { self.__reloads = 0; chrome.runtime.reload = () => { self.__reloads += 1; }; delete chrome.runtime.connectNative; })()`);
+    await options3.eval(`window.__still = 1`);
+    await options3.waitFor(`document.getElementById('helper-state-text').textContent === 'Restart the browser'`, { what: 'the restart note', timeout: 12000 });
+    const body = await options3.eval(`document.getElementById('helper-body').textContent`);
+    check(/Close every browser window/.test(body), body);
+    await sleep(6000);
+    check((await options3.eval(`window.__still`)) === 1, 'the page was reloaded');
+    check((await browser3.serviceWorkerEval('self.__reloads')) === 0, 'the worker reloaded again');
+    await options3.eval(`document.getElementById('helper-card').scrollIntoView({ block: 'center' })`);
+    await options3.screenshot(path.join(shots, 'helper-restart-browser.png'), { width: 900, height: 1100 });
+  });
+
+  await scenario('no exceptions in the reopened options page', async () => {
+    const errors = options3.console.filter((l) => /exception|error/i.test(l));
+    check(errors.length === 0, errors.join('\n'));
+  });
+} finally {
+  await browser3.close();
+  if (oldProfile) fs.rmSync(oldProfile, { recursive: true, force: true });
+  copy3.cleanup();
+  await sleep(500);
+  for (const pid of seenPids) {
+    if (isAlive(pid)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // gone
+      }
+    }
+  }
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(scratch, { recursive: true, force: true });
+}
+
+async function helperPidsOf(o) {
+  const view = await o.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' })`);
+  for (const pid of view && view.host ? [view.host.relay && view.host.relay.pid, view.host.companion && view.host.companion.pid].filter(Boolean) : []) seenPids.add(pid);
 }
 
 const failed = results.filter((r) => !r.ok).length;

@@ -24,6 +24,7 @@ import { createTutorService, SETTINGS_KEY } from "./shared/tutor-service.js";
 import { normalizeSettings } from "./shared/extension-settings.js";
 import { createHelperLauncher } from "./shared/helper-launcher.js";
 import { createSolvedService } from "./shared/solved.js";
+import { createNativeSetup } from "./shared/native-setup.js";
 
 const api = typeof browser !== "undefined" ? browser : chrome;
 const PANEL_PORT = "lc-tutor-panel";
@@ -68,10 +69,37 @@ async function refreshHelper() {
     granted = false;
   }
   const wanted = runtime === "helper" || Date.now() < optionsWantUntil;
-  const allowed = granted && typeof api.runtime.connectNative === "function";
+  const hasApi = typeof api.runtime.connectNative === "function";
+  await nativeSetup.check(granted);
+  const allowed = granted && hasApi;
   launcher.setHeld(allowed && Date.now() < optionsWantUntil);
   launcher.setWanted(wanted && allowed);
 }
+
+// ---- finishing the setup after the permission is granted -------------------
+//
+// A worker that was running when the user allowed nativeMessaging has no
+// runtime.connectNative until it starts again, so it reloads the extension
+// once; the options page, which the reload closes, opens again with the
+// choice its form had (shared/native-setup.js has the rules).
+const nativeSetup = createNativeSetup({
+  storage: {
+    get: (keys) => api.storage.local.get(keys),
+    set: (items) => api.storage.local.set(items),
+    remove: (key) => api.storage.local.remove(key),
+  },
+  permitted: () => api.permissions.contains(NATIVE),
+  hasApi: () => typeof api.runtime.connectNative === "function",
+  reload: typeof api.runtime.reload === "function" ? () => api.runtime.reload() : null,
+  settingsOpen: async () => {
+    const base = api.runtime.getURL("settings.html");
+    const contexts = api.runtime.getContexts ? await api.runtime.getContexts({ contextTypes: ["TAB"] }) : [];
+    return contexts.some((c) => typeof c.documentUrl === "string" && c.documentUrl.split("#")[0] === base);
+  },
+  openSettings: () => openOurPage("settings"),
+  timers: { setTimeout: (fn, ms) => setTimeout(fn, ms) },
+  log: (text) => console.warn(`[leetcode-capture] ${text}`),
+});
 
 // The options page asks for the helper's state; panels hear it so an offline
 // panel can point to Settings.
@@ -82,7 +110,17 @@ async function helperView() {
   } catch {
     granted = false;
   }
-  return { ...launcher.view(), runtime, permission: granted, extensionId: api.runtime.id };
+  // `nativeApi`: whether this worker can reach the helper at all; `native`:
+  // 'pending' while the reload that fixes a missing API is coming, 'stuck'
+  // when it did not help (see shared/native-setup.js).
+  return {
+    ...launcher.view(),
+    runtime,
+    permission: granted,
+    nativeApi: typeof api.runtime.connectNative === "function",
+    native: nativeSetup.state(),
+    extensionId: api.runtime.id,
+  };
 }
 
 const panelPorts = new Set();
@@ -296,3 +334,12 @@ if (api.permissions.onRemoved) {
     refreshHelper();
   });
 }
+
+// After the reload above, the options page opens again where the user left it.
+// A module worker only starts for an event it listens to, and a reload
+// fires runtime.onInstalled (reason "update"); without this listener the
+// worker would stay asleep until the next problem tab. The call at start is
+// for a worker woken by something else first (the resume record is used
+// only once either way).
+if (api.runtime.onInstalled) api.runtime.onInstalled.addListener(() => nativeSetup.reopenAfterReload());
+nativeSetup.reopenAfterReload();

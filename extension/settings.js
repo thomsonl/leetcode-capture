@@ -216,14 +216,17 @@
     }
   }
 
+  // Whether this page can reach the helper. A page that was open when the
+  // permission was granted has no connectNative until it loads again (see
+  // shared/native-setup.js), which says nothing about the helper itself.
+  function pageHasNativeApi() {
+    return typeof api.runtime.connectNative === "function";
+  }
+
   // Pings the helper directly, which only tells whether it is installed: it
-  // starts nothing until the worker asks.
+  // starts nothing until the worker asks. Only called when pageHasNativeApi().
   function probeHelper() {
     return new Promise((resolve) => {
-      if (typeof api.runtime.connectNative !== "function") {
-        resolve("not-installed");
-        return;
-      }
       let port;
       let done = false;
       const finish = (value) => {
@@ -257,7 +260,21 @@
 
   async function refreshHelper({ retry = false, probe = false } = {}) {
     helperInfo = await workerHelper(retry ? "lc-tutor:helper-retry" : "lc-tutor:helper-status");
-    if (helperInfo && helperInfo.permission && (probe || helperProbe === null) && helperInfo.state !== "running" && helperInfo.state !== "connecting") {
+    const setup = nativeSetup();
+    if (setup === "page-reload") {
+      reloadPageForNative();
+      return;
+    }
+    if (setup === "pending") saveResume();
+    if (setup === "ready") {
+      forgetResume();
+      try {
+        sessionStorage.removeItem(PAGE_RELOAD_FLAG);
+      } catch {
+        // ignore
+      }
+    }
+    if (setup === "ready" && (probe || helperProbe === null) && helperInfo.state !== "running" && helperInfo.state !== "connecting") {
       helperProbe = await probeHelper();
     }
     if (helperInfo && !helperInfo.permission) helperProbe = null;
@@ -266,10 +283,99 @@
     drawHelper();
   }
 
+  // ---- finishing the setup once the permission is granted ----
+  //
+  // Neither this page nor the worker can start the helper until they load
+  // again after the grant. The worker reloads the extension once (which
+  // closes this page and opens it again); when only this page is behind, it
+  // reloads itself. Either way the form's unsaved choice is carried over
+  // (SETTINGS_RESUME_KEY in shared/native-setup.js, applied in load()).
+  const SETTINGS_RESUME_KEY = "settingsResume";
+  const RESUME_MAX_AGE_MS = 10 * 60000;
+  const PAGE_RELOAD_FLAG = "lc-native-page-reload";
+  let pageStuck = false;
+
+  // null (not granted, or no answer yet), "ready", "pending" (a reload is
+  // coming), "page-reload" (only this page is behind: reload it now) or
+  // "stuck" (a reload did not help: the browser must be restarted).
+  function nativeSetup() {
+    if (!helperInfo || !helperInfo.permission) return null;
+    if (helperInfo.native === "stuck" || pageStuck) return "stuck";
+    if (helperInfo.nativeApi === false) return "pending";
+    if (pageHasNativeApi()) return "ready";
+    let reloaded = false;
+    try {
+      reloaded = sessionStorage.getItem(PAGE_RELOAD_FLAG) === "1";
+    } catch {
+      reloaded = true;
+    }
+    if (reloaded) {
+      pageStuck = true;
+      return "stuck";
+    }
+    return "page-reload";
+  }
+
+  // The form's choice so far, kept for the page that opens after a reload.
+  function resumeRecord() {
+    const model = selected ? $(`${selected}-model`) : null;
+    const value = model && model.value !== OTHER ? model.value.trim() : "";
+    return { at: Date.now(), provider: selected, runtime: selected ? runtimeOf(selected) : null, model: value || null };
+  }
+
+  function saveResume() {
+    try {
+      Promise.resolve(api.storage.local.set({ [SETTINGS_RESUME_KEY]: resumeRecord() })).catch(() => {});
+    } catch {
+      // the choice is simply not carried over
+    }
+  }
+
+  function forgetResume() {
+    try {
+      Promise.resolve(api.storage.local.remove(SETTINGS_RESUME_KEY)).catch(() => {});
+    } catch {
+      // ignore
+    }
+  }
+
+  async function reloadPageForNative() {
+    try {
+      sessionStorage.setItem(PAGE_RELOAD_FLAG, "1");
+    } catch {
+      // nativeSetup treats a missing flag store as already reloaded
+    }
+    try {
+      await api.storage.local.set({ [SETTINGS_RESUME_KEY]: resumeRecord() });
+    } catch {
+      // reload anyway; only the choice is lost
+    }
+    location.reload();
+  }
+
+  // The choice carried over a reload, or null; removed once read.
+  async function takeResume() {
+    let record = null;
+    try {
+      const stored = await api.storage.local.get([SETTINGS_RESUME_KEY]);
+      record = stored ? stored[SETTINGS_RESUME_KEY] : null;
+    } catch {
+      return null;
+    }
+    if (!record) return null;
+    forgetResume();
+    const age = Date.now() - (typeof record.at === "number" ? record.at : 0);
+    if (!(age >= 0 && age <= RESUME_MAX_AGE_MS)) return null;
+    return record;
+  }
+
   // What to show: [light ("ok" | "bad" | null), label].
   function helperSummary() {
     if (!helperInfo) return [null, "Checking"];
     if (!helperInfo.permission) return [null, "Not allowed yet"];
+    const setup = nativeSetup();
+    if (setup === "stuck") return ["bad", "Restart the browser"];
+    if (setup !== "ready") return [null, "Finishing setup"];
     if (helperInfo.state === "running") {
       const host = helperInfo.host || {};
       if (host.error) return ["bad", "Error"];
@@ -324,7 +430,22 @@
 
     const body = $("helper-body");
     body.textContent = "";
-    if (helperInfo && !helperInfo.permission) {
+    const setup = nativeSetup();
+    if (setup === "pending" || setup === "page-reload") {
+      body.appendChild(
+        h("p", {
+          class: "hint",
+          text: "Finishing setup: the extension restarts once so the browser lets it start the helper. This page closes and opens again by itself, with your choices kept.",
+        })
+      );
+    } else if (setup === "stuck") {
+      body.appendChild(
+        h("p", {
+          class: "hint",
+          text: "The browser has not turned on the connection to the helper yet. Close every browser window, open the browser again, then come back to these settings.",
+        })
+      );
+    } else if (helperInfo && !helperInfo.permission) {
       body.appendChild(
         h(
           "div",
@@ -347,6 +468,9 @@
                 } catch {
                   asked = Promise.resolve(false);
                 }
+                // Saved while the browser asks, so the reload that may follow
+                // the grant (see nativeSetup) brings this choice back.
+                saveResume();
                 asked
                   .then(Boolean, () => false)
                   .then((granted) => {
@@ -1443,6 +1567,25 @@
     for (const [id, runtime] of Object.entries(ext.settings.runtimes)) runtimeChoice[id] = runtime;
     selected = ext.settings.provider;
     const helperFirst = rpc("get", {});
+    // The extension restarted to finish the helper's setup: the form shows
+    // again what it showed before, still unsaved.
+    const resume = await takeResume();
+    if (resume && resume.provider && catalog[resume.provider]) {
+      selected = resume.provider;
+      if (resume.runtime && runtimesOf(selected).includes(resume.runtime)) runtimeChoice[selected] = resume.runtime;
+      if (resume.model) formModel[selected] = resume.model;
+      render();
+      showResult("save-result", "", `${catalog[selected].label} is still chosen, but not saved yet. Press Save once the helper runs.`);
+      const res2 = await helperFirst;
+      if (res2.ok) {
+        helper = res2.result;
+        helperOffline = null;
+      } else {
+        helperOffline = res2.error.offline || "relay-down";
+      }
+      render();
+      return;
+    }
     if (!selected) {
       // Nothing chosen yet: show what the helper runs, if one is running;
       // otherwise a local model, which needs nothing installed.
