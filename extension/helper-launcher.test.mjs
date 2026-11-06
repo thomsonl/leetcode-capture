@@ -206,6 +206,34 @@ test('a helper that is not installed is not retried until retry()', (t) => {
   assert.equal(launcher.view().state, 'connecting');
 });
 
+test('a quiet re-probe of a missing helper never reads as starting', (t) => {
+  // The options page asks for the helper every few seconds (setWanted), which
+  // looks again for a helper that was just installed. Until the host answers,
+  // the state must stay "not-installed": a status read in the instant between
+  // the new connection and its failure used to say "connecting" instead.
+  const { launcher, ports } = setup(t);
+  const seen = [];
+  launcher.onChange((view) => seen.push(view.state));
+  launcher.setWanted(true);
+  launcher.tabOpened(1, URL_A);
+  ports[0].drop('Specified native messaging host not found.');
+  assert.equal(launcher.view().state, 'not-installed');
+  seen.length = 0;
+
+  launcher.setWanted(true);
+  assert.equal(ports.length, 2, 'it looks again');
+  assert.equal(launcher.view().state, 'not-installed');
+  ports[1].drop('Specified native messaging host not found.');
+  assert.equal(launcher.view().state, 'not-installed');
+  assert.ok(!seen.includes('connecting'), `states seen: ${seen.join(', ')}`);
+
+  // The helper gets installed: the next look finds it and it runs.
+  launcher.setWanted(true);
+  assert.equal(launcher.view().state, 'not-installed');
+  ports[2].onMessage.fire({ type: 'status', relay: { state: 'started' } });
+  assert.equal(launcher.view().state, 'running');
+});
+
 test('Firefox says it differently, and it still reads as not installed', (t) => {
   const { launcher, ports } = setup(t);
   launcher.setWanted(true);

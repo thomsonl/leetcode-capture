@@ -17,7 +17,9 @@
 //   - A ping every PING_MS tells the helper someone is still there; it exits
 //     on its own after a few quiet minutes (a crashed browser, say).
 //   - A port that drops for another reason is retried with a growing delay.
-//     A helper that is not installed is not retried until retry().
+//     A helper that is not installed is looked for again only when asked (retry(),
+//     or setWanted() from the options page's regular asks, which keeps saying
+//     "not-installed" until the host answers).
 //
 // Pure JavaScript with no Node or browser API: connectNative, the timers and
 // the error lookup are passed in (extension/shared.test.js checks that).
@@ -50,6 +52,10 @@ export function createHelperLauncher({
   let held = false; // the options page needs the helper, with or without a problem tab
   let port = null;
   let state = 'idle'; // idle | connecting | running | not-installed | error
+  // A look for a helper that was missing, made again by the options page's
+  // regular asks (setWanted): until the host answers, the state stays
+  // "not-installed" instead of flashing "connecting" at whoever reads it.
+  let quiet = false;
   let host = null; // the helper's newest status message
   let error = null;
   let active = null; // { tabId, slug }
@@ -91,6 +97,7 @@ export function createHelperLauncher({
     stopTimer = clear(stopTimer);
     resetTimer = clear(resetTimer);
     resetFor = null;
+    quiet = false;
     const current = port;
     port = null;
     if (current) {
@@ -106,23 +113,27 @@ export function createHelperLauncher({
   }
 
   function connect() {
-    if (port || state === 'not-installed') return;
+    if (port || (state === 'not-installed' && !quiet)) return;
     retryTimer = clear(retryTimer);
     let next;
     try {
       next = connectNative(HELPER_HOST_NAME);
     } catch (err) {
+      quiet = false;
       state = 'error';
       error = err && err.message ? err.message : String(err);
       emit();
       return;
     }
     port = next;
-    state = 'connecting';
-    error = null;
+    if (!quiet) {
+      state = 'connecting';
+      error = null;
+    }
     next.onMessage.addListener((message) => {
       if (port !== next || !message || typeof message !== 'object') return;
       if (message.type === 'status') {
+        quiet = false;
         host = message;
         error = message.error || null;
         state = 'running';
@@ -132,6 +143,7 @@ export function createHelperLauncher({
     });
     next.onDisconnect.addListener(() => {
       if (port !== next) return;
+      quiet = false;
       port = null;
       pingTimer = pingTimer !== null ? (timers.clearInterval(pingTimer), null) : null;
       host = null;
@@ -225,7 +237,7 @@ export function createHelperLauncher({
     // Whether the helper runtime is chosen and the permission granted.
     setWanted(next) {
       wanted = Boolean(next);
-      if (wanted && state === 'not-installed' && !port) state = 'idle';
+      if (wanted && state === 'not-installed' && !port) quiet = true;
       update();
       emit();
     },
@@ -241,6 +253,7 @@ export function createHelperLauncher({
 
     // Try again after the student installed the helper.
     retry() {
+      quiet = false;
       if (state === 'not-installed' || state === 'error') state = 'idle';
       retryDelay = RETRY_MIN_MS;
       update();
