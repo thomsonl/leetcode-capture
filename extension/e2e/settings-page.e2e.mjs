@@ -320,6 +320,41 @@ await scenario('behavior options round-trip', companion(), async (page) => {
   assert.equal(await page.eval(`document.getElementById('autoClearContext').checked`), false);
 });
 
+await scenario('"Saved" shows only right after a Save: any edit clears it, a reload never brings it back, an error stays', companion(), async (page) => {
+  const result = () => page.eval(`({ text: document.getElementById('save-result').textContent, kind: document.getElementById('save-result').getAttribute('data-kind') })`);
+  const saveNow = async () => {
+    await page.click('#save');
+    await page.waitFor(`document.getElementById('save-result').textContent.startsWith('Saved')`, { what: 'Saved' });
+  };
+  // A toggle in Behavior.
+  await saveNow();
+  await page.screenshot(path.join(shots, 'saved-dark.png'), { scheme: 'dark' });
+  await page.eval(`document.getElementById('autoClearContext').click()`);
+  assert.deepEqual(await result(), { text: '', kind: null });
+  // Typing in a field.
+  await saveNow();
+  await page.type('#localMaxHistoryTurns', '4');
+  assert.deepEqual(await result(), { text: '', kind: null });
+  // A change in the models list (a button, no input event).
+  await saveNow();
+  const removed = await page.eval(`(() => { const b = document.querySelector('#profiles button[id$="-remove"]:not([disabled])'); if (b) b.click(); return Boolean(b); })()`);
+  assert.ok(removed, 'no model to remove');
+  assert.deepEqual(await result(), { text: '', kind: null });
+  // Setting up the helper changes nothing Save saves, so it keeps the note.
+  await saveNow();
+  await page.eval(`document.getElementById('helper-card').dispatchEvent(new Event('change', { bubbles: true }))`);
+  assert.match((await result()).text, /^Saved/);
+  // A reload starts with no note.
+  await page.send('Page.reload');
+  await page.waitFor(`document.readyState === 'complete' && document.getElementById('connection-text').textContent !== 'Connecting'`, { what: 'the reloaded page' });
+  await new Promise((r) => setTimeout(r, 500));
+  assert.deepEqual(await result(), { text: '', kind: null });
+  // An error is not hidden by the next edit.
+  await page.eval(`(() => { const r = document.getElementById('save-result'); r.textContent = 'The helper refused it.'; r.setAttribute('data-kind', 'error'); })()`);
+  await page.type('#localMaxHistoryTurns', '5');
+  assert.deepEqual(await result(), { text: 'The helper refused it.', kind: 'error' });
+});
+
 for (const [status, pattern, kind] of [
   [503, /relay is running but the tutor isn't/, 'tutor not running'],
   [404, /older version without settings support/, 'old relay'],

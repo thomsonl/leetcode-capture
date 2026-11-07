@@ -1021,6 +1021,13 @@
     }
   }
 
+  // "Saved. The tutor now uses ..." describes the form as it was saved, so
+  // it goes as soon as anything in the form changes (and on a page restored
+  // from the back-forward cache); an error or a "not saved yet" note stays.
+  function formChanged() {
+    if ($("save-result").getAttribute("data-kind") === "ok") showResult("save-result", "", "");
+  }
+
   function showResult(id, kind, text) {
     const el = $(id);
     // Backends word their errors as clauses ("the Anthropic API key was
@@ -1106,6 +1113,7 @@
     const j = i + by;
     if (i < 0 || j < 0 || j >= draftProfiles.length) return;
     [draftProfiles[i], draftProfiles[j]] = [draftProfiles[j], draftProfiles[i]];
+    formChanged();
     renderProfiles();
     const again = $(`profile-${id}-${by < 0 ? "up" : "down"}`);
     if (again && !again.disabled) again.focus();
@@ -1118,6 +1126,7 @@
     const i = draftProfiles.findIndex((p) => p.id === id);
     if (i < 0) return;
     const [gone] = draftProfiles.splice(i, 1);
+    formChanged();
     profilesNote(null, `Removed ${profileName(gone)}. Save to apply.`);
     const next = draftProfiles[Math.min(i, draftProfiles.length - 1)];
     if (draftActive === id) {
@@ -1304,6 +1313,7 @@
     }
     const profile = { id: newProfileId(provider), provider, model, label };
     draftProfiles.push(profile);
+    formChanged();
     $("add-label").value = "";
     if ($("add-model").tagName === "INPUT") $("add-model").value = "";
     typeModelByHand.add = false;
@@ -1668,6 +1678,16 @@
   // header asks the helper again rather than showing a stale state.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && catalog && selected && runtimeOf(selected) === "helper") refreshAttention();
+  });
+  // Typing, choosing and toggling anywhere in the form but the Helper card
+  // (setting up the helper changes nothing that Save saves).
+  for (const type of ["input", "change"]) {
+    $("form").addEventListener(type, (e) => {
+      if (!(e.target instanceof Element) || !e.target.closest("#helper-card")) formChanged();
+    });
+  }
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) formChanged();
   });
   $("form").addEventListener("submit", save);
   $("test").addEventListener("click", runTest);
