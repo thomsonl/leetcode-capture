@@ -184,7 +184,12 @@ try {
   const options = await openOptions(browser);
 
   await scenario('granted but not installed: the options page shows the install command with this extension id', async () => {
-    await options.waitFor(`document.getElementById('helper-state-text').textContent === 'Not installed'`, { what: 'Not installed', timeout: 10000 });
+    await options.waitFor(`document.getElementById('helper-state-text').textContent === 'Not installed'`, { what: 'Not installed', timeout: 10000 }).catch(async (err) => {
+      // Say what the page and the worker showed, so a timeout is diagnosable.
+      const seen = await options.eval(`JSON.stringify({ text: document.getElementById('helper-state-text') && document.getElementById('helper-state-text').textContent, connectNative: typeof chrome.runtime.connectNative, href: location.href })`).catch((e) => String(e));
+      const view = await options.eval(`chrome.runtime.sendMessage({ type: 'lc-tutor:helper-status' }).then((v) => JSON.stringify(v))`).catch((e) => String(e));
+      throw new Error(`${err.message}: page ${seen}, worker ${view}, console ${(options.console || []).join(' | ')}`);
+    });
     const command = await options.eval(`document.querySelector('.helper-command code').textContent`);
     check(command === `npx leetcode-capture-helper install --chrome-id ${browser.extensionId}`, command);
     // The rest of the form is greyed out and inert while the helper is
@@ -464,7 +469,12 @@ try {
     }
     check(target, 'the options page did not open');
     options3 = await browser3.attachPage((url) => url === target.url);
-    await options3.waitFor(`document.querySelector('input[name="provider"][value="claude"]') && document.querySelector('input[name="provider"][value="claude"]').checked`, { what: 'Claude chosen again', timeout: 10000 });
+    await options3.waitFor(`document.querySelector('input[name="provider"][value="claude"]') && document.querySelector('input[name="provider"][value="claude"]').checked`, { what: 'Claude chosen again', timeout: 10000 }).catch(async (err) => {
+      // Say what the reopened page held, so a timeout is diagnosable.
+      const seen = await options3.eval(`JSON.stringify({ checked: [...document.querySelectorAll('input[name="provider"]')].filter((r) => r.checked).map((r) => r.value), note: document.getElementById('save-result') && document.getElementById('save-result').textContent, helper: document.getElementById('helper-state-text') && document.getElementById('helper-state-text').textContent, ready: document.readyState })`).catch((e) => String(e));
+      const stored = await options3.eval(`chrome.storage.local.get(null).then((v) => JSON.stringify({ resume: v.settingsResume, reload: v.nativeReload }))`).catch((e) => String(e));
+      throw new Error(`${err.message}: page ${seen}, storage ${stored}, console ${(options3.console || []).join(' | ')}`);
+    });
     const note = await options3.eval(`document.getElementById('save-result').textContent`);
     check(/not saved yet/.test(note), note);
     await options3.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running', timeout: 20000 });
