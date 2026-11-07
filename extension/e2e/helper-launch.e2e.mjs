@@ -271,7 +271,13 @@ try {
     await options.click('input[name=provider][value=claude]');
     await options.waitFor(`document.getElementById('helper-check')`, { what: 'the Helper section', timeout: 10000 });
     await options.eval(`document.getElementById('helper-check').click()`);
+    // A press must visibly do something: busy button right away, then a note.
+    const busy = await options.eval(`({ text: document.getElementById('helper-check').textContent, disabled: document.getElementById('helper-check').disabled })`);
+    check(busy.text === 'Checking...' && busy.disabled, `busy button: ${JSON.stringify(busy)}`);
     await options.waitFor(`document.getElementById('helper-state-text').textContent === 'Not installed'`, { what: 'Not installed again', timeout: 10000 });
+    await options.waitFor(`/Still not installed/.test(document.getElementById('helper-check-note')?.textContent || '')`, { what: 'the Check again note', timeout: 10000 });
+    const after = await options.eval(`document.getElementById('helper-check').textContent`);
+    check(after === 'Check again', `button after: ${after}`);
   });
 
   // A user who first saved a local model (so the saved runtime is the

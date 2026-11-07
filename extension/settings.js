@@ -197,6 +197,10 @@
   let helperProbe = null; // "installed" | "not-installed" | { error } from a direct ping, or null
   let helperTimer = null;
   let helperError = null;
+  // The Check again button: busy while it asks, and what it found, so a press
+  // never looks like it did nothing.
+  let helperChecking = false;
+  let helperCheckNote = null;
 
   function installCommand() {
     const id = api.runtime.id;
@@ -506,12 +510,11 @@
             type: "button",
             id: "helper-check",
             class: "btn",
-            text: "Check again",
-            onclick: () => {
-              helperError = null;
-              refreshHelper({ retry: true, probe: true });
-            },
-          })
+            text: helperChecking ? "Checking..." : "Check again",
+            disabled: helperChecking,
+            onclick: checkHelperAgain,
+          }),
+          h("span", { class: "result", id: "helper-check-note", role: "status", "aria-live": "polite", text: helperChecking ? "Looking for the helper..." : helperCheckNote || "" })
         )
       );
       if (installed) {
@@ -522,6 +525,46 @@
     const error = helperErrorText();
     $("helper-error").hidden = !error;
     $("helper-error").textContent = error || "";
+  }
+
+  // Asks the worker to look for the helper again, then waits (a few seconds)
+  // for the tutor behind it, so a successful check unlocks the form at once
+  // instead of at the next poll, and says what it found either way.
+  async function checkHelperAgain() {
+    if (helperChecking) return;
+    helperError = null;
+    helperCheckNote = null;
+    helperChecking = true;
+    drawHelper();
+    const started = Date.now();
+    try {
+      await refreshHelper({ retry: true, probe: true });
+      const deadline = started + 8000;
+      while (helperInfo && helperInfo.permission && helperProbe !== "not-installed" && helperInfo.state !== "not-installed" && Date.now() < deadline) {
+        // eslint-disable-next-line no-await-in-loop
+        const up = await rpc("get", {}, 2500);
+        if (up.ok) {
+          helper = up.result;
+          helperOffline = null;
+          break;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        // eslint-disable-next-line no-await-in-loop
+        await refreshHelper({ probe: true });
+      }
+    } finally {
+      // Long enough to be seen when the answer is instant.
+      const left = 500 - (Date.now() - started);
+      if (left > 0) await new Promise((resolve) => setTimeout(resolve, left));
+      helperChecking = false;
+      if (helper && helperInfo && helperInfo.state === "running") helperCheckNote = "The helper is running.";
+      else if (helperInfo && (helperInfo.state === "not-installed" || helperProbe === "not-installed")) helperCheckNote = "Still not installed. Run the command above in a terminal, then press Check again.";
+      else if (helperProbe === "installed" || (helperInfo && helperInfo.state === "running")) helperCheckNote = "The helper is installed, but the tutor behind it did not answer yet. Press Check again in a moment.";
+      else helperCheckNote = "Could not reach the helper. See the message below.";
+      drawHelper();
+      render();
+    }
   }
 
   function renderHelper() {
