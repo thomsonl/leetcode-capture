@@ -18,20 +18,31 @@ Then restart Chrome and click Enable.
 
 ## Install by hand
 
+You need Node and Git.
+
 ```sh
 git clone https://github.com/thomsonl/leetcode-capture.git
+cd leetcode-capture
+node extension/scripts/build.mjs --browser chrome
 ```
 
-1. Open `chrome://extensions`, turn on Developer mode, click Load unpacked, and pick the `extension/` folder.
-2. Open a problem on leetcode.com. Click the gear in the Tutor tab and choose a model.
+The last command prints where it put the Chrome build: the `dist/chrome` folder in the repo.
+In PowerShell, git and npm print some normal progress in red (for example `NativeCommandError` or `npm warn exec`); that is not an error.
 
-The first time the Tutor tab looks for the tutor on your computer, Chrome may ask whether leetcode.com may "access other apps and services on this device".
-Choose Allow: the page only talks to the tutor at `localhost:8135`, nothing else on your network.
+1. Open `chrome://extensions`, turn on Developer mode, click Load unpacked, and pick the `dist/chrome` folder.
+   (The repo's own `extension/` folder also loads, but Chrome then shows a Warnings button about `background.scripts`, a key only Firefox uses; it is harmless.)
+2. Open a problem on leetcode.com and click the Tutor tab.
+   Chrome may ask whether leetcode.com may "access other apps and services on this device".
+   Choose Allow: the page only talks to the tutor at `localhost:8135`, nothing else on your network.
+3. Click the gear in the Tutor tab to open Settings, and choose a model.
+   A local model (Ollama, LM Studio) or an API key needs nothing else: fill it in and press Save.
+4. For a Claude or ChatGPT subscription, first sign in to `claude` or `codex` in a terminal.
+   Choose the subscription in Settings, press "Allow starting the helper" in the Helper section, and choose Allow when Chrome asks.
+   The extension restarts once to finish this; Settings and any open LeetCode tabs come back by themselves.
+5. The Helper section now shows the install command, with your extension id filled in:
 
-A local model (Ollama, LM Studio) or an API key needs nothing else.
+   ```sh
+   npx leetcode-capture-helper install --chrome-id <your extension id>
+   ```
 
-For a Claude or ChatGPT subscription, install Node, sign in to `claude` or `codex`, then run:
-
-```sh
-npx leetcode-capture-helper install --chrome-id <your extension id>
-```
+   Run it in a terminal, press Check again, and once the Helper says Running, press Save.

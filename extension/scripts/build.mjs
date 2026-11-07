@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Copies the extension into an output folder for a given browser.
-// Usage: node scripts/build.mjs --browser chrome|firefox --out <dir>
+// Usage: node scripts/build.mjs --browser chrome|firefox [--out <dir>]
+// Without --out the copy goes to dist/<browser> at the repo root. Only Node
+// paths are used (no shell variables), so it runs the same on Windows.
 // The repo manifest lists both background.service_worker (Chrome) and
 // background.scripts (Firefox). Chrome warns about the latter, so the chrome
 // build drops it from the output manifest only. The source is never modified.
@@ -59,7 +61,12 @@ export function build({ browser, out, src = SRC, devOllama = null }) {
   return dest;
 }
 
-function parseArgs(argv) {
+// Where a build goes when no --out is given: dist/<browser> at the repo root.
+export function defaultOut(browser, src = SRC) {
+  return resolve(src, '..', 'dist', browser);
+}
+
+export function parseArgs(argv, src = SRC) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--browser') args.browser = argv[++i];
@@ -67,6 +74,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--dev-ollama') args.devOllama = argv[++i];
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
+  if (!args.out && (args.browser === 'chrome' || args.browser === 'firefox')) args.out = defaultOut(args.browser, src);
   return args;
 }
 
@@ -76,7 +84,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(`built ${dest}`);
   } catch (err) {
     console.error(err.message);
-    console.error('usage: node scripts/build.mjs --browser chrome|firefox --out <dir>');
+    console.error('usage: node scripts/build.mjs --browser chrome|firefox [--out <dir>]');
     process.exit(1);
   }
 }

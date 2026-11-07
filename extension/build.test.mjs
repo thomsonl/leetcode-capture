@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { build } from './scripts/build.mjs';
+import { join, resolve } from 'node:path';
+import { build, defaultOut, parseArgs } from './scripts/build.mjs';
 
 const tmp = mkdtempSync(join(tmpdir(), 'lc-build-'));
 const source = JSON.parse(readFileSync(new URL('./manifest.json', import.meta.url), 'utf8'));
@@ -54,3 +54,16 @@ test('no test, e2e, tooling or doc files leak, and runtime files are present', (
 });
 
 test('cleanup', () => rmSync(tmp, { recursive: true, force: true }));
+
+test('without --out a build goes to dist/<browser> at the repo root, through Node paths only', () => {
+  const src = resolve('/x/repo/extension');
+  assert.equal(defaultOut('chrome', src), resolve('/x/repo/dist/chrome'));
+  assert.deepEqual(parseArgs(['--browser', 'chrome'], src), { browser: 'chrome', out: resolve('/x/repo/dist/chrome') });
+  assert.deepEqual(parseArgs(['--browser', 'firefox', '--out', 'y'], src), { browser: 'firefox', out: 'y' });
+  // An unknown browser still fails in build(), with no default made up.
+  assert.equal(parseArgs(['--browser', 'safari'], src).out, undefined);
+  assert.throws(() => parseArgs(['--zip'], src), /unknown argument/);
+  // npm runs scripts through cmd.exe on Windows, which has no ${VAR:-default}.
+  const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+  for (const [name, script] of Object.entries(pkg.scripts)) assert.doesNotMatch(script, /\$\{|\$[A-Z]/, name);
+});

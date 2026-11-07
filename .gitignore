@@ -3,3 +3,4 @@ node_modules/
 bin/leetcode.local
 vault.config.json
 extension/web-ext-artifacts/
+dist/
