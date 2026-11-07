@@ -321,6 +321,26 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
     async listTargets() {
       return json('/json/list');
     },
+    // Reloads the unpacked extension the way chrome://extensions' reload
+    // button does (same id, every old content script cut off, new pages get
+    // the new one). runtime.reload() cannot stand in: this headless browser
+    // unloads an extension that calls it and never loads it again. Needs the
+    // browser launched with --enable-unsafe-extension-debugging.
+    async reloadExtension() {
+      const { webSocketDebuggerUrl } = await json('/json/version');
+      const ws = new WebSocket(webSocketDebuggerUrl);
+      await new Promise((resolve, reject) => {
+        ws.addEventListener('open', resolve, { once: true });
+        ws.addEventListener('error', reject, { once: true });
+      });
+      const page = new Page(ws);
+      try {
+        const { id } = await page.send('Extensions.loadUnpacked', { path: path.resolve(extensionDir) });
+        if (id !== extensionId) throw new Error(`the extension came back as ${id}, not ${extensionId}`);
+      } finally {
+        page.close();
+      }
+    },
     profile,
     // `keepProfile`: leave the profile folder for the caller (a second
     // browser started on a copy of it, as after a browser restart), who then

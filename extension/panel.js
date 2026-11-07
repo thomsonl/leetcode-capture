@@ -1116,6 +1116,42 @@
     return { body: bare, codeLeftOut: true };
   }
 
+  // ---- the extension's one restart to finish the helper's setup ----------
+  //
+  // Right after the user allows the helper (the optional nativeMessaging
+  // permission), the extension reloads itself once (shared/native-setup.js).
+  // That drops every open panel's port and, in the browser, leaves this
+  // page's scripts cut off for good, which for a real update or a manual
+  // reload means "reload this page". For the setup's own restart the worker
+  // says so on the port first ({ type: 'setup-reload' }), and the panel
+  // reloads the page itself once the extension answers again:
+  //   - a drop within SETUP_NOTICE_MS of that notice is the setup's;
+  //   - the page waits for the extension to be back (its bridge file loads
+  //     again) for at most SETUP_BACK_MS, then asks the user to reload;
+  //   - it holds off while a tutor reply is streaming or a Run or Submit is
+  //     being judged, at most SETUP_BUSY_MAX_MS (the relay replays a reply
+  //     after the reload anyway, and LeetCode keeps the editor's code);
+  //   - an unsent message in the panel goes across the reload
+  //     (sessionStorage, read once and removed);
+  //   - at most one such reload per SETUP_GUARD_MS (sessionStorage), so a
+  //     page never reloads in a loop.
+  const SETUP_NOTICE_MS = 15000;
+  const SETUP_BACK_MS = 30000;
+  const SETUP_BUSY_MAX_MS = 120000;
+  const SETUP_GUARD_MS = 10 * 60000;
+
+  // `droppedAt`: when the port dropped; `back`: the extension answers again;
+  // `busy`: a reply streams or a judge result is coming; `reloadedAt`: when
+  // this tab last reloaded itself for a setup (or null). Returns 'wait' (for
+  // the extension), 'hold' (back, but busy), 'reload' or 'manual' (ask the
+  // user to reload).
+  function setupRestartStep({ now, droppedAt, back, busy, reloadedAt }) {
+    if (typeof reloadedAt === "number" && now - reloadedAt >= 0 && now - reloadedAt < SETUP_GUARD_MS) return "manual";
+    if (!back) return now - droppedAt >= SETUP_BACK_MS ? "manual" : "wait";
+    if (busy && now - droppedAt < SETUP_BUSY_MAX_MS) return "hold";
+    return "reload";
+  }
+
   // Test-only hook (same pattern as content.js): `module` is undefined in a
   // real content script, so this is a no-op in the browser.
   if (typeof module !== "undefined" && module.exports) {
@@ -1139,6 +1175,11 @@
       MAX_MESSAGE_BYTES,
       MAX_SNAPSHOT_CODE_CHARS,
       MAX_SNAPSHOT_DESCRIPTION_CHARS,
+      setupRestartStep,
+      SETUP_NOTICE_MS,
+      SETUP_BACK_MS,
+      SETUP_BUSY_MAX_MS,
+      SETUP_GUARD_MS,
     };
     return;
   }
@@ -1867,6 +1908,10 @@
     send.title = "Send (Enter)";
     send.innerHTML =
       '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12 2-12 2z"/></svg>';
+    if (carriedDraft !== null) {
+      input.value = carriedDraft;
+      carriedDraft = null;
+    }
     box.appendChild(input);
     box.appendChild(send);
     composer.appendChild(box);
@@ -2049,6 +2094,25 @@
   };
 
   function describeConnection() {
+    if (setupRestart) {
+      return {
+        label: "Finishing setup",
+        ok: false,
+        light: "busy",
+        banner:
+          setupRestart.phase === "hold"
+            ? "Finishing setup... This page reloads by itself once the tutor's reply or LeetCode's result is in."
+            : "Finishing setup... The extension restarted once to turn on the helper app. This page reloads by itself in a moment.",
+      };
+    }
+    if (extensionGone && goneForSetup) {
+      return {
+        label: "Offline",
+        ok: false,
+        light: "bad",
+        banner: "The extension restarted once to finish setting up the helper app. Reload this page to use the tutor again.",
+      };
+    }
     if (extensionGone) {
       return {
         label: "Offline",
@@ -2126,6 +2190,7 @@
   const FEED_PROMISE = "the tutor reviews each Submit and answers your questions here. A Run is noted and goes with your next message.";
 
   function emptyStateText(conn, slug) {
+    if (setupRestart) return `Once setup is finished, ${FEED_PROMISE}`;
     if (extensionGone) return `After you reload this page, ${FEED_PROMISE}`;
     if (sourceReachable === false && transport === extensionTransport) {
       return `Once the extension's tutor is back, ${FEED_PROMISE}`;
@@ -2761,7 +2826,9 @@
     p.send.disabled = !canSend || sending || !p.input.value.trim() || p.input.value.length > MAX_MESSAGE_CHARS;
     p.input.placeholder = canSend
       ? "Ask the tutor about this problem"
-      : extensionGone
+      : setupRestart
+        ? "Finishing setup"
+        : extensionGone
         ? "Reload the page to chat"
         : sourceReachable === false && transport === extensionTransport
           ? "Waiting for the tutor"
@@ -3813,6 +3880,23 @@
   // The extension was reloaded, updated or turned off under this page: the
   // browser never reconnects an old page's scripts, so only a reload helps.
   let extensionGone = false;
+  // The setup's own restart (see setupRestartStep): when the worker said the
+  // coming drop is the setup's, the address of a file to tell when the
+  // extension is back, the restart in progress ({ droppedAt, phase }) and
+  // whether a page that could not reload itself is gone for that reason.
+  let setupNoticeAt = null;
+  let setupProbeUrl = null;
+  let setupRestart = null;
+  let setupTimer = null;
+  let goneForSetup = false;
+  let lastCaptureAt = 0;
+  const SETUP_POLL_MS = 500;
+  // A Run or Submit started this recently may still be judged.
+  const SETUP_JUDGE_MS = 20000;
+  const SETUP_GUARD_KEY = "lc-tutor-setup-reload";
+  const SETUP_DRAFT_KEY = "lc-tutor-setup-draft";
+  // An unsent message carried across the setup's page reload, read once.
+  let carriedDraft = null;
   // From the worker: the Native Messaging helper's state when the extension
   // is set to launch it ("not-installed", "error", ...), or null.
   let helperState = null;
@@ -3849,9 +3933,25 @@
       return false;
     }
     bgPort = port;
+    if (!setupProbeUrl) {
+      try {
+        setupProbeUrl = runtime.getURL("layout-bridge.js");
+      } catch {
+        setupProbeUrl = null;
+      }
+    }
     port.onMessage.addListener((message) => {
       if (port !== bgPort || !message || typeof message !== "object") return;
       bgDelay = 500;
+      if (message.type === "setup-reload") {
+        setupNoticeAt = Date.now();
+        return;
+      }
+      // A worker answers: the extension did not go after all.
+      if (setupRestart) {
+        setupRestart = null;
+        scheduleRender();
+      }
       if (message.type === "runtime") {
         providerChosen = message.chosen !== false;
         useTransport(message.runtime === "extension" ? extensionTransport : relayTransport);
@@ -3896,10 +3996,18 @@
         sourceReachable = false;
         noteApplied(streamLost(state));
       }
+      // The worker said this drop is the setup's restart: "Finishing setup"
+      // until the page can reload itself.
+      if (setupNoticeAt !== null && Date.now() - setupNoticeAt < SETUP_NOTICE_MS && !setupRestart) {
+        setupRestart = { droppedAt: Date.now(), phase: "wait" };
+        scheduleRender();
+      }
+      setupNoticeAt = null;
       // The extension was reloaded or removed under this page: there is no
       // worker to come back to. The browser drops the runtime only after
       // this event, so the retry looks again.
       const gone = () => {
+        if (setupRestart) return void finishSetup();
         extensionGone = true;
         scheduleRender();
       };
@@ -3917,6 +4025,96 @@
   }
 
   setInterval(() => postToWorker({ type: "ping" }), PING_MS);
+
+  // ---- finishing the setup's restart (see setupRestartStep) ----------------
+
+  // Whether the extension is loaded again: this page's scripts are cut off
+  // from it for good, but a file it lets leetcode.com load answers again.
+  async function extensionBack() {
+    if (!setupProbeUrl) return false;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 2000) : null;
+    try {
+      const response = await fetch(`${setupProbeUrl}?setup=${Date.now()}`, { cache: "no-store", signal: controller ? controller.signal : undefined });
+      return response.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function setupGuard() {
+    try {
+      const at = Number(sessionStorage.getItem(SETUP_GUARD_KEY));
+      return Number.isFinite(at) && at > 0 ? at : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Reloads the page for the setup, carrying an unsent message. False when
+  // the guard cannot be written (then a reload could repeat, so none).
+  function reloadForSetup() {
+    try {
+      sessionStorage.setItem(SETUP_GUARD_KEY, String(Date.now()));
+      const text = mounted ? mounted.panel.input.value : "";
+      const slug = currentSlug();
+      if (text.trim() && slug) sessionStorage.setItem(SETUP_DRAFT_KEY, JSON.stringify({ slug, text, at: Date.now() }));
+    } catch {
+      return false;
+    }
+    location.reload();
+    return true;
+  }
+
+  function finishSetup() {
+    if (setupTimer !== null) return;
+    const tick = async () => {
+      if (!setupRestart) {
+        setupTimer = null;
+        return;
+      }
+      const back = await extensionBack();
+      if (!setupRestart) {
+        setupTimer = null;
+        return;
+      }
+      const busy = hasOpenTurn(state) || Date.now() - lastCaptureAt < SETUP_JUDGE_MS;
+      let step = setupRestartStep({ now: Date.now(), droppedAt: setupRestart.droppedAt, back, busy, reloadedAt: setupGuard() });
+      if (step === "reload" && !reloadForSetup()) step = "manual";
+      if (step === "reload") return;
+      if (step === "manual") {
+        setupTimer = null;
+        setupRestart = null;
+        extensionGone = true;
+        goneForSetup = true;
+        scheduleRender();
+        return;
+      }
+      if (setupRestart.phase !== step) {
+        setupRestart.phase = step;
+        scheduleRender();
+      }
+      setupTimer = setTimeout(tick, SETUP_POLL_MS);
+    };
+    setupTimer = setTimeout(tick, 0);
+  }
+
+  // The message the setup's reload carried, once, for this problem only.
+  function takeCarriedDraft() {
+    try {
+      const raw = sessionStorage.getItem(SETUP_DRAFT_KEY);
+      if (raw === null) return;
+      sessionStorage.removeItem(SETUP_DRAFT_KEY);
+      const draft = JSON.parse(raw);
+      if (draft && typeof draft.text === "string" && draft.slug === currentSlug() && Date.now() - draft.at < SETUP_GUARD_MS) {
+        carriedDraft = draft.text.slice(0, MAX_MESSAGE_CHARS * 2);
+      }
+    } catch {
+      carriedDraft = null;
+    }
+  }
 
   // What the worker answers, in the relay's HTTP terms.
   const REPLY_STATUS = { "too-long": 413, invalid: 400, helper: 503 };
@@ -3977,6 +4175,7 @@
     pageStyle.textContent = PAGE_CSS;
     document.head.appendChild(pageStyle);
 
+    takeCarriedDraft();
     startBridge();
     ensureMounted();
     // LeetCode builds its layout after document_idle and swaps it on
@@ -3996,7 +4195,10 @@
     // student triggers one while the panel is open, step aside the same way,
     // even in the case the page's own selection doesn't visibly change (the
     // result tab was already the one underneath).
-    document.addEventListener("leetcode-capture:capture-start", () => deactivate());
+    document.addEventListener("leetcode-capture:capture-start", () => {
+      lastCaptureAt = Date.now();
+      deactivate();
+    });
     // A Run or Submit content.js could not read: it was not captured, so the
     // only trace is this note in the current problem's transcript.
     document.addEventListener("leetcode-capture:editor-read-failed", () => {

@@ -67,10 +67,14 @@ export function freshResume(record, now) {
 //   settingsOpen() resolves whether an options page is open
 //   openSettings() opens (or focuses) the options page
 //   timers       { setTimeout }, now() the clock, log(text)
+//   beforeReload() optional, awaited right before reload(): the worker tells
+//                every open Tutor panel that this reload is the setup's, so
+//                the panel reloads its own page once the extension is back
+//                instead of saying it was updated (panel.js, setupRestart)
 // check(granted) is called on every helper refresh with the permission
 // state; it schedules the one reload. reopenAfterReload() runs once at
 // worker start. state() is what the options page is told.
-export function createNativeSetup({ storage, permitted, hasApi, reload, settingsOpen, openSettings, timers, now = () => Date.now(), log = () => {} }) {
+export function createNativeSetup({ storage, permitted, hasApi, reload, settingsOpen, openSettings, timers, now = () => Date.now(), log = () => {}, beforeReload = null }) {
   let current = null;
   let reloadTimer = null;
 
@@ -116,6 +120,13 @@ export function createNativeSetup({ storage, permitted, hasApi, reload, settings
       reloadTimer = null;
       current = 'stuck';
       return false;
+    }
+    if (typeof beforeReload === 'function') {
+      try {
+        await beforeReload();
+      } catch {
+        // the panels then say the extension was reloaded, which is still true
+      }
     }
     log('reloading once so the browser turns on Native Messaging');
     reload();

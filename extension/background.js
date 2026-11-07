@@ -30,6 +30,8 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 const PANEL_PORT = "lc-tutor-panel";
 
 const NATIVE = { permissions: ["nativeMessaging"] };
+// How long the setup reload waits after telling the panels about it.
+const SETUP_NOTICE_FLUSH_MS = 300;
 
 const launcher = createHelperLauncher({
   connectNative: (name) => api.runtime.connectNative(name),
@@ -104,6 +106,20 @@ const nativeSetup = createNativeSetup({
   openSettings: () => openOurPage("settings"),
   timers: { setTimeout: (fn, ms) => setTimeout(fn, ms) },
   log: (text) => console.warn(`[leetcode-capture] ${text}`),
+  // Each open Tutor panel hears that the coming drop is this reload, so it
+  // says "Finishing setup" and reloads its page once the extension is back
+  // (panel.js, setupRestart). A short wait lets the messages leave before
+  // the reload ends this worker.
+  beforeReload: async () => {
+    for (const port of panelPorts) {
+      try {
+        port.postMessage({ type: "setup-reload" });
+      } catch {
+        // gone
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, SETUP_NOTICE_FLUSH_MS));
+  },
 });
 
 // The options page asks for the helper's state; panels hear it so an offline

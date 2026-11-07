@@ -376,7 +376,7 @@ const mockedTimers = new WeakSet();
 function nativeWorld(t, { granted = true, api = false, store = {}, settingsOpen = false, reload = true } = {}) {
   if (!mockedTimers.has(t)) t.mock.timers.enable({ apis: ['setTimeout'] });
   mockedTimers.add(t);
-  const world = { granted, api, store: { ...store }, reloads: 0, opened: 0, now: 5_000_000 };
+  const world = { granted, api, store: { ...store }, reloads: 0, opened: 0, now: 5_000_000, order: [] };
   world.setup = createNativeSetup({
     storage: {
       get: async (keys) => Object.fromEntries(keys.filter((k) => k in world.store).map((k) => [k, structuredClone(world.store[k])])),
@@ -385,7 +385,17 @@ function nativeWorld(t, { granted = true, api = false, store = {}, settingsOpen 
     },
     permitted: async () => world.granted,
     hasApi: () => world.api,
-    reload: reload ? () => (world.reloads += 1) : null,
+    reload: reload
+      ? () => {
+          world.reloads += 1;
+          world.order.push('reload');
+        }
+      : null,
+    beforeReload: async () => {
+      // The records are written before the panels hear of the reload.
+      world.order.push(`notice${NATIVE_RELOAD_KEY in world.store ? ' after the guard' : ''}`);
+      if (world.noticeThrows) throw new Error('port gone');
+    },
     settingsOpen: async () => settingsOpen,
     openSettings: async () => (world.opened += 1),
     timers: { setTimeout },
@@ -409,6 +419,29 @@ test('a stale worker with the permission granted reloads once, after a short del
   assert.equal(world.reloads, 1);
   assert.deepEqual(world.store[NATIVE_RELOAD_KEY], { at: world.now });
   assert.deepEqual(world.store[SETTINGS_RESUME_KEY], { ...resume, reopen: true });
+  assert.deepEqual(world.order, ['notice after the guard', 'reload'], 'the panels hear of it first');
+});
+
+test('the setup reload still happens when telling the panels fails, and no notice goes out without a reload', async (t) => {
+  const world = nativeWorld(t);
+  world.noticeThrows = true;
+  await world.setup.check(true);
+  t.mock.timers.tick(RELOAD_DELAY_MS);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.equal(world.reloads, 1);
+
+  const stuck = nativeWorld(t, { store: { [NATIVE_RELOAD_KEY]: { at: 1 } } });
+  assert.equal(await stuck.setup.check(true), 'stuck');
+  t.mock.timers.tick(RELOAD_DELAY_MS * 10);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.deepEqual(stuck.order, []);
+
+  const revoked = nativeWorld(t);
+  await revoked.setup.check(true);
+  revoked.granted = false;
+  t.mock.timers.tick(RELOAD_DELAY_MS);
+  for (let i = 0; i < 10; i += 1) await settle();
+  assert.deepEqual(revoked.order, []);
 });
 
 test('after the reload the options page opens again once, and the API still missing means stuck, never a second reload', async (t) => {

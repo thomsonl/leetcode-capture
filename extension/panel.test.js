@@ -678,3 +678,23 @@ test("a reply remembers the message it answers, so a failed one can offer to sen
   applyEvent(state, { type: "turn-start", problemSlug: "two-sum", turnId: "t2", seq: 5 });
   assert.equal(state.byProblem.get("two-sum").at(-1).question, null);
 });
+
+test("setupRestartStep: waits for the extension, holds while busy, reloads once, else asks the user", () => {
+  const { setupRestartStep, SETUP_BACK_MS, SETUP_BUSY_MAX_MS, SETUP_GUARD_MS } = require("./panel.js");
+  const droppedAt = 1_000_000;
+  const at = (ms, more = {}) => setupRestartStep({ now: droppedAt + ms, droppedAt, back: false, busy: false, reloadedAt: null, ...more });
+  assert.equal(at(0), "wait");
+  assert.equal(at(SETUP_BACK_MS - 1), "wait");
+  // Never back in time: the user reloads by hand, nothing reloads by itself.
+  assert.equal(at(SETUP_BACK_MS), "manual");
+  assert.equal(at(500, { back: true }), "reload");
+  // A reply streaming or a Run being judged: wait for it, but not forever.
+  assert.equal(at(500, { back: true, busy: true }), "hold");
+  assert.equal(at(SETUP_BUSY_MAX_MS - 1, { back: true, busy: true }), "hold");
+  assert.equal(at(SETUP_BUSY_MAX_MS, { back: true, busy: true }), "reload");
+  // This tab already reloaded itself for a setup: never a second time.
+  assert.equal(at(500, { back: true, reloadedAt: droppedAt - 1000 }), "manual");
+  assert.equal(at(500, { back: true, reloadedAt: droppedAt - SETUP_GUARD_MS - 1 }), "reload");
+  // A guard from the future (clock change) does not count as recent.
+  assert.equal(at(500, { back: true, reloadedAt: droppedAt + 60_000 }), "reload");
+});
