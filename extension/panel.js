@@ -2146,8 +2146,8 @@
         ok: false,
         light: "bad",
         banner:
-          "Can't reach the relay server on localhost:8135. Start the companion with `leetcode`, or run `node companion.js` in the project's companion folder." +
-          (HELPER_HINTS[helperState] ? ` ${HELPER_HINTS[helperState]}` : ""),
+          "Can't reach the tutor on this computer." +
+          ` ${HELPER_HINTS[helperState] || "Open Settings (the gear above) and set up the helper app."}`,
       };
     }
     if (state.companionOnline === false) {
@@ -2155,7 +2155,7 @@
         label: "Tutor offline",
         ok: false,
         light: "neutral",
-        banner: "The relay is running but the tutor isn't. Start the companion with `leetcode` to chat and get your attempts reviewed here.",
+        banner: "The tutor isn't running. Open Settings (the gear above) and press Check again in the Helper section to start it.",
       };
     }
     if (state.companionOnline && state.config && state.config.attention === "signin") {
@@ -2838,7 +2838,7 @@
           ? "Waiting for the tutor"
           : sourceReachable === false && providerChosen === false
         ? "Choose a model to chat"
-        : "Start the companion to chat";
+        : "Set up the helper in Settings to chat";
   }
 
   function render() {
@@ -3905,7 +3905,7 @@
   // is set to launch it ("not-installed", "error", ...), or null.
   let helperState = null;
   const HELPER_HINTS = {
-    "not-installed": "Or set up the helper app in Settings (the gear above) so the tutor starts on its own.",
+    "not-installed": "Set up the helper app in Settings (the gear above) so the tutor starts on its own.",
     error: "The helper app could not start the tutor; Settings (the gear above) shows why.",
   };
   const pendingReplies = new Map(); // id -> { resolve, reject, timer }

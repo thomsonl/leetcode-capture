@@ -356,7 +356,7 @@ await scenario('"Saved" shows only right after a Save: any edit clears it, a rel
 });
 
 for (const [status, pattern, kind] of [
-  [503, /relay is running but the tutor isn't/, 'tutor not running'],
+  [503, /helper is running but the tutor behind it isn't/, 'tutor not running'],
   [404, /older version without settings support/, 'old relay'],
 ]) {
   await scenario(`offline: ${kind}`, companion({ httpStatus: status }), async (page) => {
@@ -378,9 +378,9 @@ await scenario('no helper at all: a subscription points to the Helper section, t
   await page.waitFor(`!document.getElementById('offline').hidden`, { what: 'the helper note' });
   const note = await text(page, '#offline');
   assert.match(note, /^Claude subscription runs through the helper app, which isn't set up or running yet\. Set it up in the Helper section below\./);
-  // The terminal hint is a separate, secondary line, and names only the launcher.
-  assert.equal(await text(page, '#offline .aside'), 'Running the tutor from a terminal instead? Start it with leetcode.');
-  assert.doesNotMatch(note, /localhost:8135|companion\.js/);
+  // No terminal command to start the tutor is ever mentioned.
+  assert.equal(await page.eval(`document.querySelectorAll('#offline .aside, #offline code').length`), 0);
+  assert.doesNotMatch(note, /localhost:8135|companion\.js|leetcode`|terminal/);
   assert.equal(await page.eval(`document.getElementById('save').disabled`), true);
   assert.equal(await page.eval(`document.getElementById('form').hasAttribute('data-disabled')`), true);
   assert.equal(await page.eval(`document.getElementById('wait-note').hidden`), false);

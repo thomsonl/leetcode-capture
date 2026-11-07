@@ -660,23 +660,19 @@
     }
   }
 
-  // Each cause gets its own instruction; `code` parts render as inline code,
-  // and an `aside` is a short second line for people who run the tutor from
-  // a terminal. "{provider}" is the chosen provider's name.
+  // Each cause gets its own instruction, all pointing at the Helper section
+  // (no terminal command to start the tutor is ever mentioned: setting up the
+  // helper is the one way). `code` parts render as inline code.
+  // "{provider}" is the chosen provider's name.
   const OFFLINE_COPY = {
     "relay-down": [
       "{provider} runs through the helper app, which isn't set up or running yet. Set it up in the Helper section below. This page notices it by itself.",
-      { aside: ["Running the tutor from a terminal instead? Start it with ", { code: "leetcode" }, "."] },
     ],
     "companion-down": [
-      "The relay is running but the tutor isn't. Start it with ",
-      { code: "leetcode" },
-      ". This page reconnects on its own.",
+      "The helper is running but the tutor behind it isn't. Press Check again in the Helper section below. This page reconnects on its own.",
     ],
     "relay-old": [
-      "The relay server is from an older version without settings support. Quit the tutor and start it again with ",
-      { code: "leetcode" },
-      ".",
+      "The tutor running on this computer is from an older version without settings support. Close it, then press Check again in the Helper section below.",
     ],
   };
 
