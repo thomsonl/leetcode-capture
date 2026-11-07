@@ -329,9 +329,19 @@ export async function launch({ extensionDir = null, port = 9300 + Math.floor(Mat
       for (const p of pages) p.close();
       process.removeListener('exit', reap);
       const exited = new Promise((resolve) => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once('exit', resolve)));
-      child.kill('SIGKILL');
-      await exited;
-      if (!keepProfile) fs.rmSync(profile, { recursive: true, force: true });
+      if (keepProfile) {
+        // The profile is reused, so the browser must flush its storage (a
+        // SIGKILL can drop the newest extension storage writes); kill hard
+        // only if it does not leave in time.
+        child.kill('SIGTERM');
+        const hardKill = setTimeout(() => child.kill('SIGKILL'), 10000);
+        await exited;
+        clearTimeout(hardKill);
+      } else {
+        child.kill('SIGKILL');
+        await exited;
+        fs.rmSync(profile, { recursive: true, force: true });
+      }
     },
   };
 }
