@@ -145,6 +145,7 @@ test('writeVaultAutoSummary preserves other problems already in a topic index wh
     problemTitle: '198. House Robber',
     problemTags: ['Dynamic Programming'],
     attemptSeq: 2,
+    triggerSeq: 1,
   };
   const vaultContext = prepareVaultContext({ capture, vaultPath });
   assert.equal(vaultContext.topicNotePaths['Dynamic Programming'], topicPath);
@@ -165,6 +166,8 @@ test('writeVaultAutoSummary preserves other problems already in a topic index wh
   assert.match(topicContent, /7\/10/);
   assert.match(topicContent, /\[\[70\. Climbing Stairs\]\] - ⭐⭐⭐⭐⭐ \(5\/5\)/);
   assert.match(topicContent, /\[\[198\. House Robber\]\] - ⭐⭐⭐☆☆ \(3\/5\)/);
+  // The first Submit (a Run came before it) is submit attempt 1.
+  assert.match(fs.readFileSync(vaultContext.problemNotePath, 'utf8'), /after submit attempt #1\./);
 });
 
 test('writeVaultAutoSummary is idempotent for a repeated identical submission', () => {

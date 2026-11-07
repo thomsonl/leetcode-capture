@@ -61,8 +61,10 @@ export function sanitizeCapture(capture) {
   if (Array.isArray(out.problemTags)) {
     out.problemTags = out.problemTags.filter((tag) => typeof tag === 'string').map(oneLine).filter(Boolean);
   }
-  // The relay assigns attemptSeq, but the log file is just JSON lines: never
-  // print a non-integer.
-  if (out.attemptSeq !== undefined && !Number.isInteger(out.attemptSeq)) out.attemptSeq = null;
+  // The relay assigns attemptSeq and triggerSeq, but the log file is just
+  // JSON lines: never print a non-integer.
+  for (const field of ['attemptSeq', 'triggerSeq']) {
+    if (out[field] !== undefined && !Number.isInteger(out[field])) out[field] = null;
+  }
   return out;
 }

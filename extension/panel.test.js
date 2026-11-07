@@ -698,3 +698,9 @@ test("setupRestartStep: waits for the extension, holds while busy, reloads once,
   // A guard from the future (clock change) does not count as recent.
   assert.equal(at(500, { back: true, reloadedAt: droppedAt + 60_000 }), "reload");
 });
+
+test("a Submit chip keeps the event's per-trigger number next to the overall one", () => {
+  const state = createState();
+  applyEvent(state, { type: "capture", problemSlug: "a", trigger: "submit", attemptSeq: 2, triggerSeq: 1, seq: 1 });
+  assert.deepEqual(itemsFor(state, "a").map((i) => [i.attemptSeq, i.triggerSeq]), [[2, 1]]);
+});

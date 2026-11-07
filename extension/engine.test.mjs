@@ -200,9 +200,9 @@ test('the code rules: Runs are never sent, a Submit only when changed, messages 
   assert.match(backend.calls[0].text, /This was a Submit/);
   assert.equal(backend.calls[0].options.problemContext.description, 'About two-sum.');
   assert.deepEqual(
-    chips().map((e) => [e.trigger, e.attemptSeq]),
-    [['submit', 2]],
-    'a Submit sent to the tutor keeps its chip, numbered after the Run'
+    chips().map((e) => [e.trigger, e.attemptSeq, e.triggerSeq]),
+    [['submit', 2, 1]],
+    'a Submit sent to the tutor keeps its chip: second capture, first Submit'
   );
   const events = service.hub.events();
   assert.ok(

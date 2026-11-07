@@ -195,9 +195,10 @@ function sanitizeEvent(raw) {
     if (!isShortString(raw.problemTitle, 300)) return null;
     event.problemTitle = raw.problemTitle;
   }
-  if (raw.attemptSeq !== undefined && raw.attemptSeq !== null) {
-    if (!Number.isInteger(raw.attemptSeq) || raw.attemptSeq < 0) return null;
-    event.attemptSeq = raw.attemptSeq;
+  for (const field of ["attemptSeq", "triggerSeq"]) {
+    if (raw[field] === undefined || raw[field] === null) continue;
+    if (!Number.isInteger(raw[field]) || raw[field] < 0) return null;
+    event[field] = raw[field];
   }
   // The notice of a reset on a problem switch (the panel treats it as the
   // start of a fresh session).

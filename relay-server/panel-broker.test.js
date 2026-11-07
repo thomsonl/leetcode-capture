@@ -638,7 +638,7 @@ test("drop-problem forgets one problem's buffered events, and only the companion
     { type: "user", text: "old question", problemSlug: "two-sum" },
     { type: "turn-start", turnId: "t-old", problemSlug: "two-sum" },
     { type: "chunk", turnId: "t-old", text: "half a reply" },
-    { type: "capture", trigger: "run", problemSlug: "house-robber", attemptSeq: 1, note: "Kept for your next message" },
+    { type: "capture", trigger: "run", problemSlug: "house-robber", attemptSeq: 1, triggerSeq: 1, note: "Kept for your next message" },
   ]);
   const buffered = async () => {
     const panel = openSse({ port, route: "/panel/events?after=0", headers: { origin: LEETCODE } });
@@ -659,6 +659,7 @@ test("drop-problem forgets one problem's buffered events, and only the companion
   // The other problem's events stay (a chip note from an older companion is
   // not passed on), and the dropped reply is no longer listed as open.
   assert.equal(after.find((e) => e.type === "capture").attemptSeq, 1);
+  assert.equal(after.find((e) => e.type === "capture").triggerSeq, 1);
   assert.equal(after.find((e) => e.type === "capture").note, undefined);
   assert.deepEqual(after.find((e) => e.type === "status").openTurns, []);
   inbox.close();

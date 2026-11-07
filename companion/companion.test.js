@@ -84,7 +84,7 @@ function startStubBackend(replyFor) {
   });
 }
 
-function makeCapture({ trigger, attemptSeq }) {
+function makeCapture({ trigger, attemptSeq, triggerSeq }) {
   return {
     receivedAt: new Date().toISOString(),
     problemSlug: 'two-sum',
@@ -97,6 +97,7 @@ function makeCapture({ trigger, attemptSeq }) {
     url: 'https://leetcode.com/problems/two-sum/',
     code: 'def twoSum(nums, target):\n    pass',
     attemptSeq,
+    triggerSeq,
   };
 }
 
@@ -261,6 +262,22 @@ test('a normal reply with populated `content` still prints as before', async () 
   assert.match(out, /Got your submission - nice work\./);
 });
 
+// The terminal numbers a Submit by the Submits so far, like the panel's
+// chip, so the first Submit after a Run is attempt 1; a relay from before
+// triggerSeq sends only attemptSeq, which is shown as before.
+test('a Submit is labeled by its own count, not the Runs before it', async () => {
+  const out = await runCompanion({
+    stubReplyFor: () => ({ role: 'assistant', content: 'Looks right.' }),
+    capture: makeCapture({ trigger: 'submit', attemptSeq: 2, triggerSeq: 1 }),
+  });
+  assert.match(out, /\[capture\] Submit - Two Sum \(attempt 1\)/);
+  const old = await runCompanion({
+    stubReplyFor: () => ({ role: 'assistant', content: 'Looks right.' }),
+    capture: makeCapture({ trigger: 'submit', attemptSeq: 2 }),
+  });
+  assert.match(old, /\[capture\] Submit - Two Sum \(attempt 2\)/);
+});
+
 // A Run is never sent to the model (see code-ledger.js): it is recorded and
 // noted in the terminal, and the stub must never see a request for it.
 test('a Run is recorded but never reaches the model', async () => {
@@ -270,10 +287,10 @@ test('a Run is recorded but never reaches the model', async () => {
       calls += 1;
       return { role: 'assistant', content: 'should never be printed' };
     },
-    capture: makeCapture({ trigger: 'run', attemptSeq: 1 }),
+    capture: makeCapture({ trigger: 'run', attemptSeq: 1, triggerSeq: 1 }),
   });
 
-  assert.match(out, /recorded your Run for Two Sum \(attempt 1\) - not sent to the tutor/);
+  assert.match(out, /recorded your Run for Two Sum \(run 1\) - not sent to the tutor/);
   assert.equal(calls, 0);
   assert.ok(!out.includes('should never be printed'));
   assert.ok(!out.includes('[capture] Run'), 'no tutor turn label for a Run');

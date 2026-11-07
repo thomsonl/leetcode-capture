@@ -23,8 +23,13 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB, generous for a single file's cod
 fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
 
 // Per-problem attempt sequence numbers, rebuilt from the existing log on
-// startup so restarts don't reset the counter.
+// startup so restarts don't reset the counter. `attemptSeq` counts every
+// capture (Runs and Submits); `triggerSeq` counts each trigger on its own
+// (the Nth Run, the Nth Submit), which is what the terminal and the panel
+// show, since the panel shows no Runs and "Submit, attempt 2" after one
+// Submit read as wrong.
 const attemptSeq = new Map();
+const triggerSeq = new Map();
 
 function loadExistingSequences() {
   if (!fs.existsSync(LOG_PATH)) return;
@@ -37,6 +42,10 @@ function loadExistingSequences() {
       if (entry.attemptSeq > current) {
         attemptSeq.set(key, entry.attemptSeq);
       }
+      const triggerKey = `${key}\n${entry.trigger}`;
+      if (Number.isInteger(entry.triggerSeq) && entry.triggerSeq > (triggerSeq.get(triggerKey) || 0)) {
+        triggerSeq.set(triggerKey, entry.triggerSeq);
+      }
     } catch {
       // Skip malformed lines rather than fail startup.
     }
@@ -47,6 +56,13 @@ function nextAttemptSeq(problemSlug) {
   const key = problemSlug || "unknown";
   const next = (attemptSeq.get(key) || 0) + 1;
   attemptSeq.set(key, next);
+  return next;
+}
+
+function nextTriggerSeq(problemSlug, trigger) {
+  const key = `${problemSlug || "unknown"}\n${trigger}`;
+  const next = (triggerSeq.get(key) || 0) + 1;
+  triggerSeq.set(key, next);
   return next;
 }
 
@@ -75,6 +91,7 @@ function appendCapture(body) {
     url: body.url || null,
     code: body.code,
     attemptSeq: nextAttemptSeq(body.problemSlug),
+    triggerSeq: nextTriggerSeq(body.problemSlug, body.trigger),
   };
   fs.appendFileSync(LOG_PATH, JSON.stringify(entry) + "\n");
   return entry;
@@ -208,7 +225,7 @@ const server = http.createServer((req, res) => {
 
     const entry = appendCapture(body);
     res.writeHead(200, { "Content-Type": "application/json", ...CORS_HEADERS });
-    res.end(JSON.stringify({ ok: true, attemptSeq: entry.attemptSeq }));
+    res.end(JSON.stringify({ ok: true, attemptSeq: entry.attemptSeq, triggerSeq: entry.triggerSeq }));
   });
 
   req.on("error", () => {

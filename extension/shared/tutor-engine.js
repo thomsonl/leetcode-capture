@@ -90,8 +90,10 @@ export function createTutorEngine({ hub, log = () => {} }) {
   // Rewords a backend error into what to do about it (see
   // extension-settings.js's explainError), per configuration.
   let explain = (message) => message;
-  // Attempt numbers per problem, like the relay's attemptSeq, in memory only.
+  // Attempt numbers per problem, like the relay's attemptSeq, in memory
+  // only, and per problem and trigger (the relay's triggerSeq).
   const attempts = new Map();
+  const triggerCounts = new Map();
   let turnCounter = 0;
   // Hint count and what the student named or saw, for the post-check guard;
   // reset with the conversation.
@@ -150,6 +152,8 @@ export function createTutorEngine({ hub, log = () => {} }) {
     if (result.dropped && result.dropped.slug) {
       hub.dropProblem(result.dropped.slug);
       attempts.delete(result.dropped.slug);
+      triggerCounts.delete(`${result.dropped.slug}\nrun`);
+      triggerCounts.delete(`${result.dropped.slug}\nsubmit`);
     }
     // `switch` tells the panels this notice opens a fresh session (see
     // panel.js's applyEventInEpoch), unlike any other notice.
@@ -279,6 +283,8 @@ export function createTutorEngine({ hub, log = () => {} }) {
       // the old problem's attempt numbers; numbering this one first is fine.
       const attemptSeq = slug ? (attempts.get(slug) || 0) + 1 : null;
       if (slug) attempts.set(slug, attemptSeq);
+      const triggerSeq = slug ? (triggerCounts.get(`${slug}\n${capture.trigger}`) || 0) + 1 : null;
+      if (slug) triggerCounts.set(`${slug}\n${capture.trigger}`, triggerSeq);
       queueTurn(async () => {
         if (problemId) {
           activateProblem(problemId, slug);
@@ -294,7 +300,7 @@ export function createTutorEngine({ hub, log = () => {} }) {
         if (plan.kind === 'unchanged' || plan.kind === 'none') return;
         // Only a capture the tutor is about to see shows its chip in the
         // panel: a Run or an unchanged Submit shows nothing at all.
-        publish({ type: 'capture', problemSlug: slug, problemTitle: capture.problemTitle || null, trigger: capture.trigger, attemptSeq });
+        publish({ type: 'capture', problemSlug: slug, problemTitle: capture.problemTitle || null, trigger: capture.trigger, attemptSeq, triggerSeq });
         const releaseBusy = holdBusy();
         try {
           const turn = prepareSubmitTurn(ledger, {

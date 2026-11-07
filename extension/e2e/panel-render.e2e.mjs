@@ -725,13 +725,14 @@ try {
     await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'run', attemptSeq: 7, note: 'Kept for your next message' })`);
     await settle();
     check((await page.eval(`window.__qa('.chip').length`)) === before, 'a Run (from an older companion) rendered a chip');
-    await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'submit', attemptSeq: 8, note: 'Kept for your next message' })`);
+    await page.eval(`window.__ev({ type: 'capture', problemSlug: 'two-sum', problemTitle: 'Two Sum', trigger: 'submit', attemptSeq: 8, triggerSeq: 3, note: 'Kept for your next message' })`);
     await settle();
     const m = await page.eval(`(() => {
       const chip = window.__qa('.chip').pop();
       return { text: chip.textContent, notes: chip.querySelectorAll('.chip-note').length, height: chip.getBoundingClientRect().height };
     })()`);
-    check(/Submit/.test(m.text) && /Attempt 8/.test(m.text), `chip text: ${m.text}`);
+    // Numbered by the Submits so far, not every Run and Submit (attemptSeq).
+    check(/Submit/.test(m.text) && /Attempt 3$/.test(m.text), `chip text: ${m.text}`);
     check(m.notes === 0 && !/Kept for your next message/.test(m.text), JSON.stringify(m));
     check(m.height === 24, `the chip stays one line: ${m.height}`);
     await page.eval(`window.__q('.scroll').scrollTop = 1e6`);

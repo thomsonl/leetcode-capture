@@ -302,6 +302,7 @@
           kind: "capture",
           trigger: event.trigger,
           attemptSeq: event.attemptSeq,
+          triggerSeq: event.triggerSeq,
           title: event.problemTitle || null,
         });
         return slug;
@@ -2704,7 +2705,10 @@
     if (item.kind === "capture") {
       const chip = el("div", "chip");
       chip.appendChild(el("b", "", item.trigger === "submit" ? "Submit" : "Run"));
-      if (item.attemptSeq) chip.appendChild(document.createTextNode(`Attempt ${item.attemptSeq}`));
+      // The Nth Submit on the problem (Runs are not shown, so a count that
+      // took them in read as wrong); an older relay sends only attemptSeq.
+      const seq = item.triggerSeq || item.attemptSeq;
+      if (seq) chip.appendChild(document.createTextNode(`Attempt ${seq}`));
       return chip;
     }
     if (item.kind === "notice") return el("div", "notice", item.text);

@@ -649,6 +649,14 @@ function newPanelTurnId() {
 // captureProblemId, captureProblemContext) lives in
 // extension/shared/tutor-prompt.js, shared with the extension's own engine.
 
+// How the terminal numbers a capture, like the panel's chip: a Submit as
+// "attempt N" (the Nth Submit on the problem), a Run as "run N". A relay
+// from before triggerSeq sends only attemptSeq, which counts both.
+function attemptLabel(capture) {
+  if (Number.isInteger(capture.triggerSeq)) return `${capture.trigger === 'run' ? 'run' : 'attempt'} ${capture.triggerSeq}`;
+  return `attempt ${capture.attemptSeq ?? '?'}`;
+}
+
 // --- automatic context reset on problem switch (AUTO_CLEAR_CONTEXT) --------
 //
 // The active problem is whichever one the student last sent a message, Run
@@ -1593,9 +1601,7 @@ async function handleCaptureLine(line) {
     printAboveInput(dim(`companion: warning: skipping malformed capture JSON: ${oneLine(err.message)}`));
     return;
   }
-  const label = dim(
-    `[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (attempt ${capture.attemptSeq ?? '?'})`
-  );
+  const label = dim(`[capture] ${triggerLabel(capture.trigger)} - ${capture.problemTitle || capture.problemSlug || 'unknown'} (${attemptLabel(capture)})`);
   const problemId = captureProblemId(capture);
   const sends = sendsToTutor(capture.trigger);
   if (capture.problemSlug) panelProblemSlug = capture.problemSlug;
@@ -1621,7 +1627,7 @@ async function handleCaptureLine(line) {
       printAboveInput(
         consumeTurnBoundary() +
           dim(
-            `companion: recorded your ${triggerLabel(capture.trigger)} for ${shownTitle} (attempt ${capture.attemptSeq ?? '?'}) - not sent to the tutor; it sees the changes with your next message`
+            `companion: recorded your ${triggerLabel(capture.trigger)} for ${shownTitle} (${attemptLabel(capture)}) - not sent to the tutor; it sees the changes with your next message`
           )
       );
       turnBoundaryPending = true;
@@ -1633,7 +1639,7 @@ async function handleCaptureLine(line) {
       const why = plan.kind === 'unchanged' ? 'is unchanged since the tutor last saw it' : 'carried no code';
       printAboveInput(
         consumeTurnBoundary() +
-          dim(`companion: your Submit for ${shownTitle} (attempt ${capture.attemptSeq ?? '?'}) ${why} - not sent`)
+          dim(`companion: your Submit for ${shownTitle} (${attemptLabel(capture)}) ${why} - not sent`)
       );
       turnBoundaryPending = true;
       return;
@@ -1647,6 +1653,7 @@ async function handleCaptureLine(line) {
       problemTitle: capture.problemTitle || null,
       trigger: capture.trigger,
       attemptSeq: Number.isInteger(capture.attemptSeq) ? capture.attemptSeq : null,
+      triggerSeq: Number.isInteger(capture.triggerSeq) ? capture.triggerSeq : null,
     });
 
     // From here on the tutor is working on this Submit (the panel's

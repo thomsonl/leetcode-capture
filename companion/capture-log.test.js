@@ -146,7 +146,7 @@ function startCompanion(t, { port, scratch, capturesPath, env = {} }) {
     }
   });
   const runs = (title, attempt) =>
-    out.split(`recorded your Run for ${title} (attempt ${attempt})`).length - 1;
+    out.split(`recorded your Run for ${title} (run ${attempt})`).length - 1;
   return { out: () => out, runs };
 }
 
@@ -191,8 +191,8 @@ test('a problem switch drops the handled log; the switching capture and ones lan
   await pause(500);
 
   assert.equal(proxy.trims, 1);
-  for (const n of [1, 2]) assert.equal(c.runs('Old', n), 1, `Old attempt ${n}`);
-  for (const n of [1, 2, 3, 4]) assert.equal(c.runs('New', n), 1, `New attempt ${n}`);
+  for (const n of [1, 2]) assert.equal(c.runs('Old', n), 1, `Old run ${n}`);
+  for (const n of [1, 2, 3, 4]) assert.equal(c.runs('New', n), 1, `New run ${n}`);
   assert.deepEqual(logSlugs(capturesPath), ['new-problem#2', 'new-problem#3', 'new-problem#4'], 'the handled prefix is gone, nothing else');
   assert.equal(stateOffset(dir), fs.statSync(capturesPath).size, 'the saved offset matches the trimmed log');
 });

@@ -51,6 +51,7 @@ test('sanitizeCapture cleans every displayed field and leaves the code alone', (
     problemDescription: 'Line 1\nLine\x1b[2J 2',
     problemTags: ['Array\x07', 5, ''],
     attemptSeq: '3; rm -rf',
+    triggerSeq: 1.5,
     code,
   });
   assert.deepEqual(clean, {
@@ -61,9 +62,11 @@ test('sanitizeCapture cleans every displayed field and leaves the code alone', (
     problemDescription: 'Line 1\nLine[2J 2',
     problemTags: ['Array'],
     attemptSeq: null,
+    triggerSeq: null,
     code,
   });
   assert.equal(sanitizeCapture({ attemptSeq: 2 }).attemptSeq, 2);
+  assert.equal(sanitizeCapture({ triggerSeq: 1 }).triggerSeq, 1);
   // A title made only of control characters is as good as missing.
   assert.equal(sanitizeCapture({ problemTitle: '\x1b\x07' }).problemTitle, null);
   assert.deepEqual(sanitizeCapture(null), {});

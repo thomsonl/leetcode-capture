@@ -210,7 +210,8 @@ try {
     const submit = model.requests[model.requests.length - 1].body.messages.at(-1).content;
     check(/\[LeetCode capture\] Submit/.test(submit), `submit header: ${submit}`);
     check(/seen = \{\}/.test(submit) && !/def twoSum/.test(submit.split('\n').filter((l) => !l.startsWith(' ')).join('\n')) , `a diff, not the whole code: ${submit}`);
-    check(JSON.stringify(await chips()) === JSON.stringify(['SubmitAttempt 2']), `the Submit's chip: ${JSON.stringify(await chips())}`);
+    // The first Submit is attempt 1, though a Run came before it.
+    check(JSON.stringify(await chips()) === JSON.stringify(['SubmitAttempt 1']), `the Submit's chip: ${JSON.stringify(await chips())}`);
     await page.screenshot(path.join(shots, 'submit-dark.png'), { width: 1100, height: 760 });
     // The same code submitted again is not sent.
     const count = model.requests.length;

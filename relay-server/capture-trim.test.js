@@ -31,9 +31,11 @@ function request(port, { method, route, body, headers = {} }) {
   });
 }
 
-async function startRelay(t, port) {
+// `seed`: log entries already there when the relay starts.
+async function startRelay(t, port, { seed = [] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "leetcode-capture-trim-"));
   const logPath = path.join(dir, "captures.jsonl");
+  if (seed.length) fs.writeFileSync(logPath, seed.map((e) => JSON.stringify(e) + "\n").join(""));
   const child = spawn(process.execPath, [path.join(__dirname, "server.js")], {
     env: { ...process.env, CAPTURE_PORT: String(port), CAPTURE_LOG_PATH: logPath },
     stdio: ["ignore", "pipe", "pipe"],
@@ -47,11 +49,11 @@ async function startRelay(t, port) {
     child.stdout.on("data", (c) => c.toString().includes("listening") && resolve());
     child.once("exit", () => reject(new Error("relay exited")));
   });
-  const capture = (slug, marker) =>
+  const capture = (slug, marker, trigger = "run") =>
     request(port, {
       method: "POST",
       route: "/capture",
-      body: { problemSlug: slug, language: "Python3", code: marker, trigger: "run", timestamp: new Date().toISOString() },
+      body: { problemSlug: slug, language: "Python3", code: marker, trigger, timestamp: new Date().toISOString() },
     });
   const trim = (body, headers = COMPANION) => request(port, { method: "POST", route: "/panel/trim-captures", body, headers });
   const lines = () => fs.readFileSync(logPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -99,4 +101,29 @@ test("captures arriving while the log is trimmed are each kept exactly once", as
   const codes = r.lines().map((e) => e.code);
   assert.ok(!codes.some((c) => c.startsWith("old-")), "the old prefix is gone");
   assert.deepEqual([...codes].sort(), Array.from({ length: 60 }, (_, i) => `new-${i}`).sort(), "every new capture once");
+});
+
+test("Runs and Submits are also numbered on their own per problem, and the numbers survive a restart", async (t) => {
+  // The panel shows only Submits, so its chip and the terminal use
+  // triggerSeq: the first Submit after a Run is attempt 1, not 2.
+  const seed = [
+    { problemSlug: "two-sum", trigger: "run", code: "a", attemptSeq: 1, triggerSeq: 1 },
+    { problemSlug: "two-sum", trigger: "submit", code: "b", attemptSeq: 2, triggerSeq: 1 },
+    // A line from a relay before triggerSeq: it still counts in attemptSeq.
+    { problemSlug: "two-sum", trigger: "run", code: "c", attemptSeq: 3 },
+  ];
+  const r = await startRelay(t, 18234, { seed });
+  const answer = await r.capture("two-sum", "d", "submit");
+  assert.equal(answer.status, 200);
+  assert.deepEqual(answer.json, { ok: true, attemptSeq: 4, triggerSeq: 2 });
+  await r.capture("two-sum", "e", "run");
+  await r.capture("other", "f", "submit");
+  assert.deepEqual(
+    r.lines().slice(3).map((e) => [e.problemSlug, e.trigger, e.attemptSeq, e.triggerSeq]),
+    [
+      ["two-sum", "submit", 4, 2],
+      ["two-sum", "run", 5, 2],
+      ["other", "submit", 1, 1],
+    ]
+  );
 });

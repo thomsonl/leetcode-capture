@@ -133,7 +133,7 @@ export function writeVaultAutoSummary({ capture, vaultContext, vaultData }) {
     '',
     `**Not connecting:** ${vaultData.notConnecting || '(not provided)'}`,
     '',
-    `*Last updated ${updatedAt} after submit attempt #${capture.attemptSeq ?? '?'}. Rating is an AI inference, not a verified fact - both the optimal complexity for this problem and this code's complexity are estimated by the model, not looked up. Reliable for well-known problems, may be wrong on obscure ones.*`,
+    `*Last updated ${updatedAt} after submit attempt #${capture.triggerSeq ?? capture.attemptSeq ?? '?'}. Rating is an AI inference, not a verified fact - both the optimal complexity for this problem and this code's complexity are estimated by the model, not looked up. Reliable for well-known problems, may be wrong on obscure ones.*`,
   ].join('\n');
 
   const problemContent = fs.readFileSync(vaultContext.problemNotePath, 'utf8');
