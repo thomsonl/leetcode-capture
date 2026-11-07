@@ -96,7 +96,12 @@ export function layout({ platform = process.platform, home, env = process.env })
     return { ...b, profile, manifestDir: dir, manifestPath: path.join(dir, `${HOST_NAME}.json`) };
   });
   const wrapper = path.join(dataDir, platform === 'win32' ? 'leetcode-capture-helper.cmd' : 'leetcode-capture-helper.sh');
-  return { platform, dataDir, appDir: path.join(dataDir, 'app'), wrapper, receipt: path.join(dataDir, RECEIPT), targets };
+  // Where the companion keeps the saved tutor settings (companion/settings.js
+  // settingsPath, same base rules); a custom LEETCODE_CAPTURE_SETTINGS file is
+  // the user's own and never touched.
+  const configBase = env.XDG_CONFIG_HOME || (platform === 'win32' && env.APPDATA ? env.APPDATA : path.join(home, '.config'));
+  const settingsDir = path.join(configBase, 'leetcode-capture');
+  return { platform, dataDir, appDir: path.join(dataDir, 'app'), wrapper, receipt: path.join(dataDir, RECEIPT), targets, settingsDir };
 }
 
 export function defaultReg(args) {
@@ -223,11 +228,31 @@ export function install({
   }
 }
 
-export function uninstall({ platform = process.platform, home, env = process.env, reg = defaultReg }) {
+// Takes a folder this program owns away with everything in it (the helper's
+// own logs and data are not in the receipt). A folder that cannot go (a file
+// still open, as on Windows while the browser runs the helper) is reported
+// in `leftover` so the caller can say so, never thrown.
+function removeOwnedFolder(dir, removed, leftover) {
+  if (!fs.existsSync(dir)) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    removed.push(dir);
+  } catch {
+    leftover.push(dir);
+  }
+}
+
+export function uninstall({ platform = process.platform, home, env = process.env, reg = defaultReg, keepSettings = false }) {
   const where = layout({ platform, home, env });
   const receipt = readReceipt(where);
-  if (!receipt) return { removed: [], nothing: true };
   const removed = [];
+  const leftover = [];
+  if (!receipt) {
+    // An earlier uninstall may have left its folders behind.
+    removeOwnedFolder(where.dataDir, removed, leftover);
+    if (!keepSettings && !env.LEETCODE_CAPTURE_SETTINGS) removeOwnedFolder(where.settingsDir, removed, leftover);
+    return { removed, leftover, nothing: removed.length === 0 && leftover.length === 0 };
+  }
   for (const key of receipt.registry || []) {
     reg(['delete', key, '/f']);
     removed.push(key);
@@ -241,6 +266,9 @@ export function uninstall({ platform = process.platform, home, env = process.env
     }
   }
   fs.rmSync(where.receipt, { force: true });
+  // What the helper itself wrote while it ran (logs, data) goes before the
+  // folders are tidied, so its parents can be removed too.
+  removeOwnedFolder(where.dataDir, removed, leftover);
   // Folders install created, innermost first, and only while empty (a folder
   // something else has since put files in stays).
   const dirs = [...new Set(receipt.dirs || [])].sort((a, b) => b.length - a.length);
@@ -252,7 +280,9 @@ export function uninstall({ platform = process.platform, home, env = process.env
       // not empty, or already gone
     }
   }
-  return { removed, nothing: false };
+  // Unless asked to keep it, the saved tutor settings (which may hold an API key).
+  if (!keepSettings && !env.LEETCODE_CAPTURE_SETTINGS) removeOwnedFolder(where.settingsDir, removed, leftover);
+  return { removed, leftover, nothing: false };
 }
 
 export function status({ platform = process.platform, home, env = process.env, reg = defaultReg }) {

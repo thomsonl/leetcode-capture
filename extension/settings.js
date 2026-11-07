@@ -200,6 +200,10 @@
   // The Check again button: busy while it asks, and what it found, so a press
   // never looks like it did nothing.
   let helperChecking = false;
+  // After the setup restart: the chosen provider is not saved yet. Shown in
+  // the footer only once the helper runs (while it does not, the wait note
+  // already says everything), and gone at the next Save.
+  let pendingChoiceNote = null;
   let helperCheckNote = null;
 
   function installCommand() {
@@ -497,7 +501,7 @@
             class: "hint",
             text:
               helperInfo.state === "running"
-                ? "The tutor is running. It stops 30 seconds after you close the last LeetCode problem tab."
+                ? "The tutor is running. It keeps running while this page or a LeetCode problem tab is open, and stops 30 seconds after you close the last one."
                 : "It starts by itself when you open a LeetCode problem.",
           })
         );
@@ -1045,6 +1049,7 @@
     else $("form").setAttribute("data-disabled", "");
     // Says why the rest of the form is dimmed: it waits for the helper.
     $("wait-note").hidden = can;
+    if (pendingChoiceNote && can && !$("save-result").textContent) showResult("save-result", "", pendingChoiceNote);
     // Poll for the helper only while it is the one needed and not there.
     if (!can && !pollTimer) pollTimer = setInterval(loadHelper, 4000);
     if (can && pollTimer) {
@@ -1562,6 +1567,7 @@
     const allowed = inBrowser ? requestPermission(pattern) : Promise.resolve(true);
     const button = $("save");
     button.disabled = true;
+    pendingChoiceNote = null;
     showResult("save-result", "", "Saving...");
     const plan = profilesForSave();
     if (inBrowser) {
@@ -1662,7 +1668,8 @@
       if (resume.runtime && runtimesOf(selected).includes(resume.runtime)) runtimeChoice[selected] = resume.runtime;
       if (resume.model) formModel[selected] = resume.model;
       render();
-      showResult("save-result", "", `${catalog[selected].label} is still chosen, but not saved yet. Press Save once the helper runs.`);
+      pendingChoiceNote = `${catalog[selected].label} is chosen but not saved yet. Press Save.`;
+      render();
       const res2 = await helperFirst;
       if (res2.ok) {
         helper = res2.result;

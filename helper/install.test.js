@@ -198,6 +198,7 @@ test('cli: parses flags and runs against the layer it is given', (t) => {
     chromeIds: [ID, ID],
     browsers: ['chrome'],
     root: null,
+    keepSettings: false,
   });
   assert.throws(() => parseArgs(['install', '--chrome-id']), /needs a value/);
   const home = tempHome(t);
@@ -211,4 +212,36 @@ test('cli: parses flags and runs against the layer it is given', (t) => {
   assert.deepEqual(tree(home), []);
   assert.equal(run(['frobnicate'], { home, env: {}, platform: 'linux', print }), 2);
   assert.equal(run(['install', '--bogus', 'x'], { home, env: {}, platform: 'linux', print }), 2);
+});
+
+test('uninstall also removes what the helper wrote while it ran, and the saved settings unless asked to keep them', (t) => {
+  const home = tempHome(t);
+  install({ platform: 'linux', home, env: {}, root: REPO, chromeIds: [ID], browsers: ['chromium'] });
+  const where = layout({ platform: 'linux', home, env: {} });
+  fs.mkdirSync(path.join(where.dataDir, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(where.dataDir, 'helper.log'), 'log\n');
+  fs.writeFileSync(path.join(where.dataDir, 'data', 'captures.jsonl'), '{}\n');
+  fs.mkdirSync(where.settingsDir, { recursive: true });
+  fs.writeFileSync(path.join(where.settingsDir, 'settings.json'), '{"providers":{"openai":{"apiKey":"secret"}}}\n');
+
+  const kept = uninstall({ platform: 'linux', home, env: {}, keepSettings: true });
+  assert.deepEqual(kept.leftover, []);
+  assert.deepEqual(tree(home), ['.config/', '.config/leetcode-capture/', '.config/leetcode-capture/settings.json']);
+
+  // A second run (nothing registered any more) still finds and clears the settings.
+  const again = uninstall({ platform: 'linux', home, env: {} });
+  assert.equal(again.nothing, false);
+  assert.deepEqual(tree(home).filter((p) => p.includes('leetcode')), []);
+  assert.equal(uninstall({ platform: 'linux', home, env: {} }).nothing, true);
+});
+
+test('uninstall leaves a custom settings file alone and reports a folder it cannot remove', (t) => {
+  const home = tempHome(t);
+  const custom = path.join(home, 'mine', 'settings.json');
+  fs.mkdirSync(path.dirname(custom), { recursive: true });
+  fs.writeFileSync(custom, '{}\n');
+  install({ platform: 'linux', home, env: {}, root: REPO, chromeIds: [ID], browsers: ['chromium'] });
+  uninstall({ platform: 'linux', home, env: { LEETCODE_CAPTURE_SETTINGS: custom } });
+  assert.equal(fs.existsSync(custom), true);
+  assert.equal(tree(home).filter((p) => p.includes('leetcode-capture')).length, 0);
 });

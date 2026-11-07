@@ -1,6 +1,6 @@
 {
   "name": "leetcode-capture-helper",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Native Messaging helper for LeetCode Capture: lets the browser extension start and stop the local companion and relay for the Claude and ChatGPT subscriptions. The package carries its own copy of the companion and relay.",
   "type": "module",
   "bin": {

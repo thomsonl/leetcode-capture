@@ -21,7 +21,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function parseArgs(argv) {
   const [command, ...rest] = argv;
-  const options = { command, chromeIds: [], browsers: [], root: null };
+  const options = { command, chromeIds: [], browsers: [], root: null, keepSettings: false };
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
     const value = rest[i + 1];
@@ -33,6 +33,7 @@ export function parseArgs(argv) {
     if (flag === '--chrome-id') options.chromeIds.push(...take().split(','));
     else if (flag === '--browser') options.browsers.push(...take().split(','));
     else if (flag === '--root') options.root = take();
+    else if (flag === '--keep-settings') options.keepSettings = true;
     else throw new Error(`unknown option ${flag}`);
   }
   return options;
@@ -41,7 +42,7 @@ export function parseArgs(argv) {
 const USAGE = `usage: leetcode-capture-helper <install|uninstall|status> [options]
 
   install [--chrome-id <id>]... [--browser <${BROWSER_IDS.join('|')}>]... [--root <folder>]
-  uninstall
+  uninstall [--keep-settings]
   status`;
 
 export function run(argv, { home = os.homedir(), env = process.env, platform = process.platform, reg, print = console.log } = {}) {
@@ -63,12 +64,16 @@ export function run(argv, { home = os.homedir(), env = process.env, platform = p
       });
       if (result.registered.length) print(`Registered the LeetCode Capture helper with: ${result.registered.join(', ')}.`);
       for (const note of result.notes) print(note);
-      print(`Files are in ${result.dataDir}. Reload the extension's settings page to see the helper.`);
+      print(`Files are in ${result.dataDir}. Press Check again on the extension's settings page.`);
       return result.registered.length ? 0 : 1;
     }
     if (options.command === 'uninstall') {
-      const result = uninstall(common);
+      const result = uninstall({ ...common, keepSettings: options.keepSettings });
       print(result.nothing ? 'The helper is not installed.' : `Removed the helper (${result.removed.length} items).`);
+      if (result.leftover.length) {
+        print(`Could not remove ${result.leftover.join(', ')} (in use). Close the browser, then run uninstall again.`);
+        return 1;
+      }
       return 0;
     }
     if (options.command === 'status') {

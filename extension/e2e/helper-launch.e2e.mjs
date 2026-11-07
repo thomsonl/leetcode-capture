@@ -208,7 +208,7 @@ try {
     await page.waitFor(`window.__q('.status span') && window.__q('.status span').textContent === 'Offline'`, { what: 'Offline', timeout: 12000 }).catch(async (err) => {
       throw new Error(`${err.message}: ${await page.eval(`JSON.stringify({ s: window.__q('.status') && window.__q('.status').textContent, b: window.__q('.banner') && window.__q('.banner').textContent })`)} ${page.console.join(' | ')}`);
     });
-    await page.waitFor(`/set up the helper app in Settings/.test(window.__q('.banner').textContent)`, { what: 'the Settings pointer', timeout: 10000 });
+    await page.waitFor(`/set up the helper app in Settings/i.test(window.__q('.banner').textContent)`, { what: 'the Settings pointer', timeout: 10000 });
     await page.screenshot(path.join(shots, 'panel-not-installed.png'), { width: 1100, height: 760 });
   };
 
@@ -481,9 +481,11 @@ try {
       const stored = await options3.eval(`chrome.storage.local.get(null).then((v) => JSON.stringify({ resume: v.settingsResume, reload: v.nativeReload }))`).catch((e) => String(e));
       throw new Error(`${err.message}: page ${seen}, storage ${stored}, console ${(options3.console || []).join(' | ')}`);
     });
-    const note = await options3.eval(`document.getElementById('save-result').textContent`);
-    check(/not saved yet/.test(note), note);
+    // While the helper is missing the wait note says it all; the "not saved
+    // yet" note comes once the helper runs, never next to the wait note.
     await options3.waitFor(`document.getElementById('helper-state-text').textContent === 'Running'`, { what: 'Running', timeout: 20000 });
+    await options3.waitFor(`/not saved yet/.test(document.getElementById('save-result').textContent)`, { what: 'the not saved yet note', timeout: 15000 });
+    check(await options3.eval(`document.getElementById('wait-note').hidden`), 'the wait note and the not saved yet note showed together');
     // The model field fills in once the helper answers (it shows the helper's settings).
     await options3.waitFor(`document.getElementById('claude-model').value === 'opus'`, { what: 'the carried model', timeout: 15000 }).catch(async (err) => {
       throw new Error(`${err.message}: ${await options3.eval(`document.getElementById('claude-model').value`)}`);
