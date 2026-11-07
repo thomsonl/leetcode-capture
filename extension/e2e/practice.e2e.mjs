@@ -275,9 +275,10 @@ try {
 
   await scenario('the header button opens the picker without a submission, once, for the page\'s problem; Close puts focus back', async () => {
     const mid = await openProblem('group-anagrams');
-    const button = await mid.eval(`(() => { const b = window.__q('button.practice-open'); const r = b.getBoundingClientRect(); const g = window.__q('button.gear').getBoundingClientRect(); return { hidden: b.hidden, label: b.getAttribute('aria-label'), title: b.title, size: [r.width, r.height], gap: g.left - r.right, top: r.top - g.top }; })()`);
+    // The row ends: practice, progress, gear, 4 px apart.
+    const button = await mid.eval(`(() => { const b = window.__q('button.practice-open'); const r = b.getBoundingClientRect(); const p = window.__q('button.progress-open').getBoundingClientRect(); const g = window.__q('button.gear').getBoundingClientRect(); return { hidden: b.hidden, label: b.getAttribute('aria-label'), title: b.title, size: [r.width, r.height], gap: p.left - r.right, gearGap: g.left - p.right, top: r.top - g.top }; })()`);
     check(!button.hidden && button.label === 'Practice a skill' && button.title === 'Practice a skill', JSON.stringify(button));
-    check(button.size.join() === '24,24' && button.top === 0 && button.gap === 4, `beside the gear: ${JSON.stringify(button)}`);
+    check(button.size.join() === '24,24' && button.top === 0 && button.gap === 4 && button.gearGap === 4, `beside the progress button and the gear: ${JSON.stringify(button)}`);
     await mid.eval(`window.__q('button.practice-open').click()`);
     await mid.waitFor(`window.__qa('.feed .practice-card .skill-chip').length > 0`, { what: 'the practice card' });
     await mid.waitFor(`window.__focused() === 'Arrays'`, { what: 'focus on the first chip' });
