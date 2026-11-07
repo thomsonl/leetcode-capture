@@ -338,6 +338,30 @@ for (const [status, pattern, kind] of [
   });
 }
 
+await scenario('no helper at all: a subscription points to the Helper section, the form waits for it, and another provider can still be picked', null, async (page) => {
+  await page.click('input[name=provider][value=claude]');
+  await page.waitFor(`!document.getElementById('offline').hidden`, { what: 'the helper note' });
+  const note = await text(page, '#offline');
+  assert.match(note, /^Claude subscription runs through the helper app, which isn't set up or running yet\. Set it up in the Helper section below\./);
+  // The terminal hint is a separate, secondary line, and names only the launcher.
+  assert.equal(await text(page, '#offline .aside'), 'Running the tutor from a terminal instead? Start it with leetcode.');
+  assert.doesNotMatch(note, /localhost:8135|companion\.js/);
+  assert.equal(await page.eval(`document.getElementById('save').disabled`), true);
+  assert.equal(await page.eval(`document.getElementById('form').hasAttribute('data-disabled')`), true);
+  assert.equal(await page.eval(`document.getElementById('wait-note').hidden`), false);
+  assert.match(await text(page, '#wait-note'), /^Waiting for the helper app/);
+  await page.eval(`document.getElementById('wait-note').scrollIntoView({ block: 'end' })`);
+  await page.screenshot(path.join(shots, 'helper-missing-dark.png'), { scheme: 'dark' });
+  await page.screenshot(path.join(shots, 'helper-missing-light.png'), { scheme: 'light' });
+  // A real mouse click (not a scripted one) still reaches another provider.
+  const at = await page.eval(`(() => { const r = document.querySelector('input[name=provider][value=local]'); r.scrollIntoView({ block: 'center' }); const b = r.getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+  for (const type of ['mousePressed', 'mouseReleased']) await page.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 });
+  await page.waitFor(`document.querySelector('input[name=provider][value=local]').checked`, { what: 'the local model chosen by a click' });
+  assert.equal(await page.eval(`document.getElementById('form').hasAttribute('data-disabled')`), false);
+  assert.equal(await page.eval(`document.getElementById('wait-note').hidden`), true);
+  assert.equal(await page.eval(`document.getElementById('offline').hidden`), true);
+});
+
 // ---- browser runtime: the worker runs the tutor, no relay ---------------------
 
 // An OpenAI-compatible stub (Ollama-style /api/tags too) on an ephemeral port.

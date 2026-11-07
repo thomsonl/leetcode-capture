@@ -617,14 +617,13 @@
     }
   }
 
-  // Each cause gets its own instruction; `code` parts render as inline code.
+  // Each cause gets its own instruction; `code` parts render as inline code,
+  // and an `aside` is a short second line for people who run the tutor from
+  // a terminal. "{provider}" is the chosen provider's name.
   const OFFLINE_COPY = {
     "relay-down": [
-      "This provider runs through the helper app, and it isn't running (nothing answers on localhost:8135). Set it up in the Helper section below. If you run the tutor from a terminal instead, start it with ",
-      { code: "leetcode" },
-      " (or ",
-      { code: "node companion.js" },
-      " in the companion folder). This page reconnects on its own.",
+      "{provider} runs through the helper app, which isn't set up or running yet. Set it up in the Helper section below. This page notices it by itself.",
+      { aside: ["Running the tutor from a terminal instead? Start it with ", { code: "leetcode" }, "."] },
     ],
     "companion-down": [
       "The relay is running but the tutor isn't. Start it with ",
@@ -644,9 +643,15 @@
     box.hidden = !show;
     if (!show) return;
     box.textContent = "";
-    for (const part of OFFLINE_COPY[helperOffline] || OFFLINE_COPY["relay-down"]) {
-      box.appendChild(typeof part === "string" ? document.createTextNode(part) : h("code", { text: part.code }));
-    }
+    const name = catalog[selected] ? catalog[selected].label : "This provider";
+    const draw = (parent, parts) => {
+      for (const part of parts) {
+        if (typeof part === "string") parent.appendChild(document.createTextNode(part.replace("{provider}", name)));
+        else if (part.code) parent.appendChild(h("code", { text: part.code }));
+        else if (part.aside) draw(parent.appendChild(h("span", { class: "aside" })), part.aside);
+      }
+    };
+    draw(box, OFFLINE_COPY[helperOffline] || OFFLINE_COPY["relay-down"]);
   }
 
   function lockNote(field) {
@@ -999,6 +1004,8 @@
     $("save").disabled = !can;
     if (can) $("form").removeAttribute("data-disabled");
     else $("form").setAttribute("data-disabled", "");
+    // Says why the rest of the form is dimmed: it waits for the helper.
+    $("wait-note").hidden = can;
     // Poll for the helper only while it is the one needed and not there.
     if (!can && !pollTimer) pollTimer = setInterval(loadHelper, 4000);
     if (can && pollTimer) {

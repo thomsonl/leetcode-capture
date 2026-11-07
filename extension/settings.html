@@ -27,7 +27,7 @@
       <div id="offline" class="notice warn" role="alert" hidden></div>
 
       <form id="form" novalidate>
-        <section class="card" aria-labelledby="model-heading">
+        <section class="card" id="model-card" aria-labelledby="model-heading">
           <h2 id="model-heading">Tutor model</h2>
           <p class="help">Choose what answers when you submit code or ask a question in the Tutor tab. A local model or an API key runs right in the browser; the Claude and ChatGPT subscriptions need the helper app.</p>
           <fieldset id="providers" class="providers">
@@ -63,6 +63,7 @@
         </section>
 
         <div class="savebar">
+          <p id="wait-note" class="result wait-note" hidden>Waiting for the helper app. You can save once it runs.</p>
           <p id="save-result" class="result" role="status" aria-live="polite"></p>
           <button type="submit" id="save" class="btn primary">Save</button>
         </div>
